@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+@theme {
+  --color-board-bg: #1a1b1e;
+  --color-chrome-bg: #242529;
+  --color-chrome-border: #35363b;
+  --color-accent: #4f8ff7;
+  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+}

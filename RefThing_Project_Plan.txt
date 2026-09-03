@@ -1,0 +1,288 @@
+========================================================================
+REFTHING — PROJECT PLAN
+A high-performance, web-based reference board (PureRef reimagined)
+========================================================================
+
+OVERVIEW
+--------------------------------------------------------------------
+RefThing is a browser-based reference board built to handle massive
+boards (thousands of images) at 60fps, with better organization,
+crash-safety, and multi-device support than PureRef, while remaining
+cleanly extensible to new content types (3D models, video, audio,
+web embeds, and beyond).
+
+Core architectural principle: React owns the UI chrome. It does NOT
+render the canvas itself. The canvas is a separate WebGL rendering
+layer with its own scene graph, mounted once and updated imperatively.
+
+
+========================================================================
+LIBRARY / TECH STACK
+========================================================================
+
+--- BACKEND (Rust) ---
+- axum                 Web framework (routing, WebSocket upgrade, middleware)
+- tokio                Async runtime (multi-threaded scheduler)
+- rayon                Data-parallel CPU work (bulk image processing)
+- sqlx                 Async SQLite driver (compile-time checked queries)
+- SQLite (WAL mode)    Metadata store (boards, items, tags, groups)
+- SQLite JSON1 ext.    Flexible per-item-type metadata payloads
+- image                Core image decode/encode (JPEG/PNG/WebP/etc.)
+- fast_image_resize    SIMD-accelerated thumbnail/pyramid generation
+- symphonia            Audio decode (waveform extraction for mp3 posters)
+- ffmpeg (shelled out) or ffmpeg-next   Video frame extraction, transcoding
+- img_hash              Perceptual hashing (near-duplicate detection)
+- tracing / tracing-subscriber   Structured logging & diagnostics
+- tower / tower-http   Middleware (CORS, compression, timeouts)
+- serde / serde_json   Serialization
+- jsonwebtoken (or session-based auth crate)   Auth
+- apalis (or custom Tokio task queue)   Background job queue (thumbnails, posters)
+- yrs (optional, later)   Rust port of Yjs — CRDT for real collaboration
+
+--- BACKEND SIDECAR (Node.js, optional/deferred) ---
+- three.js             Headless 3D model poster/snapshot rendering
+- @gltf-transform       glTF/GLB validation & optimization
+- puppeteer or playwright   Headless-browser screenshots for web embeds
+- (called internally by Rust backend via HTTP/gRPC; not user-facing)
+
+--- STORAGE ---
+- SQLite                Metadata (boards, items, tags, groups, users)
+- Content-addressed blob store (flat files, SHA-256 hashed)
+  OR S3-compatible object store for cloud portability
+
+--- FRONTEND (JavaScript/TypeScript) ---
+- React                 UI chrome only (panels, search, hierarchy tree, modals)
+- Tailwind CSS          Styling / design system
+- anime.js              UI chrome animations (panel transitions, hover states)
+- PixiJS (WebGL2)       Canvas rendering engine (sprites, texture pyramid, culling)
+- Zustand or Jotai      React-side UI state management
+- @chenglou/pretext     Rich text note editor
+- model-viewer (Google web component) or three.js   Live 3D viewport renderer
+- Web Audio API (native)   Audio mini-player playback
+- Web Workers            Off-main-thread decode/resize/search/spatial index
+- OffscreenCanvas         (Phase 9+) move WebGL render loop off main thread
+
+--- DEV / TOOLING ---
+- Synthetic board generator (custom internal tool) for load testing
+- FPS/latency HUD (dev-only) for perf regression tracking
+
+
+========================================================================
+PHASE-BY-PHASE PLAN
+========================================================================
+
+PHASE 0 — LOCK THE STACK
+--------------------------------------------------------------------
+1. Finalize the library table above.
+2. Set up repo structure: /backend (Rust/Axum), /frontend (React/Vite),
+   /sidecar (Node, stubbed), /docs (architecture + onboarding docs).
+3. Establish CI: cargo check/test/clippy, frontend lint/build.
+
+PHASE 1 — DATA MODEL & STORAGE
+--------------------------------------------------------------------
+Goal: fix PureRef's single-file corruption problem and enable real
+organization (tags/search) from day one.
+
+1. Generic item schema (NOT hardcoded to "images"):
+   - boards(id, name, created_at, updated_at, viewport_state)
+   - items(id, board_id, type, x, y, width, height, rotation,
+           z_index, group_id, created_at)
+   - item_metadata(item_id, json_blob)   -- flexible per-type payload
+   - groups(id, board_id, parent_group_id, name, collapsed)
+   - notes(id, board_id, x, y, width, height, content_json,
+           bg_color, opacity)
+   - tags(id, name, color) + item_tags(item_id, tag_id)
+   - blobs(hash, original_filename, mime_type, byte_size,
+           width, height, created_at)
+2. Enable SQLite WAL mode — crash mid-write can't corrupt the whole DB.
+3. Content-addressed blob storage: hash on ingest, store once,
+   reference everywhere (automatic dedup).
+4. Build export/import: snapshot a board to a portable archive
+   (zip of blobs + manifest) for backup/sharing.
+
+PHASE 2 — RUST API SURFACE
+--------------------------------------------------------------------
+1. Scaffold Axum app: routing, tracing, CORS, error handling.
+2. Auth (session or JWT) to support multi-device sync.
+3. CRUD endpoints for boards/items/groups/notes/tags.
+4. Batch endpoints for moving/updating many items at once
+   (never one HTTP call per item at scale).
+5. Ingestion endpoint: upload -> hash -> store blob -> enqueue
+   poster/thumbnail job -> return immediately (don't block on processing).
+6. WebSocket endpoint: broadcast live board diffs to connected clients.
+
+PHASE 3 — THUMBNAIL / IMAGE PYRAMID PIPELINE
+--------------------------------------------------------------------
+Goal: the actual key to "thousands of images, still smooth."
+
+1. Generate a size pyramid per image (e.g. 64px / 256px / 1024px / full)
+   using fast_image_resize.
+2. Run generation in a background worker pool (Tokio tasks + Rayon for
+   the actual CPU-bound resize work — spawn_blocking or Rayon, never
+   raw .await on CPU work).
+3. Serve via cache-friendly path scheme: /blob/{hash}/{size}
+   with immutable cache headers.
+4. Frontend picks pyramid level based on on-screen size (map-tile style).
+
+PHASE 4 — CANVAS RENDERING ENGINE (frontend, non-React)
+--------------------------------------------------------------------
+1. Mount a single PixiJS Application into a React-managed <canvas> ref.
+   React never re-renders into it.
+2. Build a spatial index (quadtree / grid buckets) over item positions.
+3. Viewport culling: only create/update sprites for items intersecting
+   the visible rect (+ buffer margin).
+4. Zoom-dependent texture swapping (pyramid level swap per sprite).
+5. Pan/zoom with easing inside the render loop (rAF), not React state.
+6. Selection/drag/resize/rotate handles as a DOM/SVG overlay layer,
+   synced to canvas coordinates.
+
+PHASE 5 — CORE PUREREF FEATURE PARITY
+--------------------------------------------------------------------
+1. Drag-and-drop / paste / browser-drag ingestion.
+2. Grouping/ungrouping, move-as-unit, group bg color/opacity.
+3. Grayscale toggle — GPU shader uniform, not CPU.
+4. Color sampler (GPU texture / offscreen canvas readback).
+5. Freehand drawing/annotation layer (vector stroke data as note-like
+   records).
+6. Notes via @chenglou/pretext, rendered as DOM overlays in canvas-space.
+7. Animated GIF playback in canvas (frame texture updates, throttled).
+8. Snap-to-grid, alignment guides.
+
+PHASE 6 — ORGANIZATION FEATURES BEYOND PUREREF
+--------------------------------------------------------------------
+1. Tagging system + filter/search bar in React chrome.
+2. Saved views/collections: named viewport bookmarks or sub-boards.
+3. Full-text search via SQLite FTS5 (filename, tags, note content).
+4. Color-based search: index dominant colors at ingest (k-means on
+   downsampled thumbnail); "find similar color" queries.
+5. Duplicate detection: exact via existing hash, near-dupes via
+   perceptual hashing (img_hash crate).
+
+PHASE 7 — RELIABILITY (fixes PureRef's failure mode directly)
+--------------------------------------------------------------------
+1. WAL-mode SQLite + periodic checkpointing.
+2. Debounced client-side autosave (no single giant save-on-close).
+3. Versioned snapshots — keep N recent board states for rollback.
+4. Health-check endpoint verifying blob integrity against stored hashes.
+
+PHASE 8 — MULTI-DEVICE / LIGHTWEIGHT COLLABORATION
+--------------------------------------------------------------------
+1. WebSocket broadcast of board ops (move/add/delete/tag) to all
+   connected clients on that board.
+2. Presence indicators (optional, later — live cursors, who's viewing).
+3. Conflict resolution: last-write-wins per field for v1;
+   CRDT (yrs, Rust Yjs port) as the upgrade path for real concurrent
+   editing.
+
+PHASE 9 — PERFORMANCE VALIDATION & OFF-MAIN-THREAD WORK
+--------------------------------------------------------------------
+1. Synthetic board generator (seed 5k / 20k / 50k items) as a dev tool.
+2. Profile frame time under pan/zoom at each scale; target 60fps.
+3. Load-test ingestion pipeline (bulk upload of thousands of files).
+4. Move image decode/resize and search/filter computation into
+   Web Workers.
+5. Move the PixiJS render loop into OffscreenCanvas inside a worker
+   for boards with very high item counts. Requires setting
+   Cross-Origin-Opener-Policy / Cross-Origin-Embedder-Policy headers
+   on the Axum server if using SharedArrayBuffer for zero-copy transfer.
+6. Add dev-only FPS/latency HUD to catch regressions.
+
+PHASE 10 — POLISH
+--------------------------------------------------------------------
+1. anime.js-driven UI transitions (panels, toolbar, hover states).
+2. Tailwind design system pass — consistent spacing/typography tokens.
+3. Keyboard shortcuts matching PureRef muscle memory, plus new ones
+   for tags/search.
+4. Best-effort .pur importer for PureRef 1.x files (2.x format is
+   closed/unreverse-engineered — treat as stretch goal, not v1).
+
+PHASE 11 — EXTENSIBILITY: MULTI-FORMAT ITEM TYPES
+--------------------------------------------------------------------
+Goal: support 3D viewports, video, audio (mp3 mini-player), gifs,
+web embeds, and arbitrary file formats — cleanly, without touching
+core engine code per new type.
+
+Rendering model (critical for scale):
+- POSTER mode (always on): every item has a cheap static WebGL sprite,
+  regardless of type. This is what the culling/rendering pipeline
+  from Phase 4 always deals with — keeps thousands of items smooth.
+- LIVE mode (on-demand): the real interactive component — <video>,
+  model-viewer/three.js, audio mini-player — mounted as a DOM overlay
+  ONLY for items currently large/focused enough on screen. Cap
+  concurrent live instances (~6-10) and evict least-recently-focused
+  when the cap is hit.
+
+Data model change:
+- Generalize to items + item_metadata(JSON) as already defined in
+  Phase 1 — new item types need no schema migration, just a new
+  JSON payload shape. Only promote a field to a real column if you
+  need to query/sort/filter on it at scale.
+
+Backend pattern — ItemTypeHandler trait:
+  - accepted_mime_types()
+  - extract_metadata(blob) -> ItemMetadata
+  - generate_poster(blob) -> PosterAsset
+  Each new type = one handler implementation + registration. Nothing
+  else in ingestion changes.
+
+Frontend pattern — ItemRenderer registry:
+  - Poster: always-mounted WebGL sprite (required)
+  - Live: optional DOM-overlay component, mounted per activation policy
+
+Type-by-type implementation notes:
+  - Image:        existing pyramid pipeline (Phase 3)
+  - Video:        ffmpeg frame extraction -> poster; <video> for live
+  - GIF:          decode first frame -> poster; small GIFs can just
+                   play directly as an animated WebGL sprite
+  - 3D model:      offscreen render snapshot (via Node/three.js sidecar)
+                   -> poster; model-viewer or three.js for live,
+                   with orbit controls only while live
+  - Audio (mp3):   waveform image (via symphonia) -> poster;
+                   mini-player (Web Audio API + custom transport UI)
+                   for live
+  - Web embed:     oEmbed/OpenGraph fetch, or headless-browser
+                   screenshot (Node/puppeteer sidecar) -> poster;
+                   sandboxed iframe for live
+  - Generic/unknown file: file-type icon + filename as poster fallback;
+                   always downloadable even without a live renderer
+
+Node.js sidecar (optional, deferred):
+  - Used ONLY for jobs where the JS ecosystem is genuinely better
+    suited: 3D poster snapshots (three.js) and web-embed screenshots
+    (puppeteer/playwright). Called internally by the Rust backend
+    over HTTP/gRPC — Rust remains the source of truth for data,
+    storage, and API surface.
+  - Not a general performance upgrade — Node's threading model is the
+    same shape as the browser's (single main thread + worker_threads/
+    libuv pool). Only reach for it for tooling advantages, not raw
+    concurrency.
+  - Stub these jobs early (return a generic file icon) and only stand
+    up the sidecar once 3D/embeds are an active feature, not before.
+
+Feature-flagging for experimental types:
+  - Gate new/rough item types behind a simple flag system (JSON config
+    or env-driven list) from day one, so a half-finished renderer
+    (e.g. 3D viewports) can ship to a subset of users without
+    destabilizing the main board experience.
+
+Onboarding checklist for a new item type (document this in /docs):
+  1. Add a backend ItemTypeHandler impl + register it.
+  2. Add a frontend ItemRenderer (poster required, live optional)
+     + register it.
+  3. No core engine, schema migration, or canvas code changes required.
+  4. Ship behind a feature flag if experimental.
+
+
+========================================================================
+SEQUENCING NOTE
+========================================================================
+Build Phases 1-4 (storage, ingestion, canvas engine) before most of
+Phase 5+ feature work. Everything downstream is much easier once the
+rendering approach is proven at scale. If the canvas engine can't hit
+target framerates at thousands of items, that reshapes every phase
+after it — validate early with the Phase 9 synthetic board generator,
+even in a rough form, as soon as Phase 4 has a working prototype.
+
+========================================================================
+END OF PLAN
+========================================================================

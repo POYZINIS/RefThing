@@ -1,0 +1,8 @@
+target/
+node_modules/
+dist/
+data/
+*.local
+
+# Machine-local cargo config (no-MSVC link shim on this box)
+.cargo/
