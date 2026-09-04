@@ -1,0 +1,92 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", type AS \"item_type!\", blob_id, x, y, width, height, rotation, z_index, group_id AS \"group_id: Uuid\", created_at AS \"created_at: DateTime<Utc>\", updated_at AS \"updated_at: DateTime<Utc>\" FROM items WHERE board_id = ? ORDER BY z_index ASC, id ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "board_id: Uuid",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "item_type!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "blob_id",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "x",
+        "ordinal": 4,
+        "type_info": "Float"
+      },
+      {
+        "name": "y",
+        "ordinal": 5,
+        "type_info": "Float"
+      },
+      {
+        "name": "width",
+        "ordinal": 6,
+        "type_info": "Float"
+      },
+      {
+        "name": "height",
+        "ordinal": 7,
+        "type_info": "Float"
+      },
+      {
+        "name": "rotation",
+        "ordinal": 8,
+        "type_info": "Float"
+      },
+      {
+        "name": "z_index",
+        "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "group_id: Uuid",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at: DateTime<Utc>",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at: DateTime<Utc>",
+        "ordinal": 12,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "1ccdba5576f89428dc0a6dffb2f929a087b50e5821adcd76f7ba9b1af5314d9e"
+}

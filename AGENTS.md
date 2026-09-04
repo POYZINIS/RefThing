@@ -24,6 +24,7 @@ backend/            Rust workspace
   crates/
     refthing-core/  domain types + business logic (no I/O)
     refthing-server/ axum HTTP/WS server + SQLite persistence
+  migrations/       SQL migrations — embedded, run at startup (Phase 1)
 frontend/           React + PixiJS app (Vite)
   src/canvas/       PixiJS engine — imperative, owns the canvas
   src/components/   UI chrome only (toolbar, panels, dialogs)
@@ -41,6 +42,15 @@ data/               local state (SQLite DB, uploads) — NEVER commit
 - Ports: backend API **7171**, Vite dev server **5173**, sidecar **7272**.
 - `data/` holds local state (SQLite database, uploaded files). It is
   gitignored and must **never be committed**.
+- The root **`.cargo/config.toml` is machine-local (gitignored) and
+  required for linking on this box** — it has no MSVC toolchain, so all
+  linking goes through the shim in `backend/target/`. Do not commit it,
+  and note that `cargo clean` deletes the shim. See
+  `docs/prerequisites.md` → "No-MSVC machines".
+- SQLite migrations live in **`backend/migrations/`** and run **embedded
+  at startup** (`sqlx::migrate!()`), forward-only. See
+  `docs/data-model.md` for the schema and its invariants (no `CHECK` on
+  `items.type`, SHA-256 blob hashes, zip export as the only backup path).
 
 ## CI
 
@@ -50,6 +60,14 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main`:
   `cargo test`, all against `backend/Cargo.toml`.
 - `frontend` job on ubuntu: `npm ci`, `npx biome ci .`, typecheck, build.
 
-From **Phase 1** onward the Rust job sets **`SQLX_OFFLINE=true`** (sqlx
-compile-time checked queries use the checked-in offline metadata, so CI
-needs no live database).
+From **Phase 1** the Rust job sets **`SQLX_OFFLINE=true`** — sqlx
+compile-time checked queries build against the committed offline cache
+(`backend/.sqlx/`), so CI needs no live database. After changing any
+`query!`/`query_as!` call, regenerate the cache:
+
+```sh
+cd backend && SQLX_OFFLINE=false DATABASE_URL=sqlite:./data/dev.db cargo sqlx prepare --workspace
+```
+
+(requires `sqlx-cli` 0.8.x and a migrated throwaway `backend/data/dev.db`;
+both gitignored). Commit the updated `backend/.sqlx/` with the change.

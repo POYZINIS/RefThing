@@ -1,0 +1,80 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", x, y, width, height, content_json AS \"content_json: serde_json::Value\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", updated_at AS \"updated_at: DateTime<Utc>\" FROM notes WHERE board_id = ? ORDER BY created_at, id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "board_id: Uuid",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "x",
+        "ordinal": 2,
+        "type_info": "Float"
+      },
+      {
+        "name": "y",
+        "ordinal": 3,
+        "type_info": "Float"
+      },
+      {
+        "name": "width",
+        "ordinal": 4,
+        "type_info": "Float"
+      },
+      {
+        "name": "height",
+        "ordinal": 5,
+        "type_info": "Float"
+      },
+      {
+        "name": "content_json: serde_json::Value",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "bg_color",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "opacity!",
+        "ordinal": 8,
+        "type_info": "Float"
+      },
+      {
+        "name": "created_at: DateTime<Utc>",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at: DateTime<Utc>",
+        "ordinal": 10,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7782cc823446813f6765e60ad085a003972ed7aea3df888c8f88311ccf8e1ccd"
+}

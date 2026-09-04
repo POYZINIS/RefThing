@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT b.id AS \"id!: Uuid\", b.name AS \"name!\", b.seq AS \"seq!\", b.created_at AS \"created_at!: DateTime<Utc>\", b.updated_at AS \"updated_at!: DateTime<Utc>\", (SELECT COUNT(*) FROM items i WHERE i.board_id = b.id) AS \"item_count!\" FROM boards b ORDER BY b.name COLLATE NOCASE, b.id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "name!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "seq!",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at!: DateTime<Utc>",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "item_count!",
+        "ordinal": 5,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "85ac05346ed675398ec9f133d41089a61162d0d8622ad438336a759dbef88d58"
+}

@@ -26,3 +26,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 anyhow = "1"
+sqlx = { version = "0.8.6", features = [
+    "runtime-tokio-rustls",
+    "sqlite",
+    "chrono",
+    "uuid",
+    "json",
+    "migrate",
+] }
+uuid = { version = "1", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+infer = "0.16"
+zip = "=2.4.2" # EXACT pin — the zip crate churned majors 2.x -> 8.x in 2025
+tempfile = "3"
+futures = "0.3"

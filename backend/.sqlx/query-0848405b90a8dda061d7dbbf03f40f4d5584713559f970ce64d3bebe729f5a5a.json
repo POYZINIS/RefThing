@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO tags (id, name, color) VALUES (?, ?, ?) RETURNING id AS \"id!: Uuid\", name AS \"name!\", color",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "name!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "color",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "0848405b90a8dda061d7dbbf03f40f4d5584713559f970ce64d3bebe729f5a5a"
+}

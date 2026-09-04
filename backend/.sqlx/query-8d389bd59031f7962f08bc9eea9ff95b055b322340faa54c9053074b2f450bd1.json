@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE groups SET name = COALESCE(?, name), collapsed = COALESCE(?, collapsed), bg_color = COALESCE(?, bg_color), opacity = COALESCE(?, opacity) WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "8d389bd59031f7962f08bc9eea9ff95b055b322340faa54c9053074b2f450bd1"
+}

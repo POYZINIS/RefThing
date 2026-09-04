@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO groups (id, board_id, parent_group_id, name) VALUES (?, ?, ?, ?) RETURNING id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", parent_group_id AS \"parent_group_id: Uuid\", name AS \"name!\", collapsed AS \"collapsed: bool\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "board_id: Uuid",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "parent_group_id: Uuid",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "name!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "collapsed: bool",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "bg_color",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "opacity!",
+        "ordinal": 6,
+        "type_info": "Float"
+      },
+      {
+        "name": "created_at: DateTime<Utc>",
+        "ordinal": 7,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      true,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "2003d907326882334cdc85af3ffbcef292d97dcfeb90c050abf8d1f692ed3e4c"
+}

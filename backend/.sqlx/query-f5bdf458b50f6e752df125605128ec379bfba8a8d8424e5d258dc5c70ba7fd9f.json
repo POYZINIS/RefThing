@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT json AS \"json!\" FROM item_metadata WHERE item_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "json!",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f5bdf458b50f6e752df125605128ec379bfba8a8d8424e5d258dc5c70ba7fd9f"
+}

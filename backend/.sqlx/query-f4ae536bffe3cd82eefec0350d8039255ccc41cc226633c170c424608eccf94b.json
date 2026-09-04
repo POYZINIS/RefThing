@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO blobs (hash, original_filename, mime_type, byte_size, width, height) VALUES (?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "f4ae536bffe3cd82eefec0350d8039255ccc41cc226633c170c424608eccf94b"
+}

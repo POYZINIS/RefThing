@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT hash AS \"hash!\", original_filename, mime_type AS \"mime_type!\", byte_size AS \"byte_size!\", width, height, created_at AS \"created_at: DateTime<Utc>\" FROM blobs WHERE hash = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "hash!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "original_filename",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "mime_type!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "byte_size!",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "width",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "height",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at: DateTime<Utc>",
+        "ordinal": 6,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "59d55bd19d735a0e33c5a2e959af04bd06d5891e3811ed0f17b4991a9b22921e"
+}
