@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/*.css", "!backend/target", "!frontend/dist"]
+    "includes": ["**", "!**/*.css", "!backend/target", "!backend/.sqlx", "!frontend/dist"]
   },
   "formatter": {
     "enabled": true,
