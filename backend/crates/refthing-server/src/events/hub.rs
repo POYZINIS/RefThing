@@ -64,6 +64,7 @@ impl BroadcastHub {
     }
 
     /// Subscribes to `board_id`'s room, creating it on first use.
+    #[must_use]
     pub fn subscribe(&self, board_id: Uuid) -> broadcast::Receiver<Arc<ServerMsg>> {
         self.rooms
             .entry(board_id)

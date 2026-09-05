@@ -11,7 +11,10 @@ workspace = true
 [dependencies]
 refthing-core = { path = "../refthing-core" }
 tokio.workspace = true
-axum.workspace = true
+# `ws` feature: axum gates `extract::ws` (WebSocketUpgrade/Message) behind it;
+# the /api/boards/{id}/ws endpoint cannot exist without it. `multipart` is for
+# `extract::Multipart` used by the ingest route.
+axum = { workspace = true, features = ["ws", "multipart"] }
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -29,3 +32,5 @@ async-trait.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+tokio-tungstenite = "0.26"

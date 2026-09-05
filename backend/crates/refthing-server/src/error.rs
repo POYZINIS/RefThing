@@ -24,6 +24,8 @@ pub enum AppError {
     #[error(transparent)]
     Db(#[from] sqlx::Error),
     #[error(transparent)]
+    Core(#[from] refthing_core::CoreError),
+    #[error(transparent)]
     Io(#[from] std::io::Error),
 }
 
@@ -48,7 +50,9 @@ impl AppError {
             Self::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             Self::TooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "too_large"),
             Self::UnsupportedMedia(_) => (StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_media"),
-            Self::Db(_) | Self::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+            Self::Db(_) | Self::Core(_) | Self::Io(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal")
+            }
         }
     }
 }

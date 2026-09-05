@@ -90,6 +90,14 @@ pub struct Tag {
     pub color: Option<String>,
 }
 
+/// One renderable scale of a blob. Only `full` (the original) exists until
+/// Phase 3's `blob_derivatives` adds scaled levels.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlobLevel {
+    pub width: i64,
+    pub height: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlobInfo {
     /// 64-char lowercase hex SHA-256; also the `/blob/{hash}/...` URL key.
@@ -100,6 +108,10 @@ pub struct BlobInfo {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub created_at: i64,
+    /// Available scales keyed by level name (`full`, later `256`/`1024`/...).
+    /// Empty for non-image blobs with no intrinsic dimensions.
+    #[serde(default)]
+    pub levels: HashMap<String, BlobLevel>,
 }
 
 /// Single hydration payload for `GET /api/boards/{id}`: everything the canvas
@@ -236,6 +248,13 @@ mod tests {
             width: Some(64),
             height: Some(64),
             created_at: 9,
+            levels: HashMap::from([(
+                "full".to_string(),
+                BlobLevel {
+                    width: 64,
+                    height: 64,
+                },
+            )]),
         });
     }
 

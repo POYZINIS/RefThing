@@ -79,6 +79,9 @@ impl JobQueue {
 
     /// Registers `handler` for `kind`. Register all handlers before spawning
     /// workers / serving traffic.
+    ///
+    /// # Panics
+    /// Panics if the handler registry lock is poisoned.
     pub fn register(&self, kind: &str, handler: impl JobHandler + 'static) {
         self.handlers
             .write()
@@ -182,6 +185,9 @@ impl JobQueue {
     /// # Errors
     /// Returns an error on database failure (handler failures are recorded on
     /// the job, not returned).
+    ///
+    /// # Panics
+    /// Panics if the handler registry lock is poisoned.
     pub async fn execute_next(&self, ctx: &JobContext) -> anyhow::Result<bool> {
         let Some(job) = self.claim_one().await? else {
             return Ok(false);
