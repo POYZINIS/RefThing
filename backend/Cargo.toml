@@ -41,3 +41,7 @@ infer = "0.16"
 zip = "=2.4.2" # EXACT pin — the zip crate churned majors 2.x -> 8.x in 2025
 tempfile = "3"
 futures = "0.3"
+dashmap = "6"
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures-util = "0.3"
+async-trait = "0.1"
