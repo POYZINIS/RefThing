@@ -19,9 +19,11 @@ pub mod state;
 use std::sync::Arc;
 
 use refthing_core::AppConfig;
+use refthing_core::pipeline::ResizePool;
 use refthing_core::storage::BlobStore;
+use uuid::Uuid;
 
-use crate::jobs::{JobContext, JobQueue, PyramidStub};
+use crate::jobs::{JobContext, JobQueue, PyramidJob};
 use crate::state::AppState;
 
 /// Boot the server: config → DB → blob store → job workers → HTTP/WS listener.
@@ -46,17 +48,20 @@ pub async fn run() -> anyhow::Result<()> {
     let blob_store = Arc::new(BlobStore::new(config.data_dir.clone()));
 
     let jobs = JobQueue::new(pools.write.clone());
-    jobs.register("pyramid", PyramidStub);
+    jobs.register("pyramid", PyramidJob);
     let recovered = jobs.recover_running().await?;
     if recovered > 0 {
         tracing::warn!(recovered, "reset interrupted jobs to pending");
     }
 
     let hub = events::BroadcastHub::new();
+    let resize_pool = Arc::new(ResizePool::new());
     let job_ctx = JobContext {
         pools: pools.clone(),
         blob_store: blob_store.clone(),
         hub: hub.clone(),
+        resize_pool: resize_pool.clone(),
+        deriv_root: config.data_dir.join("deriv"),
     };
     let workers = JobQueue::default_worker_count();
     jobs.spawn_workers(&job_ctx, workers);
@@ -64,10 +69,12 @@ pub async fn run() -> anyhow::Result<()> {
 
     let state = AppState {
         config: Arc::new(config),
+        auth_token: Arc::from(Uuid::now_v7().to_string()),
         pools,
         blob_store,
         jobs,
         hub,
+        resize_pool,
     };
 
     let addr = format!("{}:{}", state.config.host, state.config.port);

@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use refthing_core::db::{blobs, groups, items, notes, tags};
 use refthing_core::models::ItemMetadata;
+use refthing_core::pipeline::ResizePool;
 use refthing_core::storage::BlobStore;
 use refthing_core::{AppConfig, db};
 use refthing_server::events::BroadcastHub;
-use refthing_server::jobs::{JobContext, JobQueue, PyramidStub};
+use refthing_server::jobs::{JobContext, JobQueue, PyramidJob};
 use refthing_server::state::AppState;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -33,20 +34,25 @@ async fn spawn_app() -> TestApp {
         .expect("connect");
     let blob_store = Arc::new(BlobStore::new(dir.path().to_path_buf()));
     let jobs = JobQueue::new(pools.write.clone());
-    jobs.register("pyramid", PyramidStub);
+    jobs.register("pyramid", PyramidJob);
     let hub = BroadcastHub::new();
+    let resize_pool = Arc::new(ResizePool::new());
     let job_ctx = JobContext {
         pools: pools.clone(),
         blob_store: blob_store.clone(),
         hub: hub.clone(),
+        resize_pool: resize_pool.clone(),
+        deriv_root: dir.path().join("deriv"),
     };
     jobs.spawn_workers(&job_ctx, 1);
     let state = AppState {
         config: Arc::new(config),
+        auth_token: Arc::from("test-token"),
         pools,
         blob_store,
         jobs,
         hub,
+        resize_pool,
     };
 
     let app = refthing_server::router::build_router(state.clone());

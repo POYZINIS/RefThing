@@ -3,6 +3,7 @@ pub mod db;
 pub mod error;
 pub mod export;
 pub mod models;
+pub mod pipeline;
 pub mod storage;
 
 pub use config::AppConfig;

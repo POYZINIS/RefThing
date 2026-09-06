@@ -226,6 +226,7 @@ fn error_frame(error: &AppError) -> String {
         AppError::BadRequest(_) => "bad_request",
         AppError::TooLarge => "too_large",
         AppError::UnsupportedMedia(_) => "unsupported_media",
+        AppError::Unauthorized => "unauthorized",
         AppError::Db(_) | AppError::Core(_) | AppError::Io(_) => "internal",
     };
     serde_json::json!({"type": "error", "code": code, "message": error.to_string()}).to_string()

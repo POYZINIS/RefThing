@@ -7,12 +7,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use refthing_core::db::boards;
+use refthing_core::pipeline::ResizePool;
 use refthing_core::storage::BlobStore;
 use refthing_core::{AppConfig, db};
 use refthing_server::dto::ops::{BatchOp, BatchRequest, ItemPatch};
 use refthing_server::events;
 use refthing_server::events::hub::ServerMsg;
-use refthing_server::jobs::{JobContext, JobQueue, PyramidStub};
+use refthing_server::jobs::{JobContext, JobQueue, PyramidJob};
 use refthing_server::state::AppState;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -34,7 +35,7 @@ struct TestApp {
 }
 
 /// Boots the full router against a tempdir database + blob store, with the
-/// pyramid stub worker running, on an ephemeral port.
+/// pyramid worker running, on an ephemeral port.
 async fn spawn_app() -> TestApp {
     let dir = tempfile::tempdir().expect("temp dir");
     let data_dir = dir.path().to_path_buf();
@@ -46,23 +47,28 @@ async fn spawn_app() -> TestApp {
     let pools = db::connect(&data_dir.join("refthing.db"))
         .await
         .expect("connect");
-    let blob_store = Arc::new(BlobStore::new(data_dir));
+    let blob_store = Arc::new(BlobStore::new(data_dir.clone()));
     let job_queue = JobQueue::new(pools.write.clone());
-    job_queue.register("pyramid", PyramidStub);
+    job_queue.register("pyramid", PyramidJob);
     let hub = events::BroadcastHub::new();
+    let resize_pool = Arc::new(ResizePool::new());
     let job_ctx = JobContext {
         pools: pools.clone(),
         blob_store: blob_store.clone(),
         hub: hub.clone(),
+        resize_pool: resize_pool.clone(),
+        deriv_root: data_dir.join("deriv"),
     };
     job_queue.spawn_workers(&job_ctx, 1);
 
     let app_state = AppState {
         config: Arc::new(config),
+        auth_token: Arc::from("test-token"),
         pools,
         blob_store,
         jobs: job_queue,
         hub,
+        resize_pool,
     };
     let app = refthing_server::router::build_router(app_state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

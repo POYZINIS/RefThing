@@ -21,6 +21,8 @@ pub enum AppError {
     TooLarge,
     #[error("unsupported media type: {0}")]
     UnsupportedMedia(String),
+    #[error("unauthorized")]
+    Unauthorized,
     #[error(transparent)]
     Db(#[from] sqlx::Error),
     #[error(transparent)]
@@ -50,6 +52,7 @@ impl AppError {
             Self::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             Self::TooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "too_large"),
             Self::UnsupportedMedia(_) => (StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_media"),
+            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Self::Db(_) | Self::Core(_) | Self::Io(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal")
             }

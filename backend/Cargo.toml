@@ -45,3 +45,13 @@ dashmap = "6"
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures-util = "0.3"
 async-trait = "0.1"
+image = { version = "0.25", default-features = false, features = [
+    "jpeg",
+    "png",
+    "webp",
+    "gif",
+    "bmp",
+] }
+fast_image_resize = "6.1" # default features; rayon feature stays OFF (own pool instead)
+webp = "0.3" # libwebp FFI — lossy WebP encode; image's encoder is lossless-only
+rayon = "1.12"

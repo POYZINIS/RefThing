@@ -14,7 +14,7 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     proxy: {
-      '/api': 'http://localhost:7171',
+      '/api': { target: 'http://localhost:7171', ws: true },
       '/blob': 'http://localhost:7171',
       '/ws': {
         target: 'ws://localhost:7171',

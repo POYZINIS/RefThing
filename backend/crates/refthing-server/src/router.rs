@@ -24,6 +24,7 @@ pub fn build_router(state: AppState) -> Router {
     // compression and a request timeout.
     let json_api = Router::new()
         .route("/api/health", get(health))
+        .merge(routes::auth::router())
         .merge(routes::boards::router())
         .merge(routes::items::router())
         .merge(routes::groups::router())
@@ -57,9 +58,21 @@ pub fn build_router(state: AppState) -> Router {
         .layer(CorsLayer::permissive())
 }
 
-async fn health() -> axum::Json<serde_json::Value> {
-    axum::Json(serde_json::json!({
+async fn health(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> crate::error::AppResult<axum::Json<serde_json::Value>> {
+    let (pending_jobs,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM jobs WHERE status = 'pending'")
+            .fetch_one(&state.pools.read)
+            .await?;
+    let (failed_jobs,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM jobs WHERE status = 'failed'")
+            .fetch_one(&state.pools.read)
+            .await?;
+    Ok(axum::Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
-    }))
+        "pending_jobs": pending_jobs,
+        "failed_jobs": failed_jobs,
+    })))
 }

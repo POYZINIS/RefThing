@@ -17,6 +17,7 @@
 //!
 //! axum 0.8 path syntax is `/{id}` (NOT `/:id`).
 
+pub mod auth;
 pub mod blobs;
 pub mod boards;
 pub mod groups;

@@ -15,13 +15,15 @@
 
 pub mod pyramid;
 
-pub use pyramid::PyramidStub;
+pub use pyramid::{PyramidJob, PyramidPayload};
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use refthing_core::db::Pools;
+use refthing_core::pipeline::ResizePool;
 use refthing_core::storage::BlobStore;
 use sqlx::{Row, SqlitePool, SqliteTransaction};
 use tokio::sync::Notify;
@@ -39,6 +41,10 @@ pub struct JobContext {
     pub pools: Pools,
     pub blob_store: Arc<BlobStore>,
     pub hub: BroadcastHub,
+    /// Dedicated rayon resize pool (Phase 3 pyramid pipeline).
+    pub resize_pool: Arc<ResizePool>,
+    /// `<data_dir>/deriv` — where derivative files land.
+    pub deriv_root: PathBuf,
 }
 
 /// A claimed job, handed to its [`JobHandler`].
@@ -299,6 +305,9 @@ mod tests {
             pools: pools.clone(),
             blob_store: Arc::new(BlobStore::new(std::path::PathBuf::from("unused"))),
             hub: BroadcastHub::new(),
+            resize_pool: Arc::new(ResizePool::new()),
+            // Never touched by these tests (no image payloads).
+            deriv_root: std::path::PathBuf::from("unused-deriv"),
         }
     }
 
@@ -453,12 +462,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pyramid_stub_marks_success() {
+    async fn pyramid_job_skips_non_image_mime() {
         let (_dir, pools) = temp_write_pool().await;
         let queue = JobQueue::new(pools.write.clone());
-        queue.register("pyramid", PyramidStub);
+        queue.register("pyramid", PyramidJob);
         let id = queue
-            .enqueue("pyramid", json!({"blob_hash": "ab", "mime": "image/png"}))
+            .enqueue(
+                "pyramid",
+                json!({
+                    "blob_hash": "ab".repeat(32),
+                    "mime": "application/octet-stream",
+                    "item_id": uuid::Uuid::now_v7(),
+                }),
+            )
             .await
             .expect("enqueue");
         assert!(
@@ -468,6 +484,13 @@ mod tests {
                 .expect("run")
         );
         assert_eq!(job_row(&pools.read, id).await.0, "done");
+
+        // No derivative rows are created for non-image payloads.
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM blob_derivatives")
+            .fetch_one(&pools.read)
+            .await
+            .expect("count");
+        assert_eq!(count, 0);
     }
 
     #[test]

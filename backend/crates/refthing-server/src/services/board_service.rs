@@ -5,9 +5,10 @@
 //! (mutate → [`events::append_event`] → the handler commits and broadcasts).
 //! Nothing here holds a transaction across non-DB work.
 //!
-//! The snapshot's per-blob `levels` map contains only `full` (the original)
-//! until Phase 3 lands `blob_derivatives`; [`snapshot_blobs`] is the single
-//! place to extend.
+//! The snapshot's per-blob `levels` map carries every `ready`
+//! `blob_derivatives` level (plus a `full` fallback from the blob's intrinsic
+//! dimensions for blobs whose pyramid job has not run yet);
+//! [`snapshot_blobs`] is the single place that map is built.
 
 use std::collections::HashMap;
 
@@ -115,9 +116,10 @@ async fn snapshot_item_tags(
     Ok(map)
 }
 
-/// Blobs referenced by the board's items. `levels` holds only `full` (the
-/// original pixels) until Phase 3's `blob_derivatives` adds scaled levels —
-/// extend the map here.
+/// Blobs referenced by the board's items. `levels` holds every `ready`
+/// `blob_derivatives` level (`thumb`/`small`/`medium`/`full`), falling back
+/// to a synthesized `full` from the blob's intrinsic dimensions when the
+/// pyramid job has not recorded rows yet.
 async fn snapshot_blobs(
     pool: &SqlitePool,
     board_id: Uuid,
@@ -132,15 +134,35 @@ async fn snapshot_blobs(
     .await
     .map_err(|error| core_err(&error))?;
 
+    // blob_hash → level → dims, one query for the whole board.
+    let derivative_rows: Vec<(String, String, Option<i64>, Option<i64>)> = sqlx::query_as(
+        "SELECT DISTINCT d.blob_hash, d.level, d.width, d.height \
+         FROM blob_derivatives d JOIN items i ON i.blob_id = d.blob_hash \
+         WHERE i.board_id = ? AND d.status = 'ready'",
+    )
+    .bind(board_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| core_err(&error))?;
+    let mut derivative_levels: HashMap<String, HashMap<String, BlobLevel>> = HashMap::new();
+    for (hash, level, width, height) in derivative_rows {
+        if let (Some(width), Some(height)) = (width, height) {
+            derivative_levels
+                .entry(hash)
+                .or_default()
+                .insert(level, BlobLevel { width, height });
+        }
+    }
+
     Ok(blobs
         .into_iter()
         .map(|blob| {
-            let levels = match (blob.width, blob.height) {
-                (Some(width), Some(height)) => {
-                    HashMap::from([("full".to_string(), BlobLevel { width, height })])
-                }
-                _ => HashMap::new(),
-            };
+            let mut levels = derivative_levels.remove(&blob.hash).unwrap_or_default();
+            if !levels.contains_key("full")
+                && let (Some(width), Some(height)) = (blob.width, blob.height)
+            {
+                levels.insert("full".to_string(), BlobLevel { width, height });
+            }
             dto::BlobInfo {
                 hash: blob.hash,
                 original_filename: blob.original_filename,
@@ -197,12 +219,19 @@ pub struct GroupPatch {
     pub collapsed: Option<bool>,
     #[serde(deserialize_with = "services::double_option")]
     pub parent_group_id: Option<Option<Uuid>>,
+    #[serde(deserialize_with = "services::double_option")]
+    pub bg_color: Option<Option<String>>,
+    pub opacity: Option<f64>,
 }
 
 impl GroupPatch {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.name.is_none() && self.collapsed.is_none() && self.parent_group_id.is_none()
+        self.name.is_none()
+            && self.collapsed.is_none()
+            && self.parent_group_id.is_none()
+            && self.bg_color.is_none()
+            && self.opacity.is_none()
     }
 }
 
@@ -374,11 +403,16 @@ pub async fn update_group(
     // The COALESCE update doubles as the existence check: it matches the row
     // even when every scalar field is absent (parent-only patch).
     let result = sqlx::query(
-        "UPDATE groups SET name = COALESCE(?, name), collapsed = COALESCE(?, collapsed) \
+        "UPDATE groups SET name = COALESCE(?, name), collapsed = COALESCE(?, collapsed), \
+            bg_color = CASE WHEN ? IS NULL THEN bg_color ELSE ? END, \
+            opacity = COALESCE(?, opacity) \
          WHERE id = ? AND board_id = ?",
     )
     .bind(patch.name.as_deref())
     .bind(patch.collapsed)
+    .bind(patch.bg_color.as_ref().map(|value| value.as_deref()))
+    .bind(patch.bg_color.as_ref().map(|value| value.as_deref()))
+    .bind(patch.opacity)
     .bind(group_id)
     .bind(board_id)
     .execute(&mut **tx)
