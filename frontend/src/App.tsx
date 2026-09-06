@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { type ComponentType, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  BoardSocket,
   createSession,
   fetchHealth,
   type HealthStatus,
   type ItemPatch,
   submitBatch,
 } from '@/api/client';
+import { BoardSync } from '@/api/ws';
 import { BoardCanvas, type ViewportState } from '@/canvas/BoardCanvas';
 import { DrawingOverlay } from '@/components/DrawingOverlay';
 import { NoteOverlay } from '@/components/NoteOverlay';
@@ -18,7 +18,57 @@ type HealthState =
   | { kind: 'ok'; health: HealthStatus }
   | { kind: 'error'; message: string };
 
+// Dev-only components live in src/dev/ and may land after this file; resolve
+// them via glob so the build works whether or not they exist yet.
+type DevComponentProps = { count?: number };
+type DevComponent = ComponentType<DevComponentProps>;
+type DevModule = Record<string, DevComponent | undefined>;
+
+function lazyDevComponent(
+  loader: (() => Promise<DevModule>) | undefined,
+  exportName: string,
+): ComponentType<DevComponentProps> | null {
+  if (!loader) return null;
+  return lazy(async () => {
+    const module = await loader();
+    const component = module.default ?? module[exportName];
+    if (!component) throw new Error(`dev module loaded but has no ${exportName} export`);
+    return { default: component };
+  });
+}
+
+const LazyDevBoard = lazyDevComponent(
+  import.meta.glob<DevModule>('/src/dev/DevBoard.tsx')['/src/dev/DevBoard.tsx'],
+  'DevBoard',
+);
+const LazyFpsHud = lazyDevComponent(
+  import.meta.glob<DevModule>('/src/dev/FpsHud.tsx')['/src/dev/FpsHud.tsx'],
+  'FpsHud',
+);
+
 export default function App() {
+  const devBoardCount = import.meta.env.DEV ? parseDevBoardCount(window.location.pathname) : null;
+  if (devBoardCount !== null) {
+    return (
+      <Suspense fallback={<div className="canvas-status">Loading dev board…</div>}>
+        {LazyDevBoard ? (
+          <LazyDevBoard count={devBoardCount} />
+        ) : (
+          <div className="canvas-status">Dev board component not available in this build.</div>
+        )}
+      </Suspense>
+    );
+  }
+  return <BoardApp />;
+}
+
+function parseDevBoardCount(pathname: string): number | null {
+  const match = /^\/dev\/board\/(\d+)/.exec(pathname);
+  const count = Number.parseInt(match?.[1] ?? '', 10);
+  return Number.isFinite(count) ? count : null;
+}
+
+function BoardApp() {
   const canvasHost = useRef<HTMLDivElement>(null);
   const boardCanvas = useRef<BoardCanvas | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -31,7 +81,7 @@ export default function App() {
   const [grayscale, setGrayscale] = useState(false);
   const [drawing, setDrawing] = useState(false);
   const [sampledColor, setSampledColor] = useState<string | null>(null);
-  const socket = useRef<BoardSocket | null>(null);
+  const socket = useRef<BoardSync | null>(null);
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clientId = useRef(crypto.randomUUID());
   const commitItemChange = useRef<(itemId: string, patch: ItemPatch) => void>(() => undefined);
@@ -52,14 +102,17 @@ export default function App() {
   const saveNote = useBoardStore((state) => state.saveNote);
   const groupItems = useBoardStore((state) => state.groupItems);
   const ungroupItems = useBoardStore((state) => state.ungroupItems);
-  const snapshotRef = useRef(snapshot);
+  const applyOps = useBoardStore((state) => state.applyOps);
 
-  const selectedItem = snapshot?.items.find((item) => item.id === selectedItemId) ?? null;
-  const renderedItems =
-    snapshot?.items.map((item) =>
-      item.id === selectedItemId ? { ...item, ...previewPatch } : item,
-    ) ?? [];
-  snapshotRef.current = snapshot;
+  const snapshotItems = snapshot?.items;
+  const selectedItem = snapshotItems?.find((item) => item.id === selectedItemId) ?? null;
+  const renderedItems = useMemo(
+    () =>
+      snapshotItems?.map((item) =>
+        item.id === selectedItemId ? { ...item, ...previewPatch } : item,
+      ) ?? [],
+    [snapshotItems, selectedItemId, previewPatch],
+  );
 
   useEffect(() => {
     void createSession().then(() => loadBoards());
@@ -75,18 +128,17 @@ export default function App() {
 
   useEffect(() => {
     if (!activeBoardId) return;
-    const boardSocket = new BoardSocket(activeBoardId, snapshotRef.current?.seq ?? 0, (event) => {
-      if (event.type === 'diff' || event.type === 'resync' || event.type === 'job') {
-        boardCanvas.current?.clearTextureFailures();
-        void openBoard(activeBoardId);
-      }
+    const sync = new BoardSync({
+      boardId: activeBoardId,
+      clientId: clientId.current,
+      onPosterReady: () => boardCanvas.current?.clearTextureFailures(),
     });
-    socket.current = boardSocket;
+    socket.current = sync;
     return () => {
-      boardSocket.close();
-      if (socket.current === boardSocket) socket.current = null;
+      sync.close();
+      if (socket.current === sync) socket.current = null;
     };
-  }, [activeBoardId, openBoard]);
+  }, [activeBoardId]);
 
   useEffect(() => {
     if (!canvasHost.current) return;
@@ -157,21 +209,25 @@ export default function App() {
 
   commitItemChanges.current = (changes) => {
     if (!activeBoardId || !snapshot) return;
+    const ops = changes.map(({ itemId, patch }) => ({
+      kind: 'update' as const,
+      op_id: crypto.randomUUID(),
+      item_id: itemId,
+      fields: patch,
+    }));
     const request = {
       base_seq: snapshot.seq,
       client_id: clientId.current,
-      ops: changes.map(({ itemId, patch }) => ({
-        kind: 'update' as const,
-        op_id: crypto.randomUUID(),
-        item_id: itemId,
-        fields: patch,
-      })),
+      ops,
     };
-    if (!socket.current?.send(request)) {
-      void submitBatch(activeBoardId, request)
-        .then(() => openBoard(activeBoardId))
-        .catch(() => openBoard(activeBoardId));
+    if (socket.current?.send(request)) {
+      // Optimistic apply; the echo diff only advances our seq cursor.
+      applyOps(ops);
+      return;
     }
+    void submitBatch(activeBoardId, request)
+      .then((result) => applyOps(ops, result.seq))
+      .catch(() => openBoard(activeBoardId));
   };
 
   async function submitBoard(event: React.FormEvent<HTMLFormElement>) {
@@ -358,6 +414,11 @@ export default function App() {
           </div>
         )}
       </main>
+      {import.meta.env.DEV && LazyFpsHud && (
+        <Suspense fallback={null}>
+          <LazyFpsHud />
+        </Suspense>
+      )}
     </div>
   );
 }

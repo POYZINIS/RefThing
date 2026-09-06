@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import {
+  type BatchOp,
+  type BoardEvent,
   type BoardSnapshot,
   type BoardSummary,
   createBoard,
@@ -29,6 +31,10 @@ type BoardState = {
   saveDrawing: (noteId: string, strokes: Array<Array<{ x: number; y: number }>>) => Promise<void>;
   groupItems: (itemIds: string[]) => Promise<void>;
   ungroupItems: (itemIds: string[]) => Promise<void>;
+  applySnapshot: (snapshot: BoardSnapshot) => void;
+  applyOps: (ops: BatchOp[], seq?: number) => void;
+  applyChanges: (seq: number, events: BoardEvent[]) => void;
+  markPosterReady: (itemId: string, sizes: number[]) => void;
 };
 
 export const useBoardStore = create<BoardState>((set, get) => ({
@@ -61,7 +67,8 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     set({ loading: true, error: null, activeBoardId });
     try {
       const snapshot = await fetchBoard(activeBoardId);
-      set({ snapshot, loading: false });
+      get().applySnapshot(snapshot);
+      set({ loading: false });
     } catch (error: unknown) {
       set({
         loading: false,
@@ -166,5 +173,116 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       ops: [{ kind: 'set_group', op_id: crypto.randomUUID(), item_ids: itemIds, group_id: null }],
     });
     await get().openBoard(boardId);
+  },
+
+  applySnapshot(snapshot) {
+    set({ snapshot });
+  },
+
+  applyOps(ops, seq) {
+    set((state) => {
+      const snapshot = state.snapshot;
+      if (!snapshot) return state;
+      const items = new Map(snapshot.items.map((item) => [item.id, item]));
+      let itemTags = snapshot.item_tags;
+      let changed = false;
+      for (const op of ops) {
+        switch (op.kind) {
+          case 'move':
+            for (const itemId of op.item_ids) {
+              const item = items.get(itemId);
+              if (item) {
+                items.set(itemId, { ...item, x: item.x + op.dx, y: item.y + op.dy });
+                changed = true;
+              }
+            }
+            break;
+          case 'update': {
+            const item = items.get(op.item_id);
+            if (!item) break;
+            const { add_tag_ids: addedTags, remove_tag_ids: removedTags, ...fields } = op.fields;
+            items.set(op.item_id, { ...item, ...fields });
+            changed = true;
+            if ((addedTags?.length ?? 0) > 0 || (removedTags?.length ?? 0) > 0) {
+              const nextTags = new Set(itemTags[op.item_id] ?? []);
+              for (const tagId of removedTags ?? []) nextTags.delete(tagId);
+              for (const tagId of addedTags ?? []) nextTags.add(tagId);
+              itemTags = { ...itemTags, [op.item_id]: [...nextTags] };
+            }
+            break;
+          }
+          case 'delete':
+            for (const itemId of op.item_ids) {
+              changed = items.delete(itemId) || changed;
+            }
+            break;
+          case 'set_group':
+            for (const itemId of op.item_ids) {
+              const item = items.get(itemId);
+              if (item) {
+                items.set(itemId, { ...item, group_id: op.group_id });
+                changed = true;
+              }
+            }
+            break;
+          case 'set_z':
+            op.order.forEach((itemId, index) => {
+              const item = items.get(itemId);
+              if (item) {
+                items.set(itemId, { ...item, z_index: index });
+                changed = true;
+              }
+            });
+            break;
+          case 'create':
+            items.set(op.item.id, op.item);
+            changed = true;
+            break;
+        }
+      }
+      if (!changed) {
+        return seq === undefined || seq === snapshot.seq
+          ? state
+          : { snapshot: { ...snapshot, seq } };
+      }
+      // Snapshot items stay in paint order (ascending z_index, stable).
+      const nextItems = [...items.values()].sort((left, right) => left.z_index - right.z_index);
+      return {
+        snapshot: { ...snapshot, items: nextItems, item_tags: itemTags, seq: seq ?? snapshot.seq },
+      };
+    });
+  },
+
+  applyChanges(seq, events) {
+    get().applyOps(
+      events.flatMap((event) => event.ops),
+      seq,
+    );
+  },
+
+  markPosterReady(itemId, sizes) {
+    set((state) => {
+      const snapshot = state.snapshot;
+      if (!snapshot || sizes.length === 0) return state;
+      const item = snapshot.items.find((candidate) => candidate.id === itemId);
+      const hash = item?.blob_hash;
+      if (!hash) return state;
+      let touched = false;
+      const blobs = snapshot.blobs.map((blob) => {
+        if (blob.hash !== hash) return blob;
+        touched = true;
+        const levels = { ...blob.levels };
+        const full = levels.full;
+        for (const size of sizes) {
+          const name = size <= 64 ? 'thumb' : size <= 256 ? 'small' : 'medium';
+          levels[name] = {
+            width: size,
+            height: full && full.width > 0 ? Math.round((size * full.height) / full.width) : size,
+          };
+        }
+        return { ...blob, levels };
+      });
+      return touched ? { snapshot: { ...snapshot, blobs } } : state;
+    });
   },
 }));

@@ -96,15 +96,44 @@ export interface IngestResponse {
   }>;
 }
 
-export type ItemPatch = Partial<Pick<Item, 'x' | 'y' | 'width' | 'height' | 'rotation'>>;
+export type ItemPatch = Partial<
+  Pick<Item, 'x' | 'y' | 'width' | 'height' | 'rotation' | 'z_index' | 'group_id' | 'metadata'>
+> & {
+  add_tag_ids?: string[];
+  remove_tag_ids?: string[];
+};
+
+/**
+ * Server-side batch op variants (`kind` is the serde tag, snake_case — see
+ * docs/api.md). `create` only ever appears in `/changes` event replays;
+ * clients never send it.
+ */
+export type BatchOp =
+  | { kind: 'move'; op_id: string; item_ids: string[]; dx: number; dy: number }
+  | { kind: 'update'; op_id: string; item_id: string; fields: ItemPatch }
+  | { kind: 'delete'; op_id: string; item_ids: string[] }
+  | { kind: 'set_group'; op_id: string; item_ids: string[]; group_id: string | null }
+  | { kind: 'set_z'; op_id: string; order: string[] }
+  | { kind: 'create'; item: Item };
+
+export type BatchRequestOp = Exclude<BatchOp, { kind: 'create' }>;
 
 export interface BatchRequest {
   base_seq: number;
   client_id: string;
-  ops: Array<
-    | { kind: 'update'; op_id: string; item_id: string; fields: ItemPatch }
-    | { kind: 'set_group'; op_id: string; item_ids: string[]; group_id: string | null }
-  >;
+  ops: BatchRequestOp[];
+}
+
+export interface BoardEvent {
+  seq: number;
+  origin: string | null;
+  ops: BatchOp[];
+  created_at: number;
+}
+
+export interface ChangesResponse {
+  seq: number;
+  events: BoardEvent[];
 }
 
 async function request<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
@@ -217,9 +246,13 @@ export function submitBatch(boardId: string, requestBody: BatchRequest): Promise
   });
 }
 
+export function fetchChanges(boardId: string, since: number): Promise<ChangesResponse> {
+  return request<ChangesResponse>(`/api/boards/${boardId}/changes?since=${since}`);
+}
+
 export type BoardSocketEvent =
-  | { type: 'hello'; seq: number }
-  | { type: 'diff'; seq: number }
+  | { type: 'hello'; board_id: string; seq: number; server_time: number }
+  | { type: 'diff'; board_id: string; seq: number; origin: string | null; ops: BatchOp[] }
   | { type: 'resync'; seq: number }
   | { type: 'job'; kind: string; payload: unknown }
   | { type: 'error'; code: string; message: string };
@@ -230,11 +263,12 @@ export class BoardSocket {
   constructor(
     boardId: string,
     since: number,
+    clientId: string,
     private readonly onEvent: (event: BoardSocketEvent) => void,
   ) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     this.socket = new WebSocket(
-      `${protocol}//${window.location.host}/api/boards/${boardId}/ws?client_id=${crypto.randomUUID()}&since=${since}`,
+      `${protocol}//${window.location.host}/api/boards/${boardId}/ws?client_id=${clientId}&since=${since}`,
     );
     this.socket.addEventListener('message', (message) => {
       try {
