@@ -50,8 +50,11 @@ type SelectionOverlayProps = {
   onChromePress?: (event: PointerEvent) => void;
   /** A click (no drag) on the body: re-select / Shift-toggle the node under
    *  the pointer, exactly like a click on bare canvas would. */
-  onBodyClick?: (event: PointerEvent) => void;
+  onBodyClick?: (event: MouseEvent) => void;
   editing?: boolean;
+  /** §6 RULE 3: a locked group — outline only; move, resize, rotate and flip
+   *  are all rejected. Clicks, double-click (drill in) and the menu remain. */
+  locked?: boolean;
   /** Forwarded double-click (the shell covers selected nodes). */
   onDoubleClick?: (event: React.MouseEvent) => void;
 };
@@ -129,6 +132,7 @@ export function SelectionOverlay({
   onChromePress,
   onBodyClick,
   editing,
+  locked = false,
   onDoubleClick,
 }: SelectionOverlayProps) {
   const box = selectionBox(nodes);
@@ -136,12 +140,14 @@ export function SelectionOverlay({
   const [ctrlHeld, setCtrlHeld] = useState(false);
   const [dragMode, setDragMode] = useState<Gesture['mode'] | null>(null);
   const active = useRef<ActiveGesture | null>(null);
+  const lockedPress = useRef<Point | null>(null);
   const element = useRef<HTMLDivElement>(null);
   // Latest props for the window listeners (registered once).
   const latest = useRef({ viewport, onPreview, onCommit, onBodyClick });
   latest.current = { viewport, onPreview, onCommit, onBodyClick };
 
-  const collapsed = box ? zonesCollapsed(box, viewport.zoom, MIN_SCREEN_SIZE_PX) : false;
+  const collapsed =
+    locked || (box ? zonesCollapsed(box, viewport.zoom, MIN_SCREEN_SIZE_PX) : false);
   const freeTransform = nodes.length > 0 && nodes.every((node) => node.capabilities.freeTransform);
 
   const zoneAt = (clientX: number, clientY: number): Zone | null => {
@@ -171,6 +177,11 @@ export function SelectionOverlay({
     const zone = zoneAt(event.clientX, event.clientY);
     if (zone === null) {
       onOutsidePress?.(native);
+      return;
+    }
+    // Locked: no gesture at all — the click itself is handled on release.
+    if (locked) {
+      lockedPress.current = { x: event.clientX, y: event.clientY };
       return;
     }
     const pointer = worldAt(event.clientX, event.clientY);
@@ -327,6 +338,7 @@ export function SelectionOverlay({
     if (dragMode === 'move' || dragMode === 'aspect-reset' || dragMode === 'flip')
       return 'grabbing';
     if (dragMode === 'resize' && activeZone) return zoneCursor(activeZone, box.rotation);
+    if (locked) return 'default';
     if (hovered === 'body' || hovered === null) return ctrlHeld ? ROTATE_CURSOR : 'grab';
     return ctrlHeld ? ROTATE_CURSOR : zoneCursor(hovered, box.rotation);
   })();
@@ -375,6 +387,16 @@ export function SelectionOverlay({
       }}
       onPointerLeave={() => {
         if (!active.current) setHovered(null);
+      }}
+      onPointerUp={(event) => {
+        // Locked: no gesture ran, but a click (under the 3px epsilon) still
+        // selects / Shift-toggles like anywhere else.
+        const press = lockedPress.current;
+        lockedPress.current = null;
+        if (!locked || !press || event.button !== 0) return;
+        if (Math.hypot(event.clientX - press.x, event.clientY - press.y) < CLICK_EPSILON_PX) {
+          onBodyClick?.(event.nativeEvent);
+        }
       }}
       onDoubleClick={editing ? undefined : onDoubleClick}
       onContextMenu={(event) => event.preventDefault()}

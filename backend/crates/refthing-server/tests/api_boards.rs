@@ -732,6 +732,54 @@ async fn item_metadata_patch_merges() {
     );
 }
 
+/// §6 RULE 3: locking is a batch op (so it rides undo), round-trips through
+/// the snapshot, and rejects unknown groups without bumping seq.
+#[tokio::test]
+async fn group_lock_is_a_batch_op() {
+    let app = spawn_app().await;
+    let board = create_board(&app, "locks").await;
+    let board_id = id_of(&board);
+    let group = post_group(&app, board_id, json!({"name": "g"})).await;
+    let group_id = id_of(&group["group"]).to_string();
+    let batch = |seq: i64, target: &str, locked: bool| {
+        let url = format!("{}/api/boards/{board_id}/items/batch", app.base);
+        let body = json!({
+            "base_seq": seq,
+            "client_id": "t",
+            "ops": [{"kind": "set_group_locked", "op_id": Uuid::now_v7(),
+                     "group_id": target, "locked": locked}],
+        });
+        async move {
+            client()
+                .post(url)
+                .json(&body)
+                .send()
+                .await
+                .expect("batch")
+                .json::<Value>()
+                .await
+                .expect("json")
+        }
+    };
+    let seq = group["seq"].as_i64().expect("seq");
+    let locked = batch(seq, &group_id, true).await;
+    assert_eq!(locked["rejected"], json!([]));
+    let snapshot = get_json(&app, &format!("/api/boards/{board_id}")).await;
+    assert_eq!(snapshot["groups"][0]["locked"], true);
+
+    let missing = batch(
+        locked["seq"].as_i64().expect("seq"),
+        &Uuid::now_v7().to_string(),
+        true,
+    )
+    .await;
+    assert_eq!(missing["rejected"][0]["reason"], "group_not_found");
+    assert_eq!(
+        missing["seq"], locked["seq"],
+        "an all-rejected batch bumps nothing"
+    );
+}
+
 #[tokio::test]
 async fn tag_crud() {
     let app = spawn_app().await;

@@ -36,7 +36,9 @@ import {
   duplicateOps,
   fitViewport,
   groupOps,
+  lockOps,
   restackOps,
+  selectedGroupIds,
   topZ,
   ungroupOps,
   unionRect,
@@ -111,6 +113,12 @@ function BoardApp() {
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   // The note currently in text-edit mode (§4 RULE 2 — double-click only).
   const [noteEditingId, setNoteEditingId] = useState<string | null>(null);
+  // §6 RULE 2: the group drilled into by double-click — its members select
+  // and transform individually until Escape or an empty-canvas click.
+  const [drillGroupId, setDrillGroupId] = useState<string | null>(null);
+  const drillRef = useRef(drillGroupId);
+  drillRef.current = drillGroupId;
+  const groupOfRef = useRef<(nodeId: string) => string | null>(() => null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   // Live transform-shell preview (nodeId → patch). Feeds the canvas too: the
   // shell never mutates canvas nodes itself.
@@ -325,6 +333,8 @@ function BoardApp() {
       // trails the canvas while easing.
       onRenderedViewportChange: (rendered) => flushSync(() => setOverlayViewport(rendered)),
       onSelectionChange: (nodeId) => {
+        // Selecting outside the drilled group leaves it.
+        if (!nodeId || groupOfRef.current(nodeId) !== drillRef.current) setDrillGroupId(null);
         setSelectedNodeIds(nodeId ? [nodeId] : []);
         setNoteEditingId(null);
         setPreviewPatches({});
@@ -346,6 +356,7 @@ function BoardApp() {
         setDragPreview({});
       },
       onClearSelection: () => {
+        setDrillGroupId(null);
         setSelectedNodeIds([]);
         setNoteEditingId(null);
         setPreviewPatches({});
@@ -417,6 +428,12 @@ function BoardApp() {
   // Phase 5: animated GIF playback. The pyramid pipeline only makes a
   // first-frame poster, so the canvas animates GIF blobs from the original
   // bytes. Only blobs whose mime type is `image/gif` participate.
+  const lockedGroupIds = useMemo(
+    () => new Set(snapshot?.groups.filter((group) => group.locked).map((group) => group.id) ?? []),
+    [snapshot?.groups],
+  );
+  groupOfRef.current = (nodeId) =>
+    snapshot?.items.find((item) => item.id === nodeId)?.group_id ?? null;
   const gifHashes = useMemo(
     () =>
       new Set(
@@ -429,8 +446,12 @@ function BoardApp() {
   useEffect(() => {
     // Notes go in as geometry-only nodes (hit-testing, box select); they
     // keep rendering through the DOM NoteOverlay.
-    boardCanvas.current?.update(renderedItems, gifHashes, canvasNotes);
-  }, [renderedItems, gifHashes, canvasNotes]);
+    boardCanvas.current?.update(renderedItems, gifHashes, canvasNotes, lockedGroupIds);
+  }, [renderedItems, gifHashes, canvasNotes, lockedGroupIds]);
+
+  useEffect(() => {
+    boardCanvas.current?.setDrillGroup(drillGroupId);
+  }, [drillGroupId]);
 
   commitItemChange.current = (itemId, patch) => {
     commitItemChanges.current([{ id: itemId, kind: 'item', patch }]);
@@ -447,10 +468,11 @@ function BoardApp() {
       .map((item) => {
         const preview = previewPatches[item.id] ?? dragPreview[item.id];
         const merged = itemWithPatch(item, preview);
-        return itemToNode(merged, gifHashes.has(item.blob_hash));
+        const locked = item.group_id !== null && lockedGroupIds.has(item.group_id);
+        return itemToNode(merged, gifHashes.has(item.blob_hash), locked);
       });
     return [...itemNodes, ...renderedNotes.map(noteToNode)];
-  }, [snapshotItems, renderedNotes, previewPatches, dragPreview, gifHashes]);
+  }, [snapshotItems, renderedNotes, previewPatches, dragPreview, gifHashes, lockedGroupIds]);
   const boardNodesById = useMemo(
     () => new Map(boardNodes.map((node) => [node.id, node])),
     [boardNodes],
@@ -466,7 +488,9 @@ function BoardApp() {
   // frames and transforms the selection plus every group-mate.
   const shellNodes = useMemo(() => {
     const groupIds = new Set(
-      selectedNodes.map((node) => node.groupId).filter((id): id is string => id !== null),
+      selectedNodes
+        .map((node) => node.groupId)
+        .filter((id): id is string => id !== null && id !== drillGroupId),
     );
     if (groupIds.size === 0) return selectedNodes;
     const selectedIdSet = new Set(selectedNodeIds);
@@ -474,7 +498,9 @@ function BoardApp() {
       (node) => node.groupId && groupIds.has(node.groupId) && !selectedIdSet.has(node.id),
     );
     return [...selectedNodes, ...mates];
-  }, [selectedNodes, selectedNodeIds, boardNodes]);
+  }, [selectedNodes, selectedNodeIds, boardNodes, drillGroupId]);
+  // §6 RULE 3: a locked group at group level (not drilled into) is frozen.
+  const shellLocked = shellNodes.some((node) => node.locked && node.groupId !== drillGroupId);
 
   // Send a batch (WS first, REST fallback) + optimistic local apply. Shared
   // by fresh commands and undo/redo replays.
@@ -617,6 +643,12 @@ function BoardApp() {
 
   const clearSelectionRef = useRef<() => void>(() => undefined);
   clearSelectionRef.current = () => {
+    // §6 RULE 2: Escape first steps out of a drilled group, back to
+    // group-level selection; a second Escape deselects.
+    if (drillGroupId) {
+      setDrillGroupId(null);
+      return;
+    }
     setSelectedNodeIds([]);
     setNoteEditingId(null);
     setPreviewPatches({});
@@ -642,9 +674,10 @@ function BoardApp() {
   // Every board action, shared by the keyboard map and the context menu so a
   // shortcut and its menu entry can never drift apart.
   const selectedItemIds = selectedNodeIds.filter((id) => !noteIds.has(id));
-  const selectionGrouped = snapshot?.items.some(
-    (item) => selectedItemIds.includes(item.id) && item.group_id !== null,
-  );
+  const selectionGroupIds = snapshot ? selectedGroupIds(snapshot, selectedNodeIds) : [];
+  const selectionGrouped = selectionGroupIds.length > 0;
+  const selectionLocked =
+    selectionGrouped && selectionGroupIds.every((groupId) => lockedGroupIds.has(groupId));
   const actions = {
     escape: () => clearSelectionRef.current(),
     delete: () => deleteSelectionRef.current(),
@@ -699,6 +732,14 @@ function BoardApp() {
         .sort()
         .join(',')}`;
       commitNodeChanges.current(changes, 'Nudge', key);
+    },
+    lock: (locked: boolean) => {
+      if (snapshot) {
+        commitBoardOps.current(
+          lockOps(snapshot, selectedNodeIds, locked),
+          locked ? 'Lock group' : 'Unlock group',
+        );
+      }
     },
     setOpacity: (opacity: number) => {
       const changes: NodeChange[] = shellNodes.map((node) => ({
@@ -761,6 +802,13 @@ function BoardApp() {
     }
     const node = boardNodesById.get(nodeId);
     if (!node) return;
+    // §6 RULE 2: double-click on a group drills in and selects the child
+    // under the cursor (locked or not — drilling never alters the group).
+    if (node.groupId && node.groupId !== drillGroupId) {
+      setDrillGroupId(node.groupId);
+      setSelectedNodeIds([nodeId]);
+      return;
+    }
     if (zoomReturn.current?.nodeId === nodeId) {
       canvas.flyTo(zoomReturn.current.viewport);
       zoomReturn.current = null;
@@ -814,6 +862,7 @@ function BoardApp() {
       boardId: activeBoardId,
       selection: selectedNodeIds,
       editing: noteEditingId,
+      drillGroupId,
       viewport: overlayViewport,
       targetViewport: viewport,
       nodes: boardNodes.map(({ id, kind, x, y, width, height, rotation, zIndex }) => ({
@@ -829,6 +878,7 @@ function BoardApp() {
       notes: snapshot?.notes.map((note) => ({ id: note.id, text: noteText(note.content_json) })),
       groups: snapshot?.groups.map((group) => ({
         id: group.id,
+        locked: group.locked,
         members: snapshot.items.filter((item) => item.group_id === group.id).map((i) => i.id),
       })),
       undoDepth: undoStack.current.length,
@@ -842,6 +892,7 @@ function BoardApp() {
   useEffect(() => {
     undoStack.current = [];
     redoStack.current = [];
+    setDrillGroupId(null);
   }, [activeBoardId]);
 
   async function submitBoard(event: React.FormEvent<HTMLFormElement>) {
@@ -1086,6 +1137,7 @@ function BoardApp() {
             nodes={shellNodes}
             viewport={overlayViewport}
             editing={noteEditing}
+            locked={shellLocked}
             onDoubleClick={(event) =>
               doubleClickRef.current(
                 boardCanvas.current?.nodeIdAt(event.clientX, event.clientY) ?? null,
@@ -1144,6 +1196,13 @@ function BoardApp() {
                         action: () => actions.setOpacity(value),
                       })),
                     },
+                    ...(selectionGrouped
+                      ? [
+                          selectionLocked
+                            ? { label: 'Unlock', action: () => actions.lock(false) }
+                            : { label: 'Lock', action: () => actions.lock(true) },
+                        ]
+                      : []),
                     { label: 'Bring to Front', action: actions.bringToFront },
                     { label: 'Send to Back', action: actions.sendToBack },
                     { label: 'Delete', shortcut: 'Del', action: actions.delete },

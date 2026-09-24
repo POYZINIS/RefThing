@@ -61,6 +61,8 @@ export interface Group {
   bg_color: string | null;
   opacity: number;
   created_at: number;
+  /** §6 RULE 3: no group-level transforms while locked. */
+  locked: boolean;
 }
 
 export interface BlobInfo {
@@ -137,6 +139,7 @@ export type BatchOp =
   | { kind: 'delete_notes'; op_id: string; note_ids: string[] }
   | { kind: 'restore_group'; op_id: string; group: Group }
   | { kind: 'remove_group'; op_id: string; group_id: string }
+  | { kind: 'set_group_locked'; op_id: string; group_id: string; locked: boolean }
   | { kind: 'create'; item: Item }
   | { kind: 'create_note'; note: Note }
   | { kind: 'update_note'; note: Note }

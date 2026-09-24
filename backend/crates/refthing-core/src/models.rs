@@ -43,6 +43,8 @@ pub struct Group {
     pub bg_color: Option<String>,
     pub opacity: f64,
     pub created_at: DateTime<Utc>,
+    /// §6 RULE 3: no group-level transforms while locked.
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

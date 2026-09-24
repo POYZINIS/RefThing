@@ -4,7 +4,11 @@ import { nodeKindRegistry } from './registry';
 import { type NodePatch, type NoteNode, nodeGeometry, type SpriteNode } from './types';
 
 /** Item → node. `isGif` comes from the blob's MIME (image/gif), not the item. */
-export function itemToNode(item: Item & { blob_hash: string }, isGif: boolean): SpriteNode {
+export function itemToNode(
+  item: Item & { blob_hash: string },
+  isGif: boolean,
+  locked = false,
+): SpriteNode {
   const kind = isGif ? 'gif' : 'image';
   return {
     id: item.id,
@@ -19,6 +23,7 @@ export function itemToNode(item: Item & { blob_hash: string }, isGif: boolean): 
     opacity: typeof item.metadata.opacity === 'number' ? item.metadata.opacity : 1,
     zIndex: item.z_index,
     groupId: item.group_id,
+    locked,
     blobHash: item.blob_hash,
     capabilities: nodeKindRegistry[kind].capabilities,
     ...nodeGeometry,
@@ -41,6 +46,7 @@ export function noteToNode(note: Note): NoteNode {
     opacity: note.opacity,
     zIndex: note.z_index,
     groupId: null,
+    locked: false,
     capabilities: nodeKindRegistry.note.capabilities,
     ...nodeGeometry,
   };

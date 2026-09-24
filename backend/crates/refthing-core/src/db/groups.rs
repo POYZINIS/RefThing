@@ -22,7 +22,7 @@ pub async fn create(
     sqlx::query_as!(
         Group,
         "INSERT INTO groups (id, board_id, parent_group_id, name) VALUES (?, ?, ?, ?) \
-             RETURNING id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", parent_group_id AS \"parent_group_id: Uuid\", name AS \"name!\", collapsed AS \"collapsed: bool\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\"",
+             RETURNING id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", parent_group_id AS \"parent_group_id: Uuid\", name AS \"name!\", collapsed AS \"collapsed: bool\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", locked AS \"locked: bool\"",
         id,
         board_id,
         parent_group_id,
@@ -37,7 +37,7 @@ pub async fn create(
 pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<Group>, CoreError> {
     sqlx::query_as!(
         Group,
-        "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", parent_group_id AS \"parent_group_id: Uuid\", name AS \"name!\", collapsed AS \"collapsed: bool\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\" FROM groups WHERE id = ?",
+        "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", parent_group_id AS \"parent_group_id: Uuid\", name AS \"name!\", collapsed AS \"collapsed: bool\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", locked AS \"locked: bool\" FROM groups WHERE id = ?",
         id,
     )
     .fetch_optional(pool)
@@ -52,7 +52,7 @@ pub async fn list_by_board(
 ) -> Result<Vec<Group>, CoreError> {
     sqlx::query_as!(
         Group,
-        "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", parent_group_id AS \"parent_group_id: Uuid\", name AS \"name!\", collapsed AS \"collapsed: bool\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\" FROM groups WHERE board_id = ? ORDER BY name COLLATE NOCASE, id",
+        "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", parent_group_id AS \"parent_group_id: Uuid\", name AS \"name!\", collapsed AS \"collapsed: bool\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", locked AS \"locked: bool\" FROM groups WHERE board_id = ? ORDER BY name COLLATE NOCASE, id",
         board_id,
     )
     .fetch_all(executor)

@@ -179,6 +179,14 @@ export function prepareCommand(
         groups.delete(group.id);
         break;
       }
+      case 'set_group_locked': {
+        const group = groups.get(op.group_id);
+        if (!group) throw new Error('This group no longer exists');
+        if (group.locked === op.locked) continue;
+        undo.push({ ...op, op_id: opId(), locked: group.locked });
+        groups.set(group.id, { ...group, locked: op.locked });
+        break;
+      }
     }
     if (undo.length) {
       forward.push(op);
@@ -262,6 +270,11 @@ export function applyBoardOps(
       case 'remove_group':
         groups.delete(op.group_id);
         break;
+      case 'set_group_locked': {
+        const group = groups.get(op.group_id);
+        if (group) groups.set(group.id, { ...group, locked: op.locked });
+        break;
+      }
       case 'delete_group': {
         const removed = new Set([op.id]);
         let changed = true;

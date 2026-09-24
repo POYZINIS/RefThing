@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", parent_group_id AS \"parent_group_id: Uuid\", name AS \"name!\", collapsed AS \"collapsed: bool\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\" FROM groups WHERE board_id = ? ORDER BY name COLLATE NOCASE, id",
+  "query": "INSERT INTO groups (id, board_id, parent_group_id, name) VALUES (?, ?, ?, ?) RETURNING id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", parent_group_id AS \"parent_group_id: Uuid\", name AS \"name!\", collapsed AS \"collapsed: bool\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", locked AS \"locked: bool\"",
   "describe": {
     "columns": [
       {
@@ -42,10 +42,15 @@
         "name": "created_at: DateTime<Utc>",
         "ordinal": 7,
         "type_info": "Text"
+      },
+      {
+        "name": "locked: bool",
+        "ordinal": 8,
+        "type_info": "Integer"
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 4
     },
     "nullable": [
       true,
@@ -55,8 +60,9 @@
       false,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "78ab758c888bce27e56967a68187fbe10230079e3e86aa4a193943504d88f070"
+  "hash": "6200b4f97bd5973e438c263237fdd80ba5f4e057527c912dc089843a23c796a1"
 }

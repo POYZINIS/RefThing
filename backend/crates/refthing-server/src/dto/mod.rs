@@ -66,6 +66,9 @@ pub struct Group {
     pub bg_color: Option<String>,
     pub opacity: f64,
     pub created_at: i64,
+    /// §6 RULE 3. Defaults to unlocked for clients that predate it.
+    #[serde(default)]
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -250,6 +253,7 @@ mod tests {
             bg_color: Some("#334455".to_string()),
             opacity: 0.5,
             created_at: 7,
+            locked: true,
         });
         round_trip(&Note {
             id: Uuid::now_v7(),

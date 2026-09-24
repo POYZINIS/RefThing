@@ -97,6 +97,12 @@ pub enum BatchOp {
         op_id: Uuid,
         group_id: Uuid,
     },
+    /// Lock / unlock a group (§6 RULE 3) — undoable like any other op.
+    SetGroupLocked {
+        op_id: Uuid,
+        group_id: Uuid,
+        locked: bool,
+    },
 }
 
 impl BatchOp {
@@ -112,7 +118,8 @@ impl BatchOp {
             | Self::PutNote { op_id, .. }
             | Self::DeleteNotes { op_id, .. }
             | Self::RestoreGroup { op_id, .. }
-            | Self::RemoveGroup { op_id, .. } => *op_id,
+            | Self::RemoveGroup { op_id, .. }
+            | Self::SetGroupLocked { op_id, .. } => *op_id,
         }
     }
 }
@@ -221,6 +228,11 @@ mod tests {
             BatchOp::SetZ {
                 op_id: id(),
                 order: vec![id(), id(), id()],
+            },
+            BatchOp::SetGroupLocked {
+                op_id: id(),
+                group_id: id(),
+                locked: true,
             },
         ];
         for op in &ops {

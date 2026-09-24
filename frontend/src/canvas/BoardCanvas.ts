@@ -122,7 +122,12 @@ export class BoardCanvas {
     this.renderVisible();
   }
 
-  update(items: Item[], gifHashes: ReadonlySet<string> = new Set(), notes: Note[] = []): void {
+  update(
+    items: Item[],
+    gifHashes: ReadonlySet<string> = new Set(),
+    notes: Note[] = [],
+    lockedGroups: ReadonlySet<string> = new Set(),
+  ): void {
     // If a node is mid-drag, React re-renders (selection change etc.) with
     // the *server* snapshot which still has the pre-drag position. Merge the
     // in-flight drag position back in so the node doesn't snap to the old
@@ -141,7 +146,13 @@ export class BoardCanvas {
         .filter(
           (item): item is Item & { blob_hash: string } => item.type === 'image' && !!item.blob_hash,
         )
-        .map((item) => itemToNode(item, gifHashes.has(item.blob_hash))),
+        .map((item) =>
+          itemToNode(
+            item,
+            gifHashes.has(item.blob_hash),
+            item.group_id !== null && lockedGroups.has(item.group_id),
+          ),
+        ),
       ...notes.map(noteToNode),
     ];
     this.nodes = liveById
@@ -178,6 +189,11 @@ export class BoardCanvas {
       new Set(this.nodes.flatMap((node) => (node.kind === 'gif' ? [node.blobHash] : []))),
     );
     this.renderVisible();
+  }
+
+  /** §6 RULE 2: while drilled into a group, its members act individually. */
+  setDrillGroup(groupId: string | null): void {
+    this.controller.drillGroupId = groupId;
   }
 
   /** Hide one node's sprite while a DOM surface stands in for it (editing). */

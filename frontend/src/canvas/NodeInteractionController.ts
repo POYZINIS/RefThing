@@ -62,6 +62,8 @@ export class NodeInteractionController {
   private boxOrigin: { x: number; y: number } | null = null;
   private boxCurrent: { x: number; y: number } | null = null;
   private hovered: BoardNode | null = null;
+  /** §6 RULE 2: the group drilled into — its members move individually. */
+  drillGroupId: string | null = null;
 
   constructor(
     private readonly host: InteractionHost,
@@ -141,9 +143,10 @@ export class NodeInteractionController {
     this.updateHover(null);
   }
 
-  /** Group-aware drag: a grouped node drags every group-mate with it. */
+  /** Group-aware drag: a grouped node drags every group-mate with it —
+   *  unless we're drilled into that group, where members move alone. */
   private moveSet(node: BoardNode): BoardNode[] {
-    return node.groupId
+    return node.groupId && node.groupId !== this.drillGroupId
       ? this.host.allNodes().filter((candidate) => candidate.groupId === node.groupId)
       : [node];
   }
@@ -163,6 +166,8 @@ export class NodeInteractionController {
       // Select + drag node. Selecting happens on press, not release.
       this.callbacks.onSelectionChange?.(node.id);
       this.updateHover(null);
+      // §6 RULE 3: a locked group is selectable but never moves as a group.
+      if (node.locked && node.groupId !== this.drillGroupId) return;
       this.dragging = {
         node,
         startX: point.x,

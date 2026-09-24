@@ -80,6 +80,7 @@ pub fn group_dto(group: models::Group) -> dto::Group {
         bg_color: group.bg_color,
         opacity: group.opacity,
         created_at: ms(group.created_at),
+        locked: group.locked,
     }
 }
 

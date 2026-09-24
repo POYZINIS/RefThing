@@ -32,6 +32,8 @@ export interface BoardNode {
   opacity: number;
   zIndex: number;
   groupId: string | null;
+  /** Member of a locked group (§6 RULE 3): no group-level transforms. */
+  locked: boolean;
   readonly capabilities: NodeCapabilities;
   containsPoint(point: WorldPoint): boolean;
   rotatedBounds(): WorldRect;

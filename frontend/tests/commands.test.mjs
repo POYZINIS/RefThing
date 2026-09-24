@@ -5,6 +5,7 @@ import {
   duplicateOps,
   fitViewport,
   groupOps,
+  lockOps,
   restackOps,
   ungroupOps,
   unionRect,
@@ -64,6 +65,7 @@ function board(extra = {}) {
         bg_color: null,
         opacity: 1,
         created_at: 1,
+        locked: false,
       },
     ],
     item_tags: { a: ['red'] },
@@ -162,4 +164,16 @@ test('fitViewport centers the bounds and clamps zoom', () => {
     ]),
     { left: -5, top: 0, right: 10, bottom: 20 },
   );
+});
+
+test('lock: touches every selected group once and undoes exactly', () => {
+  const snapshot = board();
+  const ops = lockOps(snapshot, ['b', 'c'], true, newId);
+  assert.deepEqual(
+    ops.map((op) => [op.kind, op.group_id, op.locked]),
+    [['set_group_locked', 'g', true]],
+  );
+  const after = roundTrip(snapshot, ops);
+  assert.equal(after.groups[0].locked, true);
+  assert.deepEqual(lockOps(snapshot, ['a'], true, newId), [], 'ungrouped selection: nothing');
 });

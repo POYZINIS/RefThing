@@ -369,6 +369,20 @@ async fn apply_op(
             Ok(Ok(()))
         }
         BatchOp::RestoreGroup { group, .. } => restore_group(tx, board_id, group).await,
+        BatchOp::SetGroupLocked {
+            group_id, locked, ..
+        } => {
+            let updated = sqlx::query("UPDATE groups SET locked = ? WHERE id = ? AND board_id = ?")
+                .bind(locked)
+                .bind(group_id)
+                .bind(board_id)
+                .execute(&mut **tx)
+                .await?;
+            if updated.rows_affected() == 0 {
+                return Ok(Err(GROUP_NOT_FOUND.to_string()));
+            }
+            Ok(Ok(()))
+        }
         BatchOp::RemoveGroup { group_id, .. } => {
             if !group_exists(tx, board_id, *group_id).await? {
                 return Ok(Err(GROUP_NOT_FOUND.to_string()));
@@ -778,9 +792,9 @@ async fn restore_group(
     {
         return Ok(Err(GROUP_NOT_FOUND.to_string()));
     }
-    sqlx::query("INSERT INTO groups (id, board_id, parent_group_id, name, collapsed, bg_color, opacity, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    sqlx::query("INSERT INTO groups (id, board_id, parent_group_id, name, collapsed, bg_color, opacity, created_at, locked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(group.id).bind(board_id).bind(group.parent_group_id).bind(&group.name).bind(group.collapsed)
-        .bind(&group.bg_color).bind(group.opacity).bind(timestamp(group.created_at)?)
+        .bind(&group.bg_color).bind(group.opacity).bind(timestamp(group.created_at)?).bind(group.locked)
         .execute(&mut **tx).await?;
     Ok(Ok(()))
 }

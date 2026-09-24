@@ -210,6 +210,7 @@ fn build_manifest(snapshot: &BoardSnapshot) -> Manifest {
             collapsed: group.collapsed,
             bg_color: group.bg_color.clone(),
             opacity: group.opacity,
+            locked: group.locked,
         })
         .collect();
     let snapshot_items = snapshot
@@ -572,8 +573,8 @@ async fn insert_groups(
         let group = remaining.remove(position);
         let new_id = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO groups (id, board_id, parent_group_id, name, collapsed, bg_color, opacity) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO groups (id, board_id, parent_group_id, name, collapsed, bg_color, opacity, locked) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(new_id)
         .bind(board_id)
@@ -582,6 +583,7 @@ async fn insert_groups(
         .bind(group.collapsed)
         .bind(&group.bg_color)
         .bind(group.opacity)
+        .bind(group.locked)
         .execute(&mut **tx)
         .await?;
         remap.insert(group.id, new_id);

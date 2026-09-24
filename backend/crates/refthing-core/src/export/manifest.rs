@@ -47,6 +47,9 @@ pub struct ManifestGroup {
     pub collapsed: bool,
     pub bg_color: Option<String>,
     pub opacity: f64,
+    /// Absent in archives written before group locking existed.
+    #[serde(default)]
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

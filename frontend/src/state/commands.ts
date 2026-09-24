@@ -45,6 +45,7 @@ export function groupOps(
     bg_color: null,
     opacity: 1,
     created_at: now,
+    locked: false,
   };
   return [
     { kind: 'restore_group', op_id: newId(), group },
@@ -72,6 +73,32 @@ export function ungroupOps(
     if (!hasChildren) ops.push({ kind: 'remove_group', op_id: newId(), group_id: groupId });
   }
   return ops;
+}
+
+/** The groups a selection touches. */
+export function selectedGroupIds(snapshot: Snapshot, ids: readonly string[]): string[] {
+  return [
+    ...new Set(
+      snapshot.items
+        .filter((item) => ids.includes(item.id) && item.group_id)
+        .map((item) => item.group_id as string),
+    ),
+  ];
+}
+
+/** Lock / Unlock (§5B, §6 RULE 3) every group the selection touches. */
+export function lockOps(
+  snapshot: Snapshot,
+  ids: readonly string[],
+  locked: boolean,
+  newId: NewId = opId,
+): BatchRequestOp[] {
+  return selectedGroupIds(snapshot, ids).map((groupId) => ({
+    kind: 'set_group_locked',
+    op_id: newId(),
+    group_id: groupId,
+    locked,
+  }));
 }
 
 /** Highest z across items AND notes — they share one paint order. */

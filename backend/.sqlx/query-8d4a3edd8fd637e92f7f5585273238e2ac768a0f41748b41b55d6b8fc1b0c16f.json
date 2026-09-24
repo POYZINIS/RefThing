@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", parent_group_id AS \"parent_group_id: Uuid\", name AS \"name!\", collapsed AS \"collapsed: bool\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\" FROM groups WHERE id = ?",
+  "query": "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", parent_group_id AS \"parent_group_id: Uuid\", name AS \"name!\", collapsed AS \"collapsed: bool\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", locked AS \"locked: bool\" FROM groups WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -42,6 +42,11 @@
         "name": "created_at: DateTime<Utc>",
         "ordinal": 7,
         "type_info": "Text"
+      },
+      {
+        "name": "locked: bool",
+        "ordinal": 8,
+        "type_info": "Integer"
       }
     ],
     "parameters": {
@@ -55,8 +60,9 @@
       false,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "ccf4c042ca5f59cb6c1e6e1b308e8b8a97561c99b0c301da7477d344b449451a"
+  "hash": "8d4a3edd8fd637e92f7f5585273238e2ac768a0f41748b41b55d6b8fc1b0c16f"
 }

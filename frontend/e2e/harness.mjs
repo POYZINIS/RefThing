@@ -136,6 +136,7 @@ export function state(page) {
     return {
       selection: hook.selection,
       editing: hook.editing,
+      drillGroupId: hook.drillGroupId,
       viewport: hook.viewport,
       nodes: hook.nodes,
       undoDepth: hook.undoDepth,
