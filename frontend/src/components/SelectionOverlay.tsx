@@ -7,6 +7,7 @@ import {
   type Box,
   type BoxTransform,
   beginAspectReset,
+  beginFlip,
   beginMove,
   beginResize,
   beginRotate,
@@ -180,6 +181,13 @@ export function SelectionOverlay({
       gesture = beginRotate(box, pointer);
     } else if (zone !== 'body') {
       gesture = beginResize(zone, box, pointer);
+    } else if (
+      event.altKey &&
+      event.shiftKey &&
+      nodes.every((node) => node.capabilities.flippable)
+    ) {
+      // §3 FLIP: Alt+Shift+drag anywhere on the body mirrors along the drag axis.
+      gesture = beginFlip(box, pointer);
     } else if (event.altKey && !event.shiftKey && nodes.length === 1 && !freeTransform) {
       // §3 RESET ASPECT RATIO — Alt+click on the body only. Notes keep their
       // free aspect (sanctioned exception), so they have no square reset.
@@ -270,7 +278,7 @@ export function SelectionOverlay({
           return;
         }
       }
-      if (!current.moved && current.gesture.mode !== 'resize') {
+      if (!current.moved && current.gesture.mode !== 'resize' && current.gesture.mode !== 'flip') {
         // A click, not a drag: drop any sub-epsilon preview and let the
         // canvas treat it as a click on whatever node is under the pointer.
         latest.current.onPreview([]);
@@ -316,7 +324,8 @@ export function SelectionOverlay({
 
   const cursor = (() => {
     if (dragMode === 'rotate') return ROTATE_CURSOR;
-    if (dragMode === 'move' || dragMode === 'aspect-reset') return 'grabbing';
+    if (dragMode === 'move' || dragMode === 'aspect-reset' || dragMode === 'flip')
+      return 'grabbing';
     if (dragMode === 'resize' && activeZone) return zoneCursor(activeZone, box.rotation);
     if (hovered === 'body' || hovered === null) return ctrlHeld ? ROTATE_CURSOR : 'grab';
     return ctrlHeld ? ROTATE_CURSOR : zoneCursor(hovered, box.rotation);

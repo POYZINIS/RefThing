@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import {
   applyToNode,
   beginAspectReset,
+  beginFlip,
   beginMove,
   beginResize,
   beginRotate,
@@ -433,4 +434,37 @@ test('local/world frame round-trips for rotated boxes', () => {
   const point = { x: 33, y: -12 };
   const back = toWorld(toLocal(point, box), box);
   assert.ok(near(back.x, point.x) && near(back.y, point.y));
+});
+
+// ---------------------------------------------------------------- FLIP --
+
+test('flip: Alt+Shift drag waits for the click epsilon, then locks the drag axis', () => {
+  const box = { x: 0, y: 0, width: 200, height: 100, rotation: 0 };
+  const gesture = beginFlip(box, { x: 100, y: 50 });
+  assert.equal(stepGesture(gesture, { x: 101, y: 51 }, { shift: true, alt: true }, 1), null);
+  const flip = stepGesture(gesture, { x: 140, y: 60 }, { shift: true, alt: true }, 1);
+  assert.deepEqual([flip.kind, flip.axis], ['flip', 'x']);
+  // Once locked, a later vertical swing does not change the axis.
+  const later = stepGesture(gesture, { x: 100, y: 300 }, { shift: true, alt: true }, 1);
+  assert.equal(later.axis, 'x');
+});
+
+test('flip: a lone node mirrors in place (toggle flip, negate rotation)', () => {
+  const node = { x: 0, y: 0, width: 200, height: 100, rotation: 30, flipX: false };
+  const patch = applyToNode({ kind: 'flip', axis: 'x', center: boxCenter(node) }, node);
+  assert.ok(near(patch.x, 0) && near(patch.y, 0));
+  assert.equal(patch.rotation, -30);
+  assert.equal(patch.flipX, true);
+  const back = applyToNode(
+    { kind: 'flip', axis: 'x', center: boxCenter(node) },
+    { ...node, ...patch },
+  );
+  assert.equal(back.flipX, false, 'flipping twice restores');
+  assert.equal(back.rotation, 30);
+});
+
+test('flip: a multi-selection mirrors positions across the shared center', () => {
+  const left = { x: 0, y: 0, width: 10, height: 10, rotation: 0, flipY: false };
+  const patch = applyToNode({ kind: 'flip', axis: 'y', center: { x: 50, y: 100 } }, left);
+  assert.deepEqual([patch.x, patch.y, patch.flipY], [0, 190, true]);
 });

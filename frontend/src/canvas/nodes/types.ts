@@ -6,6 +6,9 @@ export type NodeCapabilities = {
   freeTransform: boolean;
   groupable: boolean;
   editable: boolean;
+  /** Alt+Shift+drag mirroring (§3 FLIP). Notes opt out: mirrored text is
+   *  unreadable. */
+  flippable: boolean;
 };
 
 export type WorldPoint = { x: number; y: number };
@@ -22,6 +25,11 @@ export interface BoardNode {
   height: number;
   /** Degrees clockwise. */
   rotation: number;
+  /** Mirrored across the node's own vertical / horizontal axis. */
+  flipX: boolean;
+  flipY: boolean;
+  /** 0–1. */
+  opacity: number;
   zIndex: number;
   groupId: string | null;
   readonly capabilities: NodeCapabilities;
@@ -41,14 +49,15 @@ export interface NoteNode extends BoardNode {
   readonly kind: 'note';
   readonly text: string;
   readonly bgColor: string | null;
-  readonly opacity: number;
 }
 
 /** Every node the canvas paints. */
 export type CanvasNode = SpriteNode | NoteNode;
 
 /** Geometry the interaction layer can patch on any node kind. */
-export type NodePatch = Partial<Pick<BoardNode, 'x' | 'y' | 'width' | 'height' | 'rotation'>>;
+export type NodePatch = Partial<
+  Pick<BoardNode, 'x' | 'y' | 'width' | 'height' | 'rotation' | 'flipX' | 'flipY' | 'opacity'>
+>;
 
 /**
  * One committed node change. `kind` is the persistence-routing kind: 'note'

@@ -618,14 +618,19 @@ async fn tag_exists(tx: &mut SqliteTransaction<'_>, tag_id: Uuid) -> AppResult<b
     Ok(exists.is_some())
 }
 
+/// Applies `metadata` as a JSON merge patch (RFC 7396): keys it names are set,
+/// `null` deletes a key, and every other key is kept. The pyramid job merges
+/// its own keys (`dominant_colors`, `phash`) into the same object, so a client
+/// edit — which may hold a copy from before the job ran — must never replace
+/// the whole payload.
 async fn upsert_metadata(
     tx: &mut SqliteTransaction<'_>,
     item_id: Uuid,
     metadata: &Value,
 ) -> AppResult<()> {
     sqlx::query(
-        "INSERT INTO item_metadata (item_id, json) VALUES (?, ?) \
-         ON CONFLICT (item_id) DO UPDATE SET json = excluded.json",
+        "INSERT INTO item_metadata (item_id, json) VALUES (?1, json_patch('{}', ?2)) \
+         ON CONFLICT (item_id) DO UPDATE SET json = json_patch(json, ?2)",
     )
     .bind(item_id)
     .bind(metadata.to_string())

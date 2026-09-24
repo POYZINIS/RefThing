@@ -24,9 +24,12 @@ export class SpriteRenderer implements NodeRenderer {
     sprite.position.set(node.x + node.width / 2, node.y + node.height / 2);
     sprite.width = node.width;
     sprite.height = node.height;
+    // §3 FLIP: mirror about the node's own center (anchor is 0.5).
+    sprite.scale.x = Math.abs(sprite.scale.x) * (node.flipX ? -1 : 1);
+    sprite.scale.y = Math.abs(sprite.scale.y) * (node.flipY ? -1 : 1);
     sprite.rotation = (node.rotation * Math.PI) / 180;
     sprite.zIndex = node.zIndex;
-    sprite.alpha = frame.alpha ?? 1;
+    sprite.alpha = node.opacity;
     sprite.visible = !frame.hidden;
     this.applyGrayscale(frame.grayscale ?? false);
   }

@@ -5,7 +5,16 @@
  */
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { drag, launch, openBoard, seedBoard, settle, state } from './harness.mjs';
+import {
+  drag,
+  launch,
+  openBoard,
+  pixel,
+  seedBoard,
+  settle,
+  state,
+  worldToClient,
+} from './harness.mjs';
 
 let session;
 before(async () => {
@@ -22,30 +31,6 @@ const layout = {
   images: [{ name: 'under.png', x: 100, y: 100, width: 300, height: 200, color: BLUE }],
   notes: [{ name: 'over', x: 250, y: 180, width: 220, height: 160, text: '' }],
 };
-
-async function worldToClient(page, point) {
-  return page.evaluate(({ x, y }) => {
-    const host = document.getElementById('canvas-host').getBoundingClientRect();
-    const view = window.__refthing.viewport;
-    return { x: host.left + view.x + x * view.zoom, y: host.top + view.y + y * view.zoom };
-  }, point);
-}
-
-async function pixel(page, point) {
-  const png = await page.screenshot({
-    clip: { x: Math.round(point.x), y: Math.round(point.y), width: 1, height: 1 },
-  });
-  // Decode the single RGBA pixel through the browser (no PNG lib needed).
-  return page.evaluate(async (base64) => {
-    const image = new Image();
-    image.src = `data:image/png;base64,${base64}`;
-    await image.decode();
-    const canvas = new OffscreenCanvas(1, 1);
-    const context = canvas.getContext('2d');
-    context.drawImage(image, 0, 0);
-    return [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)];
-  }, png.toString('base64'));
-}
 
 const isBlue = ([r, , b]) => b > 180 && r < 90;
 const isNoteYellow = ([r, g, b]) => r > 220 && g > 200 && b < 200;

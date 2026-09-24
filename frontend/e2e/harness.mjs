@@ -38,14 +38,19 @@ function chunk(type, data) {
 }
 
 /** A solid-color RGB PNG — test fixtures need no image files on disk. */
-export function solidPng(width, height, [r, g, b]) {
+export function solidPng(width, height, color) {
+  return splitPng(width, height, color, color);
+}
+
+/** Left half one color, right half another: makes mirroring visible. */
+export function splitPng(width, height, left, right) {
   const header = Buffer.alloc(13);
   header.writeUInt32BE(width, 0);
   header.writeUInt32BE(height, 4);
   header[8] = 8; // bit depth
   header[9] = 2; // truecolor RGB
   const row = Buffer.alloc(1 + width * 3);
-  for (let x = 0; x < width; x += 1) row.set([r, g, b], 1 + x * 3);
+  for (let x = 0; x < width; x += 1) row.set(x < width / 2 ? left : right, 1 + x * 3);
   const raw = Buffer.concat(Array.from({ length: height }, () => row));
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
@@ -71,7 +76,9 @@ export async function seedBoard(request, { images = [], notes = [] } = {}) {
         file: {
           name: image.name,
           mimeType: 'image/png',
-          buffer: solidPng(image.width, image.height, image.color ?? [90, 140, 220]),
+          buffer: image.right
+            ? splitPng(image.width, image.height, image.color, image.right)
+            : solidPng(image.width, image.height, image.color ?? [90, 140, 220]),
         },
       },
     });
@@ -201,4 +208,29 @@ export async function drag(page, { from, samples, button = 'left', modifiers = [
   await page.mouse.up({ button });
   for (const key of [...modifiers].reverse()) await page.keyboard.up(key);
   await settle(page);
+}
+
+/** The RGB of one screen pixel, as the user sees it. */
+export async function pixel(page, point) {
+  const png = await page.screenshot({
+    clip: { x: Math.round(point.x), y: Math.round(point.y), width: 1, height: 1 },
+  });
+  return page.evaluate(async (base64) => {
+    const image = new Image();
+    image.src = `data:image/png;base64,${base64}`;
+    await image.decode();
+    const canvas = new OffscreenCanvas(1, 1);
+    const context = canvas.getContext('2d');
+    context.drawImage(image, 0, 0);
+    return [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+  }, png.toString('base64'));
+}
+
+/** World point → client px through the rendered camera. */
+export function worldToClient(page, point) {
+  return page.evaluate(({ x, y }) => {
+    const host = document.getElementById('canvas-host').getBoundingClientRect();
+    const view = window.__refthing.viewport;
+    return { x: host.left + view.x + x * view.zoom, y: host.top + view.y + y * view.zoom };
+  }, point);
 }

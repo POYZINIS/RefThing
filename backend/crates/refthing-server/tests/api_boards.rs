@@ -683,6 +683,55 @@ async fn new_items_and_notes_share_one_z_stack() {
     assert_eq!(z(&pinned, "note"), -5, "an explicit z_index is kept");
 }
 
+/// Item metadata updates are JSON merge patches (RFC 7396): a client edit
+/// must never wipe keys the pyramid job merged in (palette, phash).
+#[tokio::test]
+async fn item_metadata_patch_merges() {
+    let app = spawn_app().await;
+    let board = create_board(&app, "metadata").await;
+    let board_id = id_of(&board);
+    let created: Value = client()
+        .post(format!("{}/api/boards/{board_id}/items", app.base))
+        .json(&json!({
+            "type": "image", "x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0,
+            "metadata": {"phash": "a1b2", "dominant_colors": ["#ff0000"]},
+        }))
+        .send()
+        .await
+        .expect("create")
+        .json()
+        .await
+        .expect("json");
+    let item_id = id_of(&created["item"]).to_string();
+    let patch = |metadata: Value| {
+        let url = format!("{}/api/boards/{board_id}/items/{item_id}", app.base);
+        async move {
+            client()
+                .patch(url)
+                .json(&json!({ "metadata": metadata }))
+                .send()
+                .await
+                .expect("patch")
+                .json::<Value>()
+                .await
+                .expect("json")
+        }
+    };
+
+    let flipped = patch(json!({"flip_x": true, "opacity": 0.5})).await;
+    assert_eq!(
+        flipped["item"]["metadata"],
+        json!({"phash": "a1b2", "dominant_colors": ["#ff0000"], "flip_x": true, "opacity": 0.5}),
+        "new keys merge in; pipeline keys survive"
+    );
+    let cleared = patch(json!({"flip_x": null})).await;
+    assert_eq!(
+        cleared["item"]["metadata"],
+        json!({"phash": "a1b2", "dominant_colors": ["#ff0000"], "opacity": 0.5}),
+        "null deletes exactly that key"
+    );
+}
+
 #[tokio::test]
 async fn tag_crud() {
     let app = spawn_app().await;

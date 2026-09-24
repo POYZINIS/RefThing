@@ -17,6 +17,45 @@ export interface HistoryEntry {
 const opId = () => crypto.randomUUID();
 const equal = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
 
+type Json = Record<string, unknown>;
+const isObject = (value: unknown): value is Json =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * RFC 7396 JSON merge patch — the server's semantics for `metadata` updates
+ * (SQLite json_patch): named keys are set, `null` deletes, the rest is kept.
+ */
+export function mergePatch(target: Json, patch: Json): Json {
+  const result: Json = { ...target };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete result[key];
+    else if (isObject(value))
+      result[key] = mergePatch(isObject(result[key]) ? result[key] : {}, value);
+    else result[key] = value;
+  }
+  return result;
+}
+
+/** The merge patch that undoes `patch` applied to `target`: every key the
+ *  patch names goes back to its old value, or `null` if it didn't exist. */
+function inverseMergePatch(target: Json, patch: Json): Json {
+  const inverse: Json = {};
+  for (const key of Object.keys(patch)) {
+    inverse[key] = key in target ? target[key] : null;
+  }
+  return inverse;
+}
+
+/** An item with an update's fields applied (metadata merges, never replaces). */
+function applyItemFields(item: Item, fields: Omit<ItemPatch, 'add_tag_ids' | 'remove_tag_ids'>) {
+  const { metadata, ...rest } = fields;
+  return {
+    ...item,
+    ...rest,
+    ...(metadata ? { metadata: mergePatch(item.metadata, metadata) } : {}),
+  };
+}
+
 /** A history entry retains only changed fields/deleted records, never a board copy. */
 export function prepareCommand(
   snapshot: BoardSnapshot,
@@ -47,7 +86,11 @@ export function prepareCommand(
         const { add_tag_ids = [], remove_tag_ids = [], ...fields } = op.fields;
         const previous: ItemPatch = {};
         for (const key of Object.keys(fields) as Array<keyof typeof fields>) {
+          if (key === 'metadata') continue;
           if (!equal(item[key], fields[key])) Object.assign(previous, { [key]: item[key] });
+        }
+        if (fields.metadata && !equal(mergePatch(item.metadata, fields.metadata), item.metadata)) {
+          previous.metadata = inverseMergePatch(item.metadata, fields.metadata);
         }
         const oldTags = new Set(tags.get(item.id) ?? []);
         const newTags = new Set(oldTags);
@@ -63,7 +106,7 @@ export function prepareCommand(
           undo.push({ kind: 'update', op_id: opId(), item_id: item.id, fields: patch });
         if (group_id !== undefined)
           undo.push({ kind: 'set_group', op_id: opId(), item_ids: [item.id], group_id });
-        items.set(item.id, { ...item, ...fields });
+        items.set(item.id, applyItemFields(item, fields));
         tags.set(item.id, [...newTags]);
         break;
       }
@@ -167,7 +210,7 @@ export function applyBoardOps(
         const item = items.get(op.item_id);
         if (!item) break;
         const { add_tag_ids = [], remove_tag_ids = [], ...fields } = op.fields;
-        items.set(item.id, { ...item, ...fields });
+        items.set(item.id, applyItemFields(item, fields));
         const tags = new Set(itemTags[item.id] ?? []);
         for (const id of remove_tag_ids) tags.delete(id);
         for (const id of add_tag_ids) tags.add(id);

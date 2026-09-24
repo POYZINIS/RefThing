@@ -926,3 +926,29 @@ button:disabled {
   border-color: #c4f06c;
   color: #d6ff76;
 }
+
+.board-context-menu .menu-choices {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  padding: 3px 4px 3px 10px;
+  border: 0;
+  color: #e9edf2;
+  font-size: 12px;
+}
+
+.board-context-menu .menu-choices legend {
+  float: left;
+  flex: 1;
+  padding: 0;
+}
+
+.board-context-menu .menu-choices button {
+  padding: 4px 6px;
+  color: #aab3bd;
+}
+
+.board-context-menu .menu-choices button[aria-checked="true"] {
+  color: #d6ff76;
+}

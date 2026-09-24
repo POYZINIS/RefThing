@@ -14,7 +14,13 @@ import { BoardSync } from '@/api/ws';
 import { BoardCanvas, type ViewportState } from '@/canvas/BoardCanvas';
 import { keyboardAction } from '@/canvas/controls';
 import { screenToWorld } from '@/canvas/coordinates';
-import { itemToNode, noteToNode } from '@/canvas/nodes/adapters';
+import {
+  itemFields,
+  itemToNode,
+  itemWithPatch,
+  noteToNode,
+  noteWithPatch,
+} from '@/canvas/nodes/adapters';
 import { noteText } from '@/canvas/nodes/noteText';
 import type { CanvasNode, NodeChange, NodePatch } from '@/canvas/nodes/types';
 import { BoardContextMenu } from '@/components/BoardContextMenu';
@@ -238,7 +244,7 @@ function BoardApp() {
     () =>
       snapshot?.notes.map((note) => {
         const preview = previewPatches[note.id] ?? dragPreview[note.id];
-        return preview ? { ...note, ...preview } : note;
+        return noteWithPatch(note, preview);
       }) ?? [],
     [snapshot?.notes, previewPatches, dragPreview],
   );
@@ -258,7 +264,7 @@ function BoardApp() {
     () =>
       filtered.items.map((item) => {
         const preview = previewPatches[item.id];
-        return preview ? { ...item, ...preview } : item;
+        return itemWithPatch(item, preview);
       }),
     [filtered.items, previewPatches],
   );
@@ -440,7 +446,7 @@ function BoardApp() {
       )
       .map((item) => {
         const preview = previewPatches[item.id] ?? dragPreview[item.id];
-        const merged = preview ? { ...item, ...preview } : item;
+        const merged = itemWithPatch(item, preview);
         return itemToNode(merged, gifHashes.has(item.blob_hash));
       });
     return [...itemNodes, ...renderedNotes.map(noteToNode)];
@@ -576,7 +582,7 @@ function BoardApp() {
           kind: 'update',
           op_id: crypto.randomUUID(),
           item_id: change.id,
-          fields: change.patch,
+          fields: itemFields(change.patch),
         });
       } else {
         const note = snapshot.notes.find((candidate) => candidate.id === change.id);
@@ -584,7 +590,7 @@ function BoardApp() {
         ops.push({
           kind: 'put_note',
           op_id: crypto.randomUUID(),
-          note: { ...note, ...change.patch, updated_at: Date.now() },
+          note: { ...noteWithPatch(note, change.patch), updated_at: Date.now() },
         });
       }
     }
@@ -693,6 +699,14 @@ function BoardApp() {
         .sort()
         .join(',')}`;
       commitNodeChanges.current(changes, 'Nudge', key);
+    },
+    setOpacity: (opacity: number) => {
+      const changes: NodeChange[] = shellNodes.map((node) => ({
+        id: node.id,
+        kind: node.kind === 'note' ? 'note' : 'item',
+        patch: { opacity },
+      }));
+      commitNodeChanges.current(changes, 'Opacity');
     },
     zoomToFit: () => {
       const canvas = boardCanvas.current;
@@ -1121,6 +1135,15 @@ function BoardApp() {
                           disabled: selectedItemIds.length < 2,
                           action: actions.group,
                         },
+                    {
+                      label: 'Opacity',
+                      action: () => undefined,
+                      choices: [1, 0.75, 0.5, 0.25].map((value) => ({
+                        label: `${value * 100}%`,
+                        active: shellNodes.every((node) => node.opacity === value),
+                        action: () => actions.setOpacity(value),
+                      })),
+                    },
                     { label: 'Bring to Front', action: actions.bringToFront },
                     { label: 'Send to Back', action: actions.sendToBack },
                     { label: 'Delete', shortcut: 'Del', action: actions.delete },

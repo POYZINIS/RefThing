@@ -148,14 +148,23 @@ export type Gesture =
       /** Unwrapped sweep in degrees — never resets at ±180/360 (testing §4.3). */
       sweep: number;
     }
-  | { mode: 'aspect-reset'; start: Point; box: Box };
+  | { mode: 'aspect-reset'; start: Point; box: Box }
+  | {
+      mode: 'flip';
+      start: Point;
+      center: Point;
+      /** §3 FLIP: the drag axis, locked once the pointer leaves the click
+       *  epsilon — horizontal mirrors left↔right, vertical top↔bottom. */
+      axis: 'x' | 'y' | null;
+    };
 
 /** What a gesture sample does to the selection box as a whole. */
 export type BoxTransform =
   | { kind: 'translate'; dx: number; dy: number }
   | { kind: 'resize'; from: Box; to: Box }
   | { kind: 'rotate'; pivot: Point; delta: number }
-  | { kind: 'square'; box: Box };
+  | { kind: 'square'; box: Box }
+  | { kind: 'flip'; axis: 'x' | 'y'; center: Point };
 
 export function beginMove(pointer: Point): Gesture {
   return { mode: 'move', start: pointer, axis: null };
@@ -183,6 +192,10 @@ export function beginAspectReset(box: Box, pointer: Point): Gesture {
   return { mode: 'aspect-reset', start: pointer, box };
 }
 
+export function beginFlip(box: Box, pointer: Point): Gesture {
+  return { mode: 'flip', start: pointer, center: boxCenter(box), axis: null };
+}
+
 /**
  * Advance a gesture by one pointer sample. Modifiers are read per sample
  * (testing §2 rule 4): Shift/Alt pressed or released mid-gesture takes effect
@@ -206,6 +219,15 @@ export function stepGesture(
       return stepRotate(gesture, pointer, modifiers);
     case 'aspect-reset':
       return null; // A click, resolved on release by finishAspectReset.
+    case 'flip': {
+      if (gesture.axis === null) {
+        const dx = pointer.x - gesture.start.x;
+        const dy = pointer.y - gesture.start.y;
+        if (Math.max(Math.abs(dx), Math.abs(dy)) * zoom < CLICK_EPSILON_PX) return null;
+        gesture.axis = Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y';
+      }
+      return { kind: 'flip', axis: gesture.axis, center: gesture.center };
+    }
   }
 }
 
@@ -355,7 +377,7 @@ export function finishAspectReset(
   };
 }
 
-export type Geometry = Box;
+export type Geometry = Box & { flipX?: boolean; flipY?: boolean };
 export type GeometryPatch = Partial<Geometry>;
 
 /**
@@ -397,5 +419,21 @@ export function applyToNode(transform: BoxTransform, node: Geometry): GeometryPa
         width: transform.box.width,
         height: transform.box.height,
       };
+    case 'flip': {
+      // A world-axis mirror M applied to a node drawn as R(θ)·F equals
+      // R(−θ)·(M·F): toggle the node's own flip on that axis and negate its
+      // rotation. Positions mirror across the selection's center, so a
+      // multi-selection flips as one picture.
+      const center = boxCenter(node);
+      const { center: pivot, axis } = transform;
+      const mirroredX = axis === 'x' ? 2 * pivot.x - center.x : center.x;
+      const mirroredY = axis === 'y' ? 2 * pivot.y - center.y : center.y;
+      return {
+        x: mirroredX - node.width / 2,
+        y: mirroredY - node.height / 2,
+        rotation: -node.rotation,
+        ...(axis === 'x' ? { flipX: !node.flipX } : { flipY: !node.flipY }),
+      };
+    }
   }
 }

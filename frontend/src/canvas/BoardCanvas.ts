@@ -341,7 +341,6 @@ export class BoardCanvas {
       renderer.sync(node, {
         texture,
         grayscale: this.grayscale,
-        alpha: node.kind === 'note' ? node.opacity : 1,
         hidden: node.id === this.hiddenNodeId,
       });
     }

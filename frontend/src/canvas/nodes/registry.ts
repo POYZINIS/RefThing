@@ -27,6 +27,7 @@ const spriteCapabilities: NodeCapabilities = {
   freeTransform: false,
   groupable: true,
   editable: false,
+  flippable: true,
 };
 
 export const nodeKindRegistry = {
@@ -60,6 +61,7 @@ export const nodeKindRegistry = {
       // The notes table has no group_id column yet.
       groupable: false,
       editable: true,
+      flippable: false,
     },
   },
 } satisfies Record<NodeKind, NodeKindRegistration>;

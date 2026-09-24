@@ -1,6 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
-type Entry = { label: string; shortcut?: string; disabled?: boolean; action: () => void };
+type Choice = { label: string; active?: boolean; action: () => void };
+type Entry = {
+  label: string;
+  shortcut?: string;
+  disabled?: boolean;
+  action: () => void;
+  /** Renders the entry as a labelled row of inline choices (e.g. opacity
+   *  presets) instead of a single command. */
+  choices?: Choice[];
+};
 
 export function BoardContextMenu({
   position,
@@ -58,21 +67,41 @@ export function BoardContextMenu({
       aria-label="Board actions"
       style={{ left: location.x, top: location.y }}
     >
-      {entries.map((entry) => (
-        <button
-          key={entry.label}
-          type="button"
-          role="menuitem"
-          disabled={entry.disabled}
-          onClick={() => {
-            onClose();
-            entry.action();
-          }}
-        >
-          <span>{entry.label}</span>
-          {entry.shortcut && <kbd>{entry.shortcut}</kbd>}
-        </button>
-      ))}
+      {entries.map((entry) =>
+        entry.choices ? (
+          <fieldset key={entry.label} className="menu-choices">
+            <legend>{entry.label}</legend>
+            {entry.choices.map((choice) => (
+              <button
+                key={choice.label}
+                type="button"
+                role="menuitemradio"
+                aria-checked={choice.active ?? false}
+                onClick={() => {
+                  onClose();
+                  choice.action();
+                }}
+              >
+                {choice.label}
+              </button>
+            ))}
+          </fieldset>
+        ) : (
+          <button
+            key={entry.label}
+            type="button"
+            role="menuitem"
+            disabled={entry.disabled}
+            onClick={() => {
+              onClose();
+              entry.action();
+            }}
+          >
+            <span>{entry.label}</span>
+            {entry.shortcut && <kbd>{entry.shortcut}</kbd>}
+          </button>
+        ),
+      )}
     </div>
   );
 }
