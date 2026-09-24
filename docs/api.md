@@ -82,8 +82,8 @@ Other DTOs:
 |:---------------|:------------------------------------------------------------------------------------------------|
 | `Board`        | `id, name, seq, viewport_state (json\|null), created_at, updated_at`                             |
 | `BoardSummary` | `id, name, item_count, updated_at`                                                               |
-| `Group`        | `id, board_id, parent_group_id (uuid\|null), name, collapsed, bg_color, opacity, created_at`     |
-| `Note`         | `id, board_id, x, y, width, height, content_json, bg_color, opacity, created_at, updated_at`     |
+| `Group`        | `id, board_id, parent_group_id (uuid\|null), name, collapsed, bg_color, opacity, created_at, locked` |
+| `Note`         | `id, board_id, x, y, width, height, rotation, z_index, content_json, bg_color, opacity, created_at, updated_at` |
 | `Tag`          | `id, name, color (string\|null)`                                                                 |
 | `BlobInfo`     | `hash, original_filename, mime_type, byte_size, width?, height?, created_at, levels`             |
 | `BlobLevel`    | `width, height` — one renderable scale of a blob                                                 |
@@ -149,7 +149,8 @@ work.
 - **POST** body:
   `{ "type": "image", "blob_hash"?, "x", "y", "width", "height", "metadata"? }`.
   400 on non-finite geometry, non-positive width/height, or unknown
-  `blob_hash`; 404 on unknown board. New items land on top of the z-stack.
+  `blob_hash`; 404 on unknown board. New items land on top of the z-stack —
+  the one stack items and notes share (`max(items, notes) + 1`).
 - **PATCH** body: an `ItemPatch` plus optional `base_seq` (flat, not nested):
 
   ```json
@@ -159,6 +160,10 @@ work.
   `ItemPatch` fields (all optional, absent = unchanged): `x, y, width,
   height, rotation, z_index, group_id, metadata, add_tag_ids, remove_tag_ids`.
   Tag assignment rides inside the patch — there are no per-tag HTTP calls.
+  **`metadata` is a JSON merge patch** (RFC 7396, SQLite `json_patch`): keys
+  it names are set, `null` deletes a key, every other key is kept. Clients
+  send only the keys they change — never the whole object — so pipeline keys
+  (`dominant_colors`, `phash`) survive client edits.
   `group_id` in a patch can only **set** a group; clearing rides the
   `set_group` batch op (plain `Option` can't distinguish absent from null).
   400 on empty patch, unknown group (`bad_request`), or unknown tag; 404 on
@@ -190,7 +195,13 @@ single-item writes pass an empty client id and record `origin: null`.
 | `update`    | `item_id`, `fields` (`ItemPatch`)   | Apply a patch (incl. tag add/remove, metadata)    |
 | `delete`    | `item_ids`                          | Delete items                                      |
 | `set_group` | `item_ids`, `group_id` (nullable)   | Assign group; `null` ungroups                     |
-| `set_z`     | `order` (array of item ids)         | Explicit z-order: `z_index` = position in `order` |
+| `set_z`     | `order` (array of item ids)         | Explicit z-order: `z_index` = position in `order` (items only — prefer `update` with `z_index`, which shares the note z space) |
+| `restore_item` | `item` (full `Item`), `tag_ids`  | Insert an item with a client-chosen id (undo of delete; duplicate) |
+| `put_note`  | `note` (full `Note`)                | Upsert a note (create, edit, transform, z)        |
+| `delete_notes` | `note_ids`                       | Delete notes                                      |
+| `restore_group` | `group` (full `Group`)          | Insert a group with a client-chosen id            |
+| `remove_group` | `group_id`                       | Delete an EMPTY leaf group (`group_not_empty` otherwise) |
+| `set_group_locked` | `group_id`, `locked`         | Lock / unlock a group (§6 RULE 3)                 |
 
 Response (`BatchResponse`):
 
@@ -237,9 +248,10 @@ Semantics (`src/services/item_service.rs`):
 | PATCH  | `/api/boards/{id}/notes/{nid}`  | 200 `{seq, note}` |
 | DELETE | `/api/boards/{id}/notes/{nid}`  | 204               |
 
-- **POST** body: `{ "x"?, "y"?, "width"*, "height"*, "content_json"?,
-  "bg_color"?, "opacity"? }` (`*` required; `x`/`y` default 0, `content_json`
-  defaults `{}`, `opacity` defaults 1.0). 404 on unknown board.
+- **POST** body: `{ "x"?, "y"?, "width"*, "height"*, "rotation"?, "z_index"?,
+  "content_json"?, "bg_color"?, "opacity"? }` (`*` required; `x`/`y` default
+  0, `content_json` defaults `{}`, `opacity` defaults 1.0, an omitted
+  `z_index` lands on top of the shared item/note stack). 404 on unknown board.
 - **PATCH** body: any of `x, y, width, height, content_json, bg_color,
   opacity`. `bg_color` is a double option: `null` clears the color. 400 on
   empty patch; 404 when no such note on this board.
@@ -389,7 +401,13 @@ Text frames carrying a JSON **`BatchRequest`** — the exact same shape as
 
 Frames run through the same `apply_batch` machinery as REST: success is
 announced by the machinery's own broadcast `diff` (no separate ack); failure
-comes back as an `error` frame. Malformed JSON → `bad_request` error frame;
+comes back as an `error` frame.
+
+The bundled frontend does **not** write over the socket: its `BatchQueue`
+posts one REST batch at a time with the seq returned by the previous one.
+Pipelining several batches against the same `base_seq` gets every one after
+the first rejected as `seq_conflict`, and an all-rejected batch broadcasts
+no diff, so a WS writer can't tell when to send next. Malformed JSON → `bad_request` error frame;
 **binary frames are rejected** (`bad_request`). Ping/pong is handled
 automatically by axum.
 

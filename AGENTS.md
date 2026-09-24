@@ -12,6 +12,8 @@ product spec and `docs/architecture.md` for the module map.
 | Run frontend dev server | `npm run dev` |
 | Run desktop app (Tauri window) | `npm run dev:app` |
 | Build desktop app (installer) | `npm run build:app` |
+| Frontend unit tests (transform math, commands, history, filters) | `npm test` |
+| Browser gesture tests (needs `npm run dev` running; point `REFTHING_DATA_DIR` at a scratch dir) | `npm run test:e2e` |
 | Lint frontend (Biome) | `npm run lint` |
 | Format frontend (Biome) | `npm run fmt` |
 | Backend tests | `cargo test --manifest-path backend/Cargo.toml --workspace` |
@@ -30,12 +32,19 @@ backend/            Rust workspace
 frontend/           React + PixiJS app (Vite)
   src/canvas/       PixiJS engine — imperative, owns the canvas
   src/canvas/nodes/ unified node model (BoardNode), kind registry, texture
-                    sources (pyramid/GIF), sprite renderer; NodeInteractionController
-                    is the ONE pointer state machine for all node kinds
+                    sources (pyramid/GIF/note), sprite renderer; notes paint on
+                    the canvas via pretext (noteText.ts) in the same z order
+                    as images. NodeInteractionController is the ONE pointer
+                    state machine; canvas/transform.ts is the pure gesture math
   src/components/   UI chrome only (toolbar, panels, dialogs)
   src/state/        zustand stores; history.ts = command/undo engine
-                    (prepareCommand + applyBoardOps — applyOps delegates to it)
-  src/api/          HTTP + WebSocket client
+                    (prepareCommand + applyBoardOps — applyOps delegates to it);
+                    commands.ts = pure board commands (group, duplicate, ...)
+  src/api/          HTTP + WebSocket client; batchQueue.ts = the ONE write
+                    path (one REST batch in flight); ws.ts is receive-only
+frontend/tests/     node:test unit suites + gesture-paths.mjs (canonical
+                    motion primitives from the testing conventions)
+frontend/e2e/       Playwright browser suites (isolated seeded boards)
 sidecar/            Node service for Node-only rendering (stub until Phase 11)
 src-tauri/          Tauri desktop app (standalone crate, NOT in the backend
                     workspace) — embeds refthing-server in-process; the webview
@@ -56,6 +65,10 @@ data/               local state (SQLite DB, uploads) — NEVER commit
   linking goes through the shim in `backend/target/`. Do not commit it,
   and note that `cargo clean` deletes the shim. See
   `docs/prerequisites.md` → "No-MSVC machines".
+- Items and notes share ONE `z_index` space (the canvas interleaves them).
+  Item `metadata` updates are JSON merge patches — send only changed keys.
+- Browser tests must create their own boards; never clean up by deleting
+  content on a board the test didn't create.
 - SQLite migrations live in **`backend/migrations/`** and run **embedded
   at startup** (`sqlx::migrate!()`), forward-only. See
   `docs/data-model.md` for the schema and its invariants (no `CHECK` on

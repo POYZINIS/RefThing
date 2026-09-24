@@ -67,11 +67,44 @@ pub async fn search(
     Ok(results)
 }
 
-/// Colour-space distance threshold (0–255) for "similar colour" matching.
-const COLOUR_EPSILON_SQ: i64 = 40 * 40;
+/// Colour-space distance threshold (0–255 RGB, squared) for "similar
+/// colour". Palette entries are quantised to 4 bits per channel and stored
+/// at the bucket's top (up to +15 per channel), and a colour picked by eye
+/// is never exact — 40 missed a plainly red image for a pure-red query.
+const COLOUR_EPSILON_SQ: i64 = 80 * 80;
+
+/// An `(r, g, b)` colour, 0–255 per channel.
+type Rgb = (i64, i64, i64);
+
+/// Parse every valid `#rrggbb` entry of a `dominant_colors` array.
+fn palette_of(value: &serde_json::Value) -> Vec<Rgb> {
+    value
+        .get("dominant_colors")
+        .and_then(|v| v.as_array())
+        .map(|colors| {
+            colors
+                .iter()
+                .filter_map(|color| color.as_str().and_then(parse_hex_colour))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether two palettes share a similar colour. Items without a palette
+/// can't be compared and never veto a match.
+fn palettes_compatible(left: &[Rgb], right: &[Rgb]) -> bool {
+    if left.is_empty() || right.is_empty() {
+        return true;
+    }
+    left.iter().any(|(lr, lg, lb)| {
+        right.iter().any(|(rr, rg, rb)| {
+            (lr - rr).pow(2) + (lg - rg).pow(2) + (lb - rb).pow(2) <= COLOUR_EPSILON_SQ
+        })
+    })
+}
 
 /// Parse a `#rrggbb` hex into (r, g, b), or `None` for invalid input.
-fn parse_hex_colour(input: &str) -> Option<(i64, i64, i64)> {
+fn parse_hex_colour(input: &str) -> Option<Rgb> {
     let hex = input.trim_start_matches('#');
     if hex.len() != 6 {
         return None;
@@ -164,8 +197,8 @@ pub async fn find_duplicates(
     .await
     .map_err(|error| CoreError::Db(error.to_string()))?;
 
-    // Load all (item_id, phash) pairs.
-    let mut hashes: Vec<(Uuid, u64)> = Vec::new();
+    // Load all (item_id, phash, palette) rows.
+    let mut hashes: Vec<(Uuid, u64, Vec<Rgb>)> = Vec::new();
     for row in &rows {
         let json_text: String = row.try_get("json").unwrap_or_default();
         let value: serde_json::Value =
@@ -176,24 +209,26 @@ pub async fn find_duplicates(
             .filter(|hash| hash.len() == 16)
             .and_then(|hash| u64::from_str_radix(hash, 16).ok())
         {
-            hashes.push((row.try_get("item_id").unwrap(), phash));
+            hashes.push((row.try_get("item_id").unwrap(), phash, palette_of(&value)));
         }
     }
 
     // O(n²) Hamming comparison — acceptable for reference boards (thousands
     // of items, and the hash comparison is a single u64 XOR).
     let mut neighbours: Vec<Vec<(u32, Uuid)>> = vec![Vec::new(); hashes.len()];
-    for (i, (left_id, left_hash)) in hashes.iter().enumerate() {
-        for (j, (right_id, right_hash)) in hashes.iter().enumerate().skip(i + 1) {
+    for (i, (left_id, left_hash, left_palette)) in hashes.iter().enumerate() {
+        for (j, (right_id, right_hash, right_palette)) in hashes.iter().enumerate().skip(i + 1) {
             let distance = (left_hash ^ right_hash).count_ones();
-            if distance <= DUPE_THRESHOLD {
+            // The phash sees grayscale structure only: any two flat images
+            // (a red swatch and a blue one) hash identically. Colour vetoes.
+            if distance <= DUPE_THRESHOLD && palettes_compatible(left_palette, right_palette) {
                 neighbours[i].push((distance, *right_id));
                 neighbours[j].push((distance, *left_id));
             }
         }
     }
     let mut groups: Vec<dto::SearchResult> = Vec::new();
-    for ((item_id, _), mut matches) in hashes.into_iter().zip(neighbours) {
+    for ((item_id, _, _), mut matches) in hashes.into_iter().zip(neighbours) {
         if !matches.is_empty() {
             matches.sort_unstable();
             let snippet = matches

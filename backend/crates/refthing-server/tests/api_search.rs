@@ -357,6 +357,71 @@ async fn duplicates_find_near_identical_phash() {
     }
 }
 
+/// Flat images all share the all-zero phash; colour must keep a red swatch
+/// from "duplicating" a blue one. And a pure-red query must find a red image
+/// whose quantised palette entry is only near #ff0000.
+#[tokio::test]
+async fn duplicates_need_similar_colour_and_colour_search_tolerates_quantisation() {
+    let app = spawn_app().await;
+    let board = create_board(&app, "flat swatches").await;
+    let board_id = id_of(&board);
+    let red = insert_metadata_item(
+        &app,
+        board_id,
+        "5555555555555555555555555555555555555555555555555555555555555555",
+        "red.png",
+        json!({ "phash": "0000000000000000", "dominant_colors": ["#ef1f1f"] }),
+    )
+    .await;
+    let red_twin = insert_metadata_item(
+        &app,
+        board_id,
+        "6666666666666666666666666666666666666666666666666666666666666666",
+        "red2.png",
+        json!({ "phash": "0000000000000000", "dominant_colors": ["#ef1f1f"] }),
+    )
+    .await;
+    insert_metadata_item(
+        &app,
+        board_id,
+        "7777777777777777777777777777777777777777777777777777777777777777",
+        "blue.png",
+        json!({ "phash": "0000000000000000", "dominant_colors": ["#1f2fef"] }),
+    )
+    .await;
+
+    let duplicates: Vec<Value> = client()
+        .get(format!("{}/api/boards/{board_id}/duplicates", app.base))
+        .send()
+        .await
+        .expect("duplicates")
+        .json()
+        .await
+        .expect("json");
+    let mut ids: Vec<String> = duplicates
+        .iter()
+        .map(|result| result["item_id"].as_str().expect("id").to_string())
+        .collect();
+    ids.sort();
+    let mut expected = vec![red.id.to_string(), red_twin.id.to_string()];
+    expected.sort();
+    assert_eq!(
+        ids, expected,
+        "only the red pair; blue has the same phash but not the colour"
+    );
+
+    let colour: Vec<Value> = client()
+        .get(format!("{}/api/boards/{board_id}/search-colour", app.base))
+        .query(&[("colour", "#ff0000")])
+        .send()
+        .await
+        .expect("colour")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(colour.len(), 2, "both reds match pure red; blue does not");
+}
+
 #[tokio::test]
 async fn search_handles_literal_quotes_and_returns_all_board_matches() {
     let app = spawn_app().await;

@@ -6,6 +6,27 @@ suggestion: a test suite that only does point-A-to-point-B jumps is
 not considered compliant, even if it passes.
 ========================================================================
 
+RECONCILIATION NOTES (2026-09-24)
+--------------------------------------------------------------------
+1. Where this lives. The Section 1 primitives are implemented once in
+   frontend/tests/gesture-paths.mjs and shared by the unit suite
+   (frontend/tests/*.test.mjs, `npm test`) and the browser suite
+   (frontend/e2e/*.e2e.mjs, `npm run test:e2e`, Playwright driving real
+   PointerEvents through CDP; needs the dev stack running).
+2. Edge zones (Section 1 SINE-WAVE, "never affect the perpendicular
+   axis") apply to STRETCH mode only (images with Shift, notes without).
+   In proportional mode the perpendicular axis follows the aspect ratio
+   regardless of the along-edge wobble — Section 4 Rule 2 already says so.
+3. Minimum size collapse: see interaction conventions reconciliation note
+   2. The collapse-crossing variant asserts that a live resize passes
+   through 24px and back without sticking.
+4. Move window (Section 2B). The desktop build uses the standard OS title
+   bar (not frameless), so right-drag has no window to move; the test
+   asserts instead that a right-DRAG past 3px does NOT open the menu.
+5. Browser assertions compare DOM chrome against where Pixi actually
+   painted each node (a dev-only window.__refthing hook), read in ONE
+   evaluate per sample so every value comes from the same frame.
+
 PURPOSE
 --------------------------------------------------------------------
 A bot that grabs an item and moves it in a single straight jump only

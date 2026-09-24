@@ -14,6 +14,47 @@ This exception overrides the uniform aspect-ratio rules below; preserve
 it while fixing genuine geometry, input-routing, and persistence bugs.
 Hit-zone sizes, selection visuals, and editing protections remain shared.
 
+RECONCILIATION NOTES (2026-09-24)
+--------------------------------------------------------------------
+Clarifications recorded while implementing the rules below. Items marked
+[NEEDS SIGN-OFF] are implementation choices that fill a gap or resolve a
+conflict in this file; confirm or overrule them here.
+
+1. Free transform. Section 0 Rule 3 ("no free-transform mode anywhere")
+   and Section 7 are read with the accepted note exception above: notes
+   stretch freely by default, Shift restores proportional scaling.
+2. Minimum size collapse (Section 2) gates NEW gestures only. A resize
+   already in progress may pass through the 24px size and back (the
+   cursor stays locked to the grabbed handle, Section 1 RESIZING); only
+   gestures that START on a collapsed item are move/rotate-only.
+3. Rotating a multi-selection (Ctrl/Cmd+drag) turns the whole selection
+   about the combined box's center, matching Section 6 Rule 1 (children
+   transform from one shared anchor). [NEEDS SIGN-OFF] The project plan's
+   "Shift+Alt+drag: rotate each item around its own center" collides with
+   Alt+Shift+drag = FLIP (Section 3) and is not implemented.
+4. Shift. Shift+click on an UNSELECTED item toggles it in the selection
+   and never starts a drag. Shift+drag that starts on an already-selected
+   body constrains the move to one axis (Section 3 CONSTRAIN TO AXIS); a
+   Shift+click on a selected item without moving toggles it out.
+5. [NEEDS SIGN-OFF] Notes do not flip: mirrored text is unreadable, so
+   Alt+Shift+drag on a note (or a selection containing one) is a plain
+   move. Everything else about the shell is identical across kinds.
+6. Rule 7 (pretext). @chenglou/pretext is a text LAYOUT library, not an
+   editor. Note text is laid out by pretext and painted on the canvas;
+   while Editing, a textarea stands in using the identical font, line
+   height, inset and wrap width, so no line ever reflows between the two.
+   Text is a fixed world size and reflows to the note's width (Rule 5); it
+   never scales with the note's height.
+7. Section 5B. Implemented entries: Duplicate, Group / Ungroup, Lock /
+   Unlock, Delete, Bring to Front / Send to Back, Adjust Opacity; empty
+   canvas: Add Note, Paste, Zoom to Fit. Not yet: Add Tag... (tags are
+   assigned from the sidebar today) and Crop.
+8. Selecting any node brings it to the front of ONE paint order shared by
+   images and notes. This is a side effect of selecting, not an undoable
+   command; Bring to Front / Send to Back from the menu are undoable.
+9. [NEEDS SIGN-OFF] Section 5 asks for a custom rotate cursor; a circular
+   arrow icon is used (hotspot centered).
+
 PURPOSE
 --------------------------------------------------------------------
 This document defines exactly how the app behaves, pixel by pixel and

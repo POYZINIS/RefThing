@@ -17,8 +17,19 @@ All IDs are `TEXT` UUIDv7 (time-ordered, k-sortable). All timestamps are
 | `boards` | One row per board: name, `viewport_state` (JSON `{x,y,zoom}`, nullable = default view), `seq` (see below). |
 | `items` | One row per canvas item: board FK, `type` string, optional `blob_id` FK, transform (`x`, `y`, `width`, `height`, `rotation`, `z_index`), optional `group_id`. |
 | `item_metadata` | 1:1 with `items`; a `json_valid`-checked JSON payload whose shape is per item type. This is the Phase 11 extensibility seam — new types store their fields here instead of new columns. |
-| `groups` | Hierarchical (`parent_group_id` self-FK) item grouping: name, `collapsed`, `bg_color`, `opacity`. |
-| `notes` | Standalone rich-text notes on the board: transform + `content_json` + `bg_color`/`opacity`. Kept separate from `items` because notes never reference blobs and render through their own path. |
+| `groups` | Hierarchical (`parent_group_id` self-FK) item grouping: name, `collapsed`, `bg_color`, `opacity`, `locked` (§6 RULE 3: no group-level transforms; migration 0009). |
+| `notes` | Standalone rich-text notes on the board: transform (incl. `rotation`, `z_index`) + `content_json` + `bg_color`/`opacity`. Kept separate from `items` because notes never reference blobs. |
+
+**One paint order.** `items.z_index` and `notes.z_index` are a single space:
+the canvas interleaves both kinds, a new item or note lands at
+`max(both) + 1`, and selecting a node raises it above everything.
+
+**Item metadata keys written by the app** (merge-patched, see below):
+`flip_x` / `flip_y` (bool, mirrored about the item's own axes), `opacity`
+(0–1). The pyramid job merges `dominant_colors` and `phash` into the same
+object. Updates are RFC 7396 merge patches (SQLite `json_patch`): named keys
+are set, `null` deletes a key, all other keys are kept — so a client never
+wipes pipeline data.
 | `tags` / `item_tags` | Case-insensitive unique tag names (`UNIQUE COLLATE NOCASE`) plus the many-to-many join table. |
 | `blobs` | One row per unique file content, keyed by its SHA-256 hex hash: original filename, sniffed MIME, byte size, pixel dimensions. Content-addressing gives dedup for free. |
 

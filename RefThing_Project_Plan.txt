@@ -281,7 +281,10 @@ PHASE 2 — RUST API SURFACE                            [COMPLETE 6/6]
 4. Batch endpoints for moving/updating many items at once.
 5. Ingestion endpoint: upload -> hash -> store -> enqueue poster job
    -> return immediately.
-6. (WebSocket board-diff broadcast removed — see Phase 8 note below.)
+6. WebSocket board-diff broadcast: kept as a RECEIVE path only (keeps two
+   windows on one board in step, delivers job events such as
+   poster_ready). The client writes over REST through a one-in-flight
+   batch queue. No collaboration features ride on it (Phase 8 stays cut).
 
 PHASE 3 — THUMBNAIL / IMAGE PYRAMID PIPELINE           [COMPLETE 4/4]
 --------------------------------------------------------------------
@@ -290,40 +293,41 @@ PHASE 3 — THUMBNAIL / IMAGE PYRAMID PIPELINE           [COMPLETE 4/4]
 3. Cache-friendly serving path: /blob/{hash}/{size}, immutable headers.
 4. Frontend picks pyramid level based on on-screen size.
 
-PHASE 4 — CANVAS RENDERING ENGINE                    [PARTIAL 6/8]
+PHASE 4 — CANVAS RENDERING ENGINE                    [COMPLETE 8/8]
 --------------------------------------------------------------------
-Done:
 1. PixiJS Application mounted into a React-managed canvas ref.
-2. Spatial index (quadtree/grid) over item positions.
+2. Spatial index (grid) over node positions (rotation-aware bounds).
 3. Viewport culling to visible rect + buffer.
 4. Zoom-dependent texture swapping (pyramid level per sprite).
-5. Pan/zoom with easing in the render loop (rAF), not React state.
-6. Selection/handle overlay synced to canvas coordinates.
-Remaining:
-7. Keyboard shortcuts (delete, group, nudge, etc. — see table above).
-8. Undo/redo command stack (see conventions above).
-Known bugs to fix as part of remaining work:
-- Item drag delta math (see "ITEM DRAG FIX" above).
-- Note click-vs-edit handling (see "NOTE TEXT EDITING" above).
+5. Pan/zoom with easing in the render loop (rAF), not React state; DOM
+   chrome follows the camera Pixi actually painted each frame.
+6. Selection/handle overlay synced to canvas coordinates (one
+   screenToWorld utility; pure transform math in canvas/transform.ts).
+7. Keyboard shortcuts: Delete, Ctrl+G / Ctrl+Shift+G, Ctrl+A, arrow
+   nudge (Shift = x10, bursts coalesce), Escape, undo/redo.
+8. Undo/redo command stack: one entry per gesture/command, note edits
+   one entry per session, multi-item operations one entry.
+Fixed: item drag delta math; note click-vs-edit (double-click only);
+rotated resize anchors; rotation accumulation past 360 degrees.
 
-PHASE 5 — CORE PUREREF FEATURE PARITY                [PARTIAL 5/8]
+PHASE 5 — CORE PUREREF FEATURE PARITY                [PARTIAL 6/8]
 --------------------------------------------------------------------
 Done: drag-and-drop/paste/browser-drag ingestion, grouping/ungrouping
-+ move-as-unit, grayscale toggle (GPU shader), color sampler,
-grayscale + GIF playback in canvas.
++ move-as-unit, group lock + double-click drill-in, grayscale toggle
+(GPU shader), color sampler, GIF playback in canvas, flip
+(Alt+Shift+drag), opacity, pretext notes painted on the canvas in the
+same paint order as images (DOM editor only while editing).
 Remaining:
 - Group background color/opacity picker UI.
-- Pretext notes wired up correctly (blocked on the note editing fix
-  above — implementation, not design, is what's left).
-- Smart alignment guides (snap-to-edge while dragging).
+- Smart alignment guides (snap-to-edge while dragging; Shift+Space).
+- Crop (context menu).
 
-PHASE 6 — ORGANIZATION FEATURES BEYOND PUREREF        [PARTIAL 3/5]
+PHASE 6 — ORGANIZATION FEATURES BEYOND PUREREF        [COMPLETE 5/5]
 --------------------------------------------------------------------
 Done: tagging system + filter/search bar, SQLite FTS5 full-text
-search, duplicate detection backend (perceptual hashing).
-Remaining:
-- Wire color-search endpoint into the UI (backend exists).
-- Wire duplicate-detection endpoint into the UI (backend exists).
+search, duplicate detection (perceptual hashing), color search and
+duplicate filter wired into the search bar (state/useBoardFilter.ts),
+saved board views.
 
 PHASE 7 — RELIABILITY                                [COMPLETE 4/4]
 --------------------------------------------------------------------
@@ -344,15 +348,16 @@ indicators, or CRDT conflict resolution. Consequences of the cut:
 
 PHASE 9 — PERFORMANCE VALIDATION & OFF-MAIN-THREAD   [PARTIAL 3/6]
 --------------------------------------------------------------------
-Done: (mark actual completed items here as they're finished)
+Done: synthetic board generator (/dev/board/N, src/dev/synthBoard.ts),
+dev-only FPS/latency HUD (src/dev/FpsHud.tsx), perf gate at 20k items
+(docs/perf-baseline.md).
 Remaining:
-- Synthetic board generator (5k/20k/50k items) for profiling.
 - Load-test the ingestion pipeline (bulk upload of thousands of files).
 - Move image decode/resize into Web Workers.
 - Move the PixiJS render loop into OffscreenCanvas in a worker
   (requires Cross-Origin-Opener-Policy / Cross-Origin-Embedder-Policy
-  headers on the Axum server if using SharedArrayBuffer).
-- Dev-only FPS/latency HUD.
+  headers on the Axum server if using SharedArrayBuffer). Weigh this
+  against the DOM chrome that must track the canvas every frame.
 
 PHASE 10 — POLISH                                          [NOT STARTED]
 --------------------------------------------------------------------
@@ -425,10 +430,10 @@ Phases 1-4 (storage, ingestion, canvas engine) should be solid before
 most of Phase 5+ feature work — this held true and is why the current
 status shows those phases complete/near-complete while UI polish
 (5-6), performance hardening (9), and extensibility (11) are still
-open. Fix the two known Phase 4 bugs (item drag delta math, note
-edit-vs-move) before building further on top of the canvas engine —
-both are foundational interaction correctness issues that every
-future item type (Phase 11) will inherit if left unresolved.
+open. The two foundational Phase 4 bugs (item drag delta math, note
+edit-vs-move) are fixed and pinned by the gesture test suite
+(frontend/tests + frontend/e2e); keep new interaction work behind the
+same sampled-path tests before building Phase 11 on top.
 
 ========================================================================
 END OF PLAN

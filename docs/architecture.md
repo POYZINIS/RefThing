@@ -26,6 +26,39 @@ RefThing/
   sqlx, wiring core logic to the outside world.
 - **frontend/src/canvas** — the PixiJS engine. Owns the canvas and all
   board rendering; updated imperatively, not through React.
+
+## Frontend board pipeline
+
+```
+pointer ─► NodeInteractionController (canvas presses: select, drag, box select)
+        └► SelectionOverlay (DOM shell over the selection: zones, gestures)
+                 │ pointer samples
+                 ▼
+           canvas/transform.ts  (pure gesture math: move, resize, rotate,
+                 │               flip, aspect reset — unit-tested)
+                 ▼ NodeChange[]
+App.commitBoardOps ─► state/history.ts prepareCommand (inverse ops, no-ops
+                 │    dropped; one entry per gesture) ─► undo stack
+                 ▼
+           optimistic applyOps  +  api/batchQueue.ts (ONE REST batch in
+                                   flight, each with the current base_seq)
+WebSocket (api/ws.ts) is receive-only: other clients' diffs and job events.
+```
+
+- **Every node kind is a canvas sprite.** Images, GIFs and notes share one
+  scene graph and one paint order (`z_index` is a single space across items
+  and notes; ties break by kind then id). Notes paint through
+  `NoteTextureSource` from a `@chenglou/pretext` layout; only the note being
+  edited swaps to a DOM textarea (`NoteEditor`) with identical metrics.
+- **DOM chrome positions from the rendered camera.** Pixi eases the camera;
+  `BoardCanvas` publishes the camera it actually painted each frame
+  (`onRenderedViewportChange`, committed synchronously) and every overlay
+  uses it. `canvas/coordinates.ts` is the one screen↔world converter.
+- **Stacking** is one CSS ladder (`index.css`): canvas < note editor < hover
+  outline < selection shell < drawing < floating chrome < menus.
+- **Commands** (`state/commands.ts`) are pure snapshot+selection → ops
+  functions shared by the keyboard map (`canvas/controls.ts`) and the
+  context menu.
 - **sidecar** — internal Node helper for three.js GLB poster snapshots and
   puppeteer embed screenshots (Phase 11+). See `sidecar/README.md` and
   `docs/onboarding-new-item-type.md`.
