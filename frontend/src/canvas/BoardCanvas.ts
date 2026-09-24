@@ -1,13 +1,14 @@
-import { Application, Container, Graphics } from 'pixi.js';
+import { Application, Container, Graphics, type Texture } from 'pixi.js';
 import type { Item, Note } from '@/api/client';
 import { screenToWorld } from './coordinates';
 import { NodeInteractionController } from './NodeInteractionController';
 import { itemToNode, noteToNode } from './nodes/adapters';
 import type { GifTextureSource } from './nodes/GifTextureSource';
 import type { NodeRenderer } from './nodes/NodeRenderer';
+import { type NoteTextureSource, noteTextureScale } from './nodes/NoteTextureSource';
 import { type PyramidTextureSource, pyramidLevel } from './nodes/PyramidTextureSource';
 import { nodeKindRegistry } from './nodes/registry';
-import type { BoardNode, NodeChange, SpriteNode } from './nodes/types';
+import type { CanvasNode, NodeChange } from './nodes/types';
 
 export type ViewportState = { x: number; y: number; zoom: number };
 
@@ -24,20 +25,18 @@ type CanvasOptions = {
   onBoxSelect?: (worldRect: { x1: number; y1: number; x2: number; y2: number }) => void;
   onClearSelection?: () => void;
   onHoverChange?: (nodeId: string | null) => void;
+  /** Native dblclick on the canvas, with the topmost node under it. */
+  onDoubleClick?: (nodeId: string | null, event: MouseEvent) => void;
   onDragPreview?: (changes: NodeChange[]) => void;
   onNodesChange?: (changes: NodeChange[]) => void;
   snapToGrid?: boolean;
 };
 
 /**
- * Renders sprite-kind nodes (images, gifs) and owns the board's pointer
- * input. Notes arrive as geometry-only nodes for hit-testing and box
- * select — they render through the DOM NoteOverlay.
- *
- * LIMITATION: the notes DOM layer paints above the Pixi canvas layer, so a
- * note always visually covers an item of higher item-z. The interaction
- * layer mirrors that order (notes win hit tests). Full interleave requires
- * Pixi-rendered notes.
+ * Renders every board node (images, GIFs, notes) as a sprite in ONE scene
+ * graph sorted by zIndex — notes and images interleave freely, and the
+ * topmost painted node is the topmost hit. Owns the board's pointer input.
+ * Only the note being edited leaves the canvas (hidden here, edited in DOM).
  */
 export class BoardCanvas {
   private readonly app = new Application();
@@ -51,11 +50,13 @@ export class BoardCanvas {
     onChange: () => this.renderVisible(),
     fallback: this.pyramidTextures,
   });
+  private readonly noteTextures: NoteTextureSource = nodeKindRegistry.note.textureSourceFactory();
   private readonly options: CanvasOptions;
   private readonly controller: NodeInteractionController;
-  private readonly grid = new Map<string, SpriteNode[]>();
-  private spriteNodes: SpriteNode[] = [];
-  private noteNodes: BoardNode[] = [];
+  private readonly grid = new Map<string, CanvasNode[]>();
+  private nodes: CanvasNode[] = [];
+  /** The note being edited: its DOM editor stands in for the sprite. */
+  private hiddenNodeId: string | null = null;
   private panning = false;
   private lastPointer = { x: 0, y: 0 };
   /** Last native pointerdown the controller handled — the selection shell's
@@ -76,9 +77,8 @@ export class BoardCanvas {
     this.renderedViewport = { ...this.viewport };
     this.controller = new NodeInteractionController(
       {
-        spriteCandidates: () => this.visibleSpriteNodes(),
-        noteNodes: () => this.noteNodes,
-        allNodes: () => [...this.spriteNodes, ...this.noteNodes],
+        candidates: () => this.visibleNodes(),
+        allNodes: () => this.nodes,
         worldPoint: (clientX, clientY) => this.worldPoint(clientX, clientY),
         drawBoxSelect: (origin, current) => this.drawBoxSelect(origin, current),
       },
@@ -115,6 +115,7 @@ export class BoardCanvas {
     this.app.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.app.canvas.addEventListener('pointermove', this.onPointerMove);
     this.app.canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    this.app.canvas.addEventListener('dblclick', this.onDoubleClick);
     window.addEventListener('pointerup', this.onPointerUp);
     window.addEventListener('pointercancel', this.onPointerUp);
     this.app.ticker.add(this.onTick);
@@ -124,44 +125,48 @@ export class BoardCanvas {
   update(items: Item[], gifHashes: ReadonlySet<string> = new Set(), notes: Note[] = []): void {
     // If a node is mid-drag, React re-renders (selection change etc.) with
     // the *server* snapshot which still has the pre-drag position. Merge the
-    // in-flight drag position back in so the sprite doesn't snap to the old
+    // in-flight drag position back in so the node doesn't snap to the old
     // spot between pointermove and pointerup.
     //
     // The live nodes are reused BY REFERENCE (never copied): the controller's
     // drag state and release read x/y from that same object, so it must stay
-    // the object painted from. The only fields the live node may have stale
-    // are zIndex (a bring-to-front fired on pointerdown applies
-    // optimistically, so adopt the incoming zIndex onto the live node to
-    // make it paint on press instead of release) and kind (a blob's MIME —
-    // hence gif-ness — can arrive after the node was created).
-    const live = this.controller.isDragging;
-    const liveSprites = live ? this.spriteNodes : null;
-    const liveNotes = live ? this.noteNodes : null;
-    this.spriteNodes = items
-      .filter(
-        (item): item is Item & { blob_hash: string } => item.type === 'image' && !!item.blob_hash,
-      )
-      .map((item) => itemToNode(item, gifHashes.has(item.blob_hash)));
-    this.noteNodes = notes.map(noteToNode);
-    if (liveSprites && liveNotes) {
-      const spriteById = new Map(liveSprites.map((node) => [node.id, node]));
-      this.spriteNodes = this.spriteNodes.map((node) => {
-        const inFlight = spriteById.get(node.id);
-        if (!inFlight) return node;
-        inFlight.zIndex = node.zIndex;
-        inFlight.kind = node.kind;
-        return inFlight;
-      });
-      const noteById = new Map(liveNotes.map((node) => [node.id, node]));
-      this.noteNodes = this.noteNodes.map((node) => {
-        const inFlight = noteById.get(node.id);
-        if (!inFlight) return node;
-        inFlight.zIndex = node.zIndex;
-        return inFlight;
-      });
-    }
+    // the object painted from. Only zIndex (a bring-to-front fired on press
+    // applies optimistically) and kind (a blob's MIME — hence gif-ness — can
+    // arrive late) are adopted from the incoming snapshot.
+    const liveById = this.controller.isDragging
+      ? new Map(this.nodes.map((node) => [node.id, node]))
+      : null;
+    const next: CanvasNode[] = [
+      ...items
+        .filter(
+          (item): item is Item & { blob_hash: string } => item.type === 'image' && !!item.blob_hash,
+        )
+        .map((item) => itemToNode(item, gifHashes.has(item.blob_hash))),
+      ...notes.map(noteToNode),
+    ];
+    this.nodes = liveById
+      ? next.map((node) => {
+          const inFlight = liveById.get(node.id);
+          if (!inFlight || inFlight.kind === 'note' || node.kind === 'note') return node;
+          inFlight.zIndex = node.zIndex;
+          inFlight.kind = node.kind;
+          return inFlight;
+        })
+      : next;
+    // One strict paint order shared by the renderer and the hit test: model
+    // z first; items and notes may share a z value, so ties break by kind
+    // (notes above) and then id — never by whatever order Pixi mounted them.
+    const rank = [...this.nodes].sort(
+      (a, b) =>
+        a.zIndex - b.zIndex ||
+        Number(a.kind === 'note') - Number(b.kind === 'note') ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    );
+    rank.forEach((node, index) => {
+      node.zIndex = index;
+    });
     this.grid.clear();
-    for (const node of this.spriteNodes) {
+    for (const node of this.nodes) {
       for (const key of this.coveredCells(node)) {
         const cell = this.grid.get(key) ?? [];
         cell.push(node);
@@ -170,8 +175,15 @@ export class BoardCanvas {
     }
     this.gifTextures.sync(
       gifHashes,
-      new Set(this.spriteNodes.filter((node) => node.kind === 'gif').map((node) => node.blobHash)),
+      new Set(this.nodes.flatMap((node) => (node.kind === 'gif' ? [node.blobHash] : []))),
     );
+    this.renderVisible();
+  }
+
+  /** Hide one node's sprite while a DOM surface stands in for it (editing). */
+  setHiddenNode(nodeId: string | null): void {
+    if (this.hiddenNodeId === nodeId) return;
+    this.hiddenNodeId = nodeId;
     this.renderVisible();
   }
 
@@ -197,22 +209,6 @@ export class BoardCanvas {
     for (const renderer of this.renderers.values()) {
       renderer.setGrayscale(enabled);
     }
-  }
-
-  /**
-   * A note article's pointerdown, forwarded by the DOM overlay: the note's
-   * own node id skips the hit test, then everything (select, drag, pan)
-   * runs through the same controller path as a canvas press.
-   */
-  notePointerDown(nodeId: string, event: PointerEvent): void {
-    if (event.button === 2) return;
-    this.capturePress(event);
-    // §0.4 MIDDLE-CLICK PAN: middle button always pans, even over items.
-    if (event.button === 1) {
-      this.startPan();
-      return;
-    }
-    this.controller.pressNodeById(nodeId, event);
   }
 
   /**
@@ -291,17 +287,19 @@ export class BoardCanvas {
     this.app.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.app.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.app.canvas.removeEventListener('wheel', this.onWheel);
+    this.app.canvas.removeEventListener('dblclick', this.onDoubleClick);
     window.removeEventListener('pointerup', this.onPointerUp);
     window.removeEventListener('pointercancel', this.onPointerUp);
     this.app.ticker.remove(this.onTick);
     this.gifTextures.dispose();
     this.pyramidTextures.dispose();
+    this.noteTextures.dispose();
     this.app.destroy(true, { children: true, texture: false });
   }
 
   private renderVisible(): void {
     if (!this.initialized) return;
-    const visibleNodes = this.visibleSpriteNodes();
+    const visibleNodes = this.visibleNodes();
     const nextIds = new Set(visibleNodes.map((node) => node.id));
     for (const [id, renderer] of this.renderers) {
       if (!nextIds.has(id)) {
@@ -309,6 +307,7 @@ export class BoardCanvas {
         this.renderers.delete(id);
       }
     }
+    const visibleNotes = new Set<string>();
     for (const node of visibleNodes) {
       let renderer = this.renderers.get(node.id);
       if (!renderer) {
@@ -316,28 +315,41 @@ export class BoardCanvas {
         renderer.mount(this.scene);
         this.renderers.set(node.id, renderer);
       }
-      const source = node.kind === 'gif' ? this.gifTextures : this.pyramidTextures;
+      let texture: Texture;
+      if (node.kind === 'note') {
+        visibleNotes.add(node.id);
+        texture = this.noteTextures.texture(node, this.levelFor(node));
+      } else {
+        const source = node.kind === 'gif' ? this.gifTextures : this.pyramidTextures;
+        texture = source.texture(node, this.levelFor(node));
+      }
       renderer.sync(node, {
-        texture: source.texture(node, this.levelFor(node)),
+        texture,
         grayscale: this.grayscale,
+        alpha: node.kind === 'note' ? node.opacity : 1,
+        hidden: node.id === this.hiddenNodeId,
       });
     }
+    this.noteTextures.retain(visibleNotes);
     this.scene.sortableChildren = true;
   }
 
-  private levelFor(node: SpriteNode): string {
+  private levelFor(node: CanvasNode): string {
+    if (node.kind === 'note') {
+      return String(noteTextureScale(this.renderedViewport.zoom, window.devicePixelRatio));
+    }
     const displayEdge = Math.max(node.width, node.height) * this.renderedViewport.zoom;
     return pyramidLevel(displayEdge);
   }
 
-  private visibleSpriteNodes(): SpriteNode[] {
+  private visibleNodes(): CanvasNode[] {
     const width = this.app.screen.width / this.renderedViewport.zoom;
     const height = this.app.screen.height / this.renderedViewport.zoom;
     const left = -this.renderedViewport.x / this.renderedViewport.zoom - 256;
     const top = -this.renderedViewport.y / this.renderedViewport.zoom - 256;
     const right = left + width + 512;
     const bottom = top + height + 512;
-    const candidates = new Map<string, SpriteNode>();
+    const candidates = new Map<string, CanvasNode>();
     const cellSize = 512;
     for (let x = Math.floor(left / cellSize); x <= Math.floor(right / cellSize); x += 1) {
       for (let y = Math.floor(top / cellSize); y <= Math.floor(bottom / cellSize); y += 1) {
@@ -352,17 +364,20 @@ export class BoardCanvas {
     });
   }
 
-  private coveredCells(node: SpriteNode): string[] {
+  private coveredCells(node: CanvasNode): string[] {
+    // Rotated bounds: a rotated node can reach cells its unrotated rect
+    // doesn't, and must not be culled while its corner is on screen.
+    const bounds = node.rotatedBounds();
     const cellSize = 512;
     const cells: string[] = [];
     for (
-      let x = Math.floor(node.x / cellSize);
-      x <= Math.floor((node.x + node.width) / cellSize);
+      let x = Math.floor(bounds.left / cellSize);
+      x <= Math.floor(bounds.right / cellSize);
       x += 1
     ) {
       for (
-        let y = Math.floor(node.y / cellSize);
-        y <= Math.floor((node.y + node.height) / cellSize);
+        let y = Math.floor(bounds.top / cellSize);
+        y <= Math.floor(bounds.bottom / cellSize);
         y += 1
       )
         cells.push(`${x}:${y}`);
@@ -414,6 +429,11 @@ export class BoardCanvas {
     }
 
     this.controller.press(event);
+  };
+
+  // Native dblclick only — no hand-rolled timing (§7).
+  private readonly onDoubleClick = (event: MouseEvent): void => {
+    this.options.onDoubleClick?.(this.nodeIdAt(event.clientX, event.clientY), event);
   };
 
   private readonly onPointerMove = (event: PointerEvent): void => {

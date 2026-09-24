@@ -1,4 +1,4 @@
-import { type BatchRequest, BoardSocket, type BoardSocketEvent, fetchChanges } from '@/api/client';
+import { BoardSocket, type BoardSocketEvent, fetchChanges } from '@/api/client';
 import { useBoardStore } from '@/state/boardStore';
 
 type PosterReadyPayload = { item_id?: string; sizes?: number[] };
@@ -18,6 +18,9 @@ export type BoardSyncOptions = {
  * - `diff` from ourselves (echo) → only advance the seq cursor; the ops were
  *   already applied optimistically on send.
  * - `resync` → the only path that triggers a full board refetch.
+ *
+ * Receive-only: this client's own writes go through BatchQueue (REST), which
+ * orders them against the seq contract.
  */
 export class BoardSync {
   private readonly clientId: string;
@@ -32,10 +35,6 @@ export class BoardSync {
     this.socket = new BoardSocket(options.boardId, since, options.clientId, (event) => {
       void this.handle(event);
     });
-  }
-
-  send(request: BatchRequest): boolean {
-    return this.socket.send(request);
   }
 
   close(): void {

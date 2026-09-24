@@ -1,10 +1,11 @@
 import { MIN_SCREEN_SIZE_PX } from '@/components/interactionConstants';
 import { GifTextureSource } from './GifTextureSource';
 import type { NodeRenderer } from './NodeRenderer';
+import { NoteTextureSource } from './NoteTextureSource';
 import { PyramidTextureSource } from './PyramidTextureSource';
 import { SpriteRenderer } from './SpriteRenderer';
 import type { TextureSource } from './TextureSource';
-import type { NodeCapabilities, NodeKind } from './types';
+import type { CanvasNode, NodeCapabilities, NodeKind } from './types';
 
 export type TextureSourceDeps = {
   onChange: () => void;
@@ -14,7 +15,7 @@ export type TextureSourceDeps = {
 
 export type NodeKindRegistration = {
   rendererFactory: () => NodeRenderer;
-  textureSourceFactory: (deps: TextureSourceDeps) => TextureSource;
+  textureSourceFactory: (deps: TextureSourceDeps) => TextureSource<CanvasNode> | TextureSource;
   defaults: { freeTransform: boolean; minSize: number };
   capabilities: NodeCapabilities;
 };
@@ -45,15 +46,10 @@ export const nodeKindRegistry = {
     capabilities: spriteCapabilities,
   },
   note: {
-    // Notes render through the DOM NoteOverlay, not the canvas (Phase 2
-    // territory); the registry entry exists so note geometry/capabilities
-    // already ride the node model.
-    rendererFactory: (): NodeRenderer => {
-      throw new Error('note nodes render through the DOM overlay, not the canvas');
-    },
-    textureSourceFactory: (): TextureSource => {
-      throw new Error('note nodes have no texture source');
-    },
+    // Notes are sprites like images — same renderer, same z-order — whose
+    // texture is painted from their text. Only Editing uses the DOM.
+    rendererFactory: () => new SpriteRenderer(),
+    textureSourceFactory: () => new NoteTextureSource(),
     // §4 RULE 5: notes get the same 8-zone shell, but default to free
     // transform (the sanctioned note exception).
     defaults: { freeTransform: true, minSize: MIN_SCREEN_SIZE_PX },

@@ -7,9 +7,11 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --import ./tests/register-types.mjs --test tests/*.test.mjs"
+    "test": "node --import ./tests/register-types.mjs --test tests/*.test.mjs",
+    "test:e2e": "node --test --test-concurrency=1 e2e/*.e2e.mjs"
   },
   "dependencies": {
+    "@chenglou/pretext": "^0.0.9",
     "pixi.js": "^8.20.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

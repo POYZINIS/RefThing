@@ -1,6 +1,7 @@
 import type { Item, Note } from '@/api/client';
+import { noteText } from './noteText';
 import { nodeKindRegistry } from './registry';
-import { type BoardNode, nodeGeometry, type SpriteNode } from './types';
+import { type NoteNode, nodeGeometry, type SpriteNode } from './types';
 
 /** Item → node. `isGif` comes from the blob's MIME (image/gif), not the item. */
 export function itemToNode(item: Item & { blob_hash: string }, isGif: boolean): SpriteNode {
@@ -21,10 +22,13 @@ export function itemToNode(item: Item & { blob_hash: string }, isGif: boolean): 
   };
 }
 
-export function noteToNode(note: Note): BoardNode {
+export function noteToNode(note: Note): NoteNode {
   return {
     id: note.id,
     kind: 'note',
+    text: noteText(note.content_json),
+    bgColor: note.bg_color,
+    opacity: note.opacity,
     x: note.x,
     y: note.y,
     width: note.width,

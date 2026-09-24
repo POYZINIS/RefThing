@@ -36,6 +36,17 @@ export interface SpriteNode extends BoardNode {
   readonly blobHash: string;
 }
 
+/** A note: painted by the NoteTextureSource from its text (pretext layout). */
+export interface NoteNode extends BoardNode {
+  readonly kind: 'note';
+  readonly text: string;
+  readonly bgColor: string | null;
+  readonly opacity: number;
+}
+
+/** Every node the canvas paints. */
+export type CanvasNode = SpriteNode | NoteNode;
+
 /** Geometry the interaction layer can patch on any node kind. */
 export type NodePatch = Partial<Pick<BoardNode, 'x' | 'y' | 'width' | 'height' | 'rotation'>>;
 

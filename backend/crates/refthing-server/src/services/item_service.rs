@@ -501,12 +501,21 @@ pub(crate) fn to_dto(row: CoreItem, metadata: Value) -> Item {
 
 /// Next paint-order slot (top of the stack) for a new item on `board_id`.
 pub(crate) async fn next_z_index(tx: &mut SqliteTransaction<'_>, board_id: Uuid) -> AppResult<i64> {
-    let next: i64 =
-        sqlx::query_scalar("SELECT COALESCE(MAX(z_index) + 1, 0) FROM items WHERE board_id = ?")
-            .bind(board_id)
-            .fetch_one(&mut **tx)
-            .await?;
-    Ok(next)
+    Ok(next_shared_z(tx, board_id).await?)
+}
+
+/// Top of the board's ONE paint order. Items and notes interleave on the
+/// canvas, so a new node of either kind must land above both.
+pub(crate) async fn next_shared_z(
+    tx: &mut SqliteTransaction<'_>,
+    board_id: Uuid,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COALESCE(MAX(z) + 1, 0) FROM (              SELECT z_index AS z FROM items WHERE board_id = ?1              UNION ALL SELECT z_index FROM notes WHERE board_id = ?1)",
+    )
+    .bind(board_id)
+    .fetch_one(&mut **tx)
+    .await
 }
 
 /// The full-fidelity `create` payload stored in the event row. `BatchOp` has

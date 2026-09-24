@@ -54,10 +54,12 @@ for (const kind of ['image', 'note']) {
       onSample: async (sample) => {
         const frame = await probe(page, id);
         assert.deepEqual(frame.selection, [id], at(sample, 'press did not select'));
-        const target = kind === 'image' ? frame.painted : frame.note;
         assert.ok(
-          sameRect(frame.shell, target),
-          at(sample, `outline ${JSON.stringify(frame.shell)} vs node ${JSON.stringify(target)}`),
+          sameRect(frame.shell, frame.painted),
+          at(
+            sample,
+            `outline ${JSON.stringify(frame.shell)} vs painted ${JSON.stringify(frame.painted)}`,
+          ),
         );
       },
     });
@@ -88,29 +90,29 @@ test('pan: notes and the selection outline never lead the eased canvas', async (
     amplitudeY: 120,
     durationMs: 600,
   });
-  const before = await probe(page, noteId);
-  const beforeImage = await probe(page, imageId);
+  const initial = (await probe(page, [noteId, imageId])).painted;
   await drag(page, {
     from: start,
     samples: path,
     button: 'middle',
     onSample: async (sample) => {
-      const note = await probe(page, noteId);
-      const image = await probe(page, imageId);
+      const frame = await probe(page, [noteId, imageId]);
+      const note = { painted: frame.painted[noteId] };
+      const image = { painted: frame.painted[imageId] };
       // Image outline vs painted sprite: same camera, same frame.
       assert.ok(
-        sameRect(image.shell, image.painted),
+        sameRect(frame.shell, image.painted),
         at(
           sample,
-          `outline ${JSON.stringify(image.shell)} vs sprite ${JSON.stringify(image.painted)}`,
+          `outline ${JSON.stringify(frame.shell)} vs sprite ${JSON.stringify(image.painted)}`,
         ),
       );
-      // Note ↔ sprite rigid relationship: both are drawn from the same
-      // camera, so their offset never changes during a pan.
-      const dx = note.note.x - image.painted.x;
-      const dy = note.note.y - image.painted.y;
-      const dx0 = before.note.x - beforeImage.painted.x;
-      const dy0 = before.note.y - beforeImage.painted.y;
+      // Note ↔ image rigid relationship: both paint from the same camera,
+      // so their offset never changes during a pan.
+      const dx = note.painted.x - image.painted.x;
+      const dy = note.painted.y - image.painted.y;
+      const dx0 = initial[noteId].x - initial[imageId].x;
+      const dy0 = initial[noteId].y - initial[imageId].y;
       assert.ok(
         Math.abs(dx - dx0) <= 1.5 && Math.abs(dy - dy0) <= 1.5,
         at(sample, `note drifted from the canvas by (${dx - dx0}, ${dy - dy0})`),

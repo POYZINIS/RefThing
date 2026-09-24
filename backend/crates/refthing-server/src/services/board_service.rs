@@ -259,8 +259,9 @@ pub struct NewNote {
     pub height: f64,
     #[serde(default)]
     pub rotation: f64,
+    /// Omitted → top of the board's shared item/note paint order.
     #[serde(default)]
-    pub z_index: i64,
+    pub z_index: Option<i64>,
     #[serde(default = "empty_content")]
     pub content_json: Value,
     pub bg_color: Option<String>,
@@ -489,6 +490,10 @@ pub async fn create_note(
     }
 
     let id = Uuid::now_v7();
+    let z_index = match new.z_index {
+        Some(z_index) => z_index,
+        None => super::item_service::next_shared_z(tx, board_id).await?,
+    };
     let note = sqlx::query_as::<_, models::Note>(
         "INSERT INTO notes (id, board_id, x, y, width, height, rotation, z_index, content_json, bg_color, opacity) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 1.0)) RETURNING *",
@@ -500,7 +505,7 @@ pub async fn create_note(
     .bind(new.width)
     .bind(new.height)
     .bind(new.rotation)
-    .bind(new.z_index)
+    .bind(z_index)
     .bind(&new.content_json)
     .bind(new.bg_color.as_deref())
     .bind(new.opacity)

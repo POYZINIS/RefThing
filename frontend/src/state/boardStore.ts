@@ -183,7 +183,9 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       if (!snapshot) return state;
       // One indexed implementation for every op kind (including put_note /
       // restore_item / group ops the interactive commands now emit).
-      return { snapshot: applyBoardOps(snapshot, ops, seq ?? snapshot.seq) };
+      // The seq cursor only moves forward: a late WS echo of an older batch
+      // must never rewind it under a newer REST response.
+      return { snapshot: applyBoardOps(snapshot, ops, Math.max(snapshot.seq, seq ?? 0)) };
     });
   },
 

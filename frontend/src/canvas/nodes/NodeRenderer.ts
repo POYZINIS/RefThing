@@ -4,6 +4,10 @@ import type { BoardNode } from './types';
 export type RenderFrame = {
   texture?: Texture;
   grayscale?: boolean;
+  /** 0–1 node opacity (notes carry one today). */
+  alpha?: number;
+  /** Hidden while a DOM surface stands in for it (the note being edited). */
+  hidden?: boolean;
 };
 
 export interface NodeRenderer {

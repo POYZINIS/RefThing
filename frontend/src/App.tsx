@@ -1,4 +1,6 @@
 import { type ComponentType, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
+import { BatchQueue } from '@/api/batchQueue';
 import {
   type BatchRequestOp,
   createSession,
@@ -8,16 +10,16 @@ import {
   type ItemPatch,
   type Note,
   searchBoard,
-  submitBatch,
 } from '@/api/client';
 import { BoardSync } from '@/api/ws';
 import { BoardCanvas, type ViewportState } from '@/canvas/BoardCanvas';
 import { keyboardAction } from '@/canvas/controls';
 import { itemToNode, noteToNode } from '@/canvas/nodes/adapters';
-import type { BoardNode, NodeChange, NodePatch } from '@/canvas/nodes/types';
+import { noteText } from '@/canvas/nodes/noteText';
+import type { CanvasNode, NodeChange, NodePatch } from '@/canvas/nodes/types';
 import BoardViewManager from '@/components/BoardViewManager';
 import { DrawingOverlay } from '@/components/DrawingOverlay';
-import { NoteOverlay } from '@/components/NoteOverlay';
+import { NoteEditor } from '@/components/NoteEditor';
 import SearchBar, { emptyFilter, type FilterState, filterIsEmpty } from '@/components/SearchBar';
 import { SelectionOverlay } from '@/components/SelectionOverlay';
 import TagManager from '@/components/TagManager';
@@ -107,6 +109,7 @@ function BoardApp() {
   const [drawing, setDrawing] = useState(false);
   const [sampledColor, setSampledColor] = useState<string | null>(null);
   const socket = useRef<BoardSync | null>(null);
+  const batchQueue = useRef<BatchQueue | null>(null);
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Set by the canvas pan handler via onViewportChange so we know the
   // viewport is being driven by user panning.  The snapshot sync effect
@@ -142,7 +145,7 @@ function BoardApp() {
   const saveViewport = useBoardStore((state) => state.saveViewport);
   const addNote = () => {
     if (!activeBoardId || !snapshot) return;
-    const maxZ = snapshot.notes.reduce((max, note) => Math.max(max, note.z_index), 0);
+    const maxZ = topZ(snapshot);
     const now = Date.now();
     const note: Note = {
       id: crypto.randomUUID(),
@@ -162,18 +165,18 @@ function BoardApp() {
     commitBoardOps.current([{ kind: 'put_note', op_id: crypto.randomUUID(), note }], 'Add note');
   };
   // §4 RULE 4 — text edits commit ONCE on editing exit, as a single undo
-  // entry. No content change → no op, no history entry.
-  const saveNote = (noteId: string, content: string) => {
+  // entry (text and any §4 RULE 6 auto-grow together). No change → no op.
+  const saveNote = (noteId: string, content: string, height: number) => {
     const note = snapshot?.notes.find((candidate) => candidate.id === noteId);
     if (!note) return;
     const current = (note.content_json as { text?: unknown })?.text;
-    if (current === content) return;
+    if (current === content && note.height === height) return;
     commitBoardOps.current(
       [
         {
           kind: 'put_note',
           op_id: crypto.randomUUID(),
-          note: { ...note, content_json: { text: content }, updated_at: Date.now() },
+          note: { ...note, content_json: { text: content }, height, updated_at: Date.now() },
         },
       ],
       'Edit note',
@@ -191,6 +194,8 @@ function BoardApp() {
     () => new Set(snapshot?.notes.map((note) => note.id) ?? []),
     [snapshot?.notes],
   );
+  const noteIdsRef = useRef(noteIds);
+  noteIdsRef.current = noteIds;
   const primaryNodeId = selectedNodeIds[0] ?? null;
   const primaryItemId = primaryNodeId && !noteIds.has(primaryNodeId) ? primaryNodeId : null;
   const selectedNoteId =
@@ -217,6 +222,7 @@ function BoardApp() {
     ? (renderedNotes.find((note) => note.id === selectedNoteId) ?? null)
     : null;
   const noteEditing = selectedNote !== null && noteEditingId === selectedNote.id;
+  const editingNote = noteEditing ? selectedNote : null;
   const [filter, setFilter] = useState<FilterState>(emptyFilter);
 
   // Phase 6: FTS5 server-side search. When the text query is non-empty,
@@ -309,9 +315,12 @@ function BoardApp() {
       onPosterReady: () => boardCanvas.current?.clearTextureFailures(),
     });
     socket.current = sync;
+    const queue = new BatchQueue(activeBoardId, clientId.current);
+    batchQueue.current = queue;
     return () => {
       sync.close();
       if (socket.current === sync) socket.current = null;
+      if (batchQueue.current === queue) batchQueue.current = null;
     };
   }, [activeBoardId]);
 
@@ -328,7 +337,11 @@ function BoardApp() {
           void saveViewport(viewport);
         }, 250);
       },
-      onRenderedViewportChange: setOverlayViewport,
+      // Commit synchronously inside the canvas tick: Pixi paints this frame
+      // with this camera, so the DOM chrome must commit before the same paint
+      // — a normally-scheduled update lands a frame late and the outline
+      // trails the canvas while easing.
+      onRenderedViewportChange: (rendered) => flushSync(() => setOverlayViewport(rendered)),
       onSelectionChange: (nodeId) => {
         setSelectedNodeIds(nodeId ? [nodeId] : []);
         setNoteEditingId(null);
@@ -357,6 +370,13 @@ function BoardApp() {
         setDragPreview({});
       },
       onHoverChange: (nodeId) => setHoveredNodeId(nodeId),
+      // §4 RULE 2: double-click is the only way into note Editing.
+      onDoubleClick: (nodeId) => {
+        if (nodeId && noteIdsRef.current.has(nodeId)) {
+          setSelectedNodeIds([nodeId]);
+          setNoteEditingId(nodeId);
+        }
+      },
       // The controller mutates canvas-side node objects during a drag; DOM
       // chrome (selection outline, notes) needs the live positions relayed.
       onDragPreview: (changes) => {
@@ -380,6 +400,11 @@ function BoardApp() {
   useEffect(() => {
     boardCanvas.current?.setGrayscale(grayscale);
   }, [grayscale]);
+
+  // The note being edited is drawn by its DOM editor, not the canvas.
+  useEffect(() => {
+    boardCanvas.current?.setHiddenNode(noteEditing ? noteEditingId : null);
+  }, [noteEditing, noteEditingId]);
 
   useEffect(() => {
     const onSample = (event: Event) => setSampledColor((event as CustomEvent<string>).detail);
@@ -458,7 +483,7 @@ function BoardApp() {
     () =>
       selectedNodeIds
         .map((id) => boardNodesById.get(id))
-        .filter((node): node is BoardNode => !!node),
+        .filter((node): node is CanvasNode => !!node),
     [selectedNodeIds, boardNodesById],
   );
   // §6 RULE 1: a grouped node selects its group as one unit — the shell
@@ -479,15 +504,9 @@ function BoardApp() {
   // by fresh commands and undo/redo replays.
   const sendOps = (ops: BatchRequestOp[]) => {
     if (!activeBoardId || !snapshot || ops.length === 0) return;
-    const request = { base_seq: snapshot.seq, client_id: clientId.current, ops };
-    if (socket.current?.send(request)) {
-      // Optimistic apply; the echo diff only advances our seq cursor.
-      applyOps(ops);
-      return;
-    }
-    void submitBatch(activeBoardId, request)
-      .then((result) => applyOps(ops, result.seq))
-      .catch(() => openBoard(activeBoardId));
+    // Optimistic apply now; the queue delivers in order, one batch at a time.
+    applyOps(ops);
+    batchQueue.current?.submit(ops);
   };
 
   commitBoardOps.current = (ops, label) => {
@@ -522,35 +541,40 @@ function BoardApp() {
     sendOps(entry.forward);
   };
 
-  // Raise a clicked node to the front of its layer. Item order is one
-  // set_z op (index 0 = backmost, so the clicked item goes last); notes
-  // have their own notes-relative z order, so "front" = max note z_index + 1.
+  // Selecting a node raises it above EVERYTHING — items and notes share one
+  // z space, so an image can come up over a note and vice versa. This is a
+  // side effect of selecting, not a user command: it syncs to the server
+  // but never becomes an undo entry of its own.
   bringNodeToFrontRef.current = (nodeId) => {
     if (!activeBoardId || !snapshot) return;
-    if (noteIds.has(nodeId)) {
-      const maxZ = snapshot.notes.reduce((max, note) => Math.max(max, note.z_index), 0);
-      const note = snapshot.notes.find((candidate) => candidate.id === nodeId);
-      // Skip if the note is already strictly ahead of every other note.
-      if (!note || note.z_index > maxZ) return;
-      commitBoardOps.current(
-        [
-          {
-            kind: 'put_note',
-            op_id: crypto.randomUUID(),
-            note: { ...note, z_index: maxZ + 1, updated_at: Date.now() },
-          },
-        ],
-        'Bring to front',
-      );
-      return;
+    const maxZ = topZ(snapshot);
+    const item = snapshot.items.find((candidate) => candidate.id === nodeId);
+    const note = snapshot.notes.find((candidate) => candidate.id === nodeId);
+    const current = item?.z_index ?? note?.z_index;
+    if (current === undefined) return;
+    const sharesTop =
+      snapshot.items.filter((candidate) => candidate.z_index === maxZ).length +
+        snapshot.notes.filter((candidate) => candidate.z_index === maxZ).length >
+      1;
+    if (current === maxZ && !sharesTop) return;
+    if (item) {
+      sendOps([
+        {
+          kind: 'update',
+          op_id: crypto.randomUUID(),
+          item_id: nodeId,
+          fields: { z_index: maxZ + 1 },
+        },
+      ]);
+    } else if (note) {
+      sendOps([
+        {
+          kind: 'put_note',
+          op_id: crypto.randomUUID(),
+          note: { ...note, z_index: maxZ + 1, updated_at: Date.now() },
+        },
+      ]);
     }
-    const ids = snapshot.items.map((it) => it.id);
-    if (!ids.includes(nodeId) || ids[ids.length - 1] === nodeId) return;
-    const order = [...ids.filter((id) => id !== nodeId), nodeId];
-    commitBoardOps.current(
-      [{ kind: 'set_z' as const, op_id: crypto.randomUUID(), order }],
-      'Bring to front',
-    );
   };
 
   // One command for a mixed item+note change set (e.g. a group drag ending
@@ -657,6 +681,7 @@ function BoardApp() {
         rotation,
         zIndex,
       })),
+      notes: snapshot?.notes.map((note) => ({ id: note.id, text: noteText(note.content_json) })),
       undoDepth: undoStack.current.length,
       painted: (id: string) => boardCanvas.current?.paintedClientRect(id) ?? null,
     };
@@ -839,30 +864,23 @@ function BoardApp() {
         <div id="canvas-host" ref={canvasHost} />
         {snapshot && <SearchBar tags={snapshot.tags} filter={filter} onChange={setFilter} />}
         <DrawingOverlay enabled={drawing} viewport={overlayViewport} />
-        {/* Notes render with their live transform preview; z_index pulls
-            front notes above back ones. A selected note is inert here — the
-            SelectionOverlay shell covers it and owns the pointer (matching
-            how a selected image sprite is inert behind the shell). */}
-        {renderedNotes.map((note) => (
-          <NoteOverlay
-            key={note.id}
-            note={note}
+        {/* §4 Editing: the one note being edited swaps its canvas sprite for
+            a DOM editor laid out with the same pretext metrics. */}
+        {editingNote && (
+          <NoteEditor
+            key={editingNote.id}
+            note={editingNote}
             viewport={overlayViewport}
-            selected={selectedNodeIds.includes(note.id)}
-            editing={noteEditingId === note.id}
-            onPress={(event) => boardCanvas.current?.notePointerDown(note.id, event.nativeEvent)}
-            onSelect={() => {
-              setSelectedNodeIds([note.id]);
-              setNoteEditingId(null);
+            onGrow={(height) =>
+              setPreviewPatches((previous) => ({ ...previous, [editingNote.id]: { height } }))
+            }
+            onCommit={(text, height) => {
               setPreviewPatches({});
-              setDragPreview({});
-              bringNodeToFrontRef.current(note.id);
+              saveNote(editingNote.id, text, height);
             }}
-            onHover={(hovering) => setHoveredNodeId(hovering ? note.id : null)}
-            onEditingChange={(editing) => setNoteEditingId(editing ? note.id : null)}
-            onSave={(content) => saveNote(note.id, content)}
+            onExit={() => setNoteEditingId(null)}
           />
-        ))}
+        )}
         {/* §1 HOVERED — 1px 40% outline on an unselected node (any kind).
             Replaced by the selection outline the moment that node is
             selected. rotatedBounds() keeps the outline tight on rotated
@@ -963,6 +981,14 @@ async function sampleColor(): Promise<void> {
   if (!picker) return;
   const result = await new picker().open();
   window.dispatchEvent(new CustomEvent('refthing-color-sampled', { detail: result.sRGBHex }));
+}
+
+/** Highest z across items AND notes — they share one paint order. */
+function topZ(snapshot: { items: { z_index: number }[]; notes: { z_index: number }[] }): number {
+  let max = 0;
+  for (const item of snapshot.items) max = Math.max(max, item.z_index);
+  for (const note of snapshot.notes) max = Math.max(max, note.z_index);
+  return max;
 }
 
 function asViewport(value: unknown): ViewportState {

@@ -40,7 +40,10 @@ button:disabled {
 
 .app-shell {
   display: grid;
-  grid-template: 68px 1fr / 248px 1fr;
+  /* minmax(0, …): a long board list must never grow the grid past the
+     window — the shell clips, and focusing a row would then scroll the
+     clipped shell and push the canvas off-screen. The sidebar scrolls. */
+  grid-template: 68px minmax(0, 1fr) / 248px minmax(0, 1fr);
   width: 100%;
   height: 100%;
   overflow: hidden;
@@ -149,6 +152,8 @@ button:disabled {
 .sidebar {
   display: flex;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
   flex-direction: column;
   padding: 24px 14px 16px;
   border-right: 1px solid #272d35;
@@ -276,10 +281,24 @@ button:disabled {
   display: block;
 }
 
+/* Board stacking order — one explicit ladder, lowest to highest. Every node
+   (image, GIF, note) paints INSIDE the canvas in its own z order, so no DOM
+   node layer can ever cover the selection chrome.
+     canvas 0 < note editor 10 < hover outline 20 < selection shell 30
+     < drawing 40 < floating chrome (search, status, menus) 50+ */
+:root {
+  --z-note-editor: 10;
+  --z-hover-outline: 20;
+  --z-selection: 30;
+  --z-drawing: 40;
+  --z-chrome: 50;
+  --z-menu: 60;
+}
+
 .drawing-overlay {
   position: absolute;
   inset: 0;
-  z-index: 5;
+  z-index: var(--z-drawing);
   width: 100%;
   height: 100%;
   cursor: crosshair;
@@ -288,7 +307,7 @@ button:disabled {
 
 .selection-overlay {
   position: absolute;
-  z-index: 3;
+  z-index: var(--z-selection);
   pointer-events: none;
 }
 
@@ -296,47 +315,25 @@ button:disabled {
    unselected item. The ONLY chrome allowed on an unselected item. */
 .hover-outline {
   position: absolute;
-  z-index: 2;
+  z-index: var(--z-hover-outline);
   pointer-events: none;
   outline: 1px solid rgb(214 255 118 / 40%);
   outline-offset: 0;
 }
 
-.note-overlay {
+/* §4 Editing surface. Geometry, font and colors come inline from the shared
+   note metrics (canvas/nodes/noteText.ts) so it matches the painted note. */
+.note-editor {
   position: absolute;
-  z-index: 4;
-  overflow: hidden;
-  border: 1px solid #a99657;
+  z-index: var(--z-note-editor);
+  box-sizing: border-box;
+  margin: 0;
   border-radius: 4px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 22%);
-  pointer-events: auto;
-}
-
-/* §1 EDITING — outline switches from solid to dashed for the duration of
-   editing (notes only). No handles can appear in this state. */
-.note-overlay-editing {
-  border-style: dashed;
-  box-shadow: 0 0 18px rgb(196 240 108 / 18%);
-}
-
-.note-overlay textarea {
-  width: 100%;
-  height: 100%;
-  padding: 12px;
-  border: 0;
   outline: 0;
   resize: none;
-  color: #332e1f;
-  background: transparent;
-  font-size: 14px;
-  line-height: 1.4;
-}
-
-.selection-handle,
-.resize-handle,
-.rotate-handle {
-  /* Replaced by interaction-conventions overlay (SelectionOverlay §1–§3):
-     zero persistent UI, hover-reveal edge/corner zones only. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  transform-origin: center;
 }
 
 .empty-state {
@@ -386,7 +383,7 @@ button:disabled {
 .canvas-meta,
 .error-banner {
   position: absolute;
-  z-index: 2;
+  z-index: var(--z-chrome);
   font-size: 11px;
 }
 
@@ -471,7 +468,7 @@ button:disabled {
   position: absolute;
   top: 17px;
   left: 50%;
-  z-index: 3;
+  z-index: var(--z-chrome);
   display: flex;
   flex-direction: column;
   gap: 8px;

@@ -151,12 +151,13 @@ export async function nodeCenter(page, id) {
 }
 
 /**
- * Per-frame alignment probe: where Pixi painted `id`, where the selection
- * shell's outline sits, and where the node's DOM element (notes) sits — all
- * as client-px AABBs.
+ * Per-frame alignment probe: where Pixi painted each id and where the
+ * selection shell's outline sits, as client-px AABBs — all read in ONE
+ * evaluate so every value comes from the same frame. `painted` is keyed by id
+ * when given an array.
  */
-export function probe(page, id) {
-  return page.evaluate((nodeId) => {
+export function probe(page, ids) {
+  return page.evaluate((nodeIds) => {
     const hook = window.__refthing;
     const rect = (element) => {
       if (!element) return null;
@@ -164,12 +165,13 @@ export function probe(page, id) {
       return { x: r.x, y: r.y, width: r.width, height: r.height };
     };
     return {
-      painted: hook.painted(nodeId),
+      painted: Array.isArray(nodeIds)
+        ? Object.fromEntries(nodeIds.map((id) => [id, hook.painted(id)]))
+        : hook.painted(nodeIds),
       shell: rect(document.querySelector('.selection-overlay')),
-      note: rect(document.querySelector(`[data-node-id="${nodeId}"]`)),
       selection: hook.selection,
     };
-  }, id);
+  }, ids);
 }
 
 export function sameRect(a, b, tolerance = 1.5) {

@@ -26,6 +26,8 @@ export class SpriteRenderer implements NodeRenderer {
     sprite.height = node.height;
     sprite.rotation = (node.rotation * Math.PI) / 180;
     sprite.zIndex = node.zIndex;
+    sprite.alpha = frame.alpha ?? 1;
+    sprite.visible = !frame.hidden;
     this.applyGrayscale(frame.grayscale ?? false);
   }
 

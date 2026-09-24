@@ -641,6 +641,48 @@ async fn note_crud_and_update() {
     assert_eq!(snapshot["notes"].as_array().expect("notes").len(), 0);
 }
 
+/// Items and notes share ONE paint order (the canvas interleaves them), so
+/// a new node of either kind lands above both kinds.
+#[tokio::test]
+async fn new_items_and_notes_share_one_z_stack() {
+    let app = spawn_app().await;
+    let board = create_board(&app, "z-stack").await;
+    let board_id = id_of(&board);
+    let post = |path: &'static str, body: Value| {
+        let url = format!("{}/api/boards/{board_id}/{path}", app.base);
+        async move {
+            client()
+                .post(url)
+                .json(&body)
+                .send()
+                .await
+                .expect("post")
+                .json::<Value>()
+                .await
+                .expect("json")
+        }
+    };
+    let geometry = json!({"type": "image", "x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0});
+    let first = post("items", geometry.clone()).await;
+    let note = post("notes", json!({"width": 10.0, "height": 10.0})).await;
+    let second = post("items", geometry).await;
+    let pinned = post(
+        "notes",
+        json!({"width": 10.0, "height": 10.0, "z_index": -5}),
+    )
+    .await;
+
+    let z = |value: &Value, key: &str| value[key]["z_index"].as_i64().expect("z_index");
+    assert_eq!(z(&first, "item"), 0);
+    assert_eq!(z(&note, "note"), 1, "a new note lands above existing items");
+    assert_eq!(
+        z(&second, "item"),
+        2,
+        "a new item lands above existing notes"
+    );
+    assert_eq!(z(&pinned, "note"), -5, "an explicit z_index is kept");
+}
+
 #[tokio::test]
 async fn tag_crud() {
     let app = spawn_app().await;

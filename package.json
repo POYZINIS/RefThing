@@ -15,7 +15,8 @@
     "lint": "biome check . && cargo clippy --manifest-path backend/Cargo.toml --workspace --all-targets",
     "fmt": "biome check --write . && cargo fmt --manifest-path backend/Cargo.toml --all",
     "typecheck": "npm run typecheck -w frontend",
-    "test": "npm run test -w frontend"
+    "test": "npm run test -w frontend",
+    "test:e2e": "npm run test:e2e -w frontend"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",

@@ -322,13 +322,16 @@ export function SelectionOverlay({
     return ctrlHeld ? ROTATE_CURSOR : zoneCursor(hovered, box.rotation);
   })();
 
+  // §4 RULE 3: while Editing the zones are not just hidden but gone — a
+  // child with its own pointer-events would still take presses through the
+  // shell's pointer-events: none.
   const zoneStrip = (style: React.CSSProperties, z: number) => (
     <div
       style={{
         position: 'absolute',
         pointerEvents: 'auto',
         zIndex: z,
-        display: collapsed ? 'none' : 'block',
+        display: collapsed || editing ? 'none' : 'block',
         ...style,
       }}
     />

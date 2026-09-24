@@ -19,10 +19,8 @@ export type InteractionCallbacks = {
 };
 
 export type InteractionHost = {
-  /** Culled visible sprite nodes — hit tests stay O(viewport) at 20k items. */
-  spriteCandidates(): BoardNode[];
-  /** All note nodes. Notes render in the DOM layer above the canvas. */
-  noteNodes(): BoardNode[];
+  /** Culled visible nodes of every kind — hit tests stay O(viewport) at 20k. */
+  candidates(): BoardNode[];
   /** Every node (box select + group-mate lookup). */
   allNodes(): BoardNode[];
   /** Client coords → world coords through the rendered viewport. */
@@ -53,11 +51,9 @@ const toChange = (node: BoardNode): NodeChange => ({
 
 /**
  * The ONE pointer state machine for node interaction (idle → hover /
- * pressed → dragging | box-select). Fed by the canvas element (empty space
- * + sprite hits) and by note DOM elements forwarding their pointerdown with
- * their node id — both paths converge on the same press/move/release logic,
- * so a note and an image select, drag, and box-select identically (§0.7,
- * §4 RULE 1). Pan and wheel zoom stay with the canvas (they never touch
+ * pressed → dragging | box-select). Every node kind is a canvas node, so a
+ * note and an image select, drag, and box-select through literally the same
+ * path (§0.7, §4 RULE 1). Pan and wheel zoom stay with the canvas (they never touch
  * nodes); the transform shell (SelectionOverlay) owns resize/rotate of an
  * already-selected box.
  */
@@ -81,16 +77,6 @@ export class NodeInteractionController {
   press(event: PointerEvent): void {
     const point = this.host.worldPoint(event.clientX, event.clientY);
     this.beginPress(this.hitTest(point), point, event);
-  }
-
-  /** Note DOM press: the article knows its node — skip the hit test. */
-  pressNodeById(nodeId: string, event: PointerEvent): void {
-    const node = this.host.allNodes().find((candidate) => candidate.id === nodeId);
-    // A forwarded DOM press is never an empty-canvas press: if the node
-    // hasn't reached the canvas yet, ignore it rather than box-selecting.
-    if (!node) return;
-    const point = this.host.worldPoint(event.clientX, event.clientY);
-    this.beginPress(node, point, event);
   }
 
   move(event: PointerEvent): void {
@@ -220,18 +206,17 @@ export class NodeInteractionController {
   }
 
   /**
-   * Unified z order at the interaction level: notes render in the DOM layer
-   * above the canvas, so they win over sprites; within a layer, higher
-   * zIndex wins. Hit tests use node.containsPoint (rotation-aware).
+   * One z order for every kind: the topmost painted node is the topmost
+   * hit. Ties resolve like the renderer (later in the list paints on top).
+   * Hit tests use node.containsPoint (rotation-aware).
    */
   private hitTest(point: { x: number; y: number }): BoardNode | null {
-    const byZDesc = (left: BoardNode, right: BoardNode) => right.zIndex - left.zIndex;
-    const note = [...this.host.noteNodes()].sort(byZDesc).find((node) => node.containsPoint(point));
-    if (note) return note;
-    return (
-      [...this.host.spriteCandidates()].sort(byZDesc).find((node) => node.containsPoint(point)) ??
-      null
-    );
+    const nodes = this.host.candidates();
+    let best: BoardNode | null = null;
+    for (const node of nodes) {
+      if ((best === null || node.zIndex >= best.zIndex) && node.containsPoint(point)) best = node;
+    }
+    return best;
   }
 
   private updateHover(node: BoardNode | null): void {
