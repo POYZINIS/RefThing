@@ -60,12 +60,12 @@ pub async fn get_or_create(
 }
 
 /// Lists all tags, ordered by name.
-pub async fn list(pool: &SqlitePool) -> Result<Vec<Tag>, CoreError> {
+pub async fn list(executor: impl sqlx::SqliteExecutor<'_>) -> Result<Vec<Tag>, CoreError> {
     sqlx::query_as!(
         Tag,
         "SELECT id AS \"id!: Uuid\", name AS \"name!\", color FROM tags ORDER BY name COLLATE NOCASE"
     )
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await
     .map_err(|error| CoreError::Db(error.to_string()))
 }

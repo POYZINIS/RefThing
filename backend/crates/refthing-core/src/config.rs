@@ -11,6 +11,10 @@ pub struct AppConfig {
     pub host: String,
     pub port: u16,
     pub data_dir: PathBuf,
+    /// Directory with a built frontend to serve as an SPA fallback (the
+    /// desktop app points this at the bundled `frontend/dist`; plain server
+    /// deployments leave it unset).
+    pub static_dir: Option<PathBuf>,
 }
 
 impl Default for AppConfig {
@@ -19,13 +23,15 @@ impl Default for AppConfig {
             host: DEFAULT_HOST.to_string(),
             port: DEFAULT_PORT,
             data_dir: PathBuf::from(DEFAULT_DATA_DIR),
+            static_dir: None,
         }
     }
 }
 
 impl AppConfig {
-    /// Builds a config from `REFTHING_HOST`, `REFTHING_PORT` and
-    /// `REFTHING_DATA_DIR` environment variables, falling back to defaults.
+    /// Builds a config from `REFTHING_HOST`, `REFTHING_PORT`,
+    /// `REFTHING_DATA_DIR` and `REFTHING_STATIC_DIR` environment variables,
+    /// falling back to defaults.
     ///
     /// # Errors
     /// Returns [`CoreError::Config`] if `REFTHING_PORT` is not a valid `u16`.
@@ -52,6 +58,10 @@ impl AppConfig {
             config.data_dir = PathBuf::from(dir);
         }
 
+        if let Some(dir) = lookup("REFTHING_STATIC_DIR").filter(|v| !v.is_empty()) {
+            config.static_dir = Some(PathBuf::from(dir));
+        }
+
         Ok(config)
     }
 }
@@ -76,6 +86,7 @@ mod tests {
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 7171);
         assert_eq!(config.data_dir, PathBuf::from("./data"));
+        assert_eq!(config.static_dir, None);
     }
 
     #[test]
@@ -102,6 +113,17 @@ mod tests {
         let vars = [("REFTHING_HOST", ""), ("REFTHING_PORT", "")];
         let config = AppConfig::from_lookup(lookup_from(&vars)).expect("config loads");
         assert_eq!(config, AppConfig::default());
+    }
+
+    #[test]
+    fn static_dir_is_loaded_from_env() {
+        let vars = [("REFTHING_STATIC_DIR", "frontend/dist")];
+        let config = AppConfig::from_lookup(lookup_from(&vars)).expect("config loads");
+        assert_eq!(config.static_dir, Some(PathBuf::from("frontend/dist")));
+
+        let vars = [("REFTHING_STATIC_DIR", "")];
+        let config = AppConfig::from_lookup(lookup_from(&vars)).expect("config loads");
+        assert_eq!(config.static_dir, None);
     }
 
     #[test]

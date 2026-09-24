@@ -1,0 +1,236 @@
+import { type BoardNode, type NodeChange, nodeChangeKind } from './nodes/types';
+
+export type InteractionCallbacks = {
+  /** Press-selected a single node (replaces the selection), or null. */
+  onSelectionChange?: (nodeId: string | null) => void;
+  /** Shift-click: toggle one node's membership without starting a drag. */
+  onSelectionToggle?: (nodeId: string) => void;
+  /** Box-select committed a set of node ids (mixed kinds). */
+  onMultiSelectChange?: (nodeIds: string[]) => void;
+  onClearSelection?: () => void;
+  onHoverChange?: (nodeId: string | null) => void;
+  onBoxSelect?: (worldRect: { x1: number; y1: number; x2: number; y2: number }) => void;
+  /** Live positions while a drag moves DOM-rendered nodes (notes); sprite
+   *  nodes paint from the canvas-side mutation directly. */
+  onDragPreview?: (changes: NodeChange[]) => void;
+  /** Drag committed on release; positions already reflect the mutation. */
+  onNodesChange?: (changes: NodeChange[]) => void;
+};
+
+export type InteractionHost = {
+  /** Culled visible sprite nodes — hit tests stay O(viewport) at 20k items. */
+  spriteCandidates(): BoardNode[];
+  /** All note nodes. Notes render in the DOM layer above the canvas. */
+  noteNodes(): BoardNode[];
+  /** Every node (box select + group-mate lookup). */
+  allNodes(): BoardNode[];
+  /** Client coords → world coords through the rendered viewport. */
+  worldPoint(clientX: number, clientY: number): { x: number; y: number };
+  /** Draw the box-select rectangle (client coords); nulls clear it. */
+  drawBoxSelect(
+    origin: { x: number; y: number } | null,
+    current: { x: number; y: number } | null,
+  ): void;
+};
+
+type DragState = {
+  node: BoardNode;
+  startX: number;
+  startY: number;
+  // Node positions at drag start — the anchor the delta is applied to.
+  // NEVER recompute from the mutated in-progress position, or every
+  // pointermove double-counts the delta.
+  originX: number;
+  originY: number;
+};
+
+const toChange = (node: BoardNode): NodeChange => ({
+  id: node.id,
+  kind: nodeChangeKind(node),
+  patch: { x: node.x, y: node.y },
+});
+
+/**
+ * The ONE pointer state machine for node interaction (idle → hover /
+ * pressed → dragging | box-select). Fed by the canvas element (empty space
+ * + sprite hits) and by note DOM elements forwarding their pointerdown with
+ * their node id — both paths converge on the same press/move/release logic,
+ * so a note and an image select, drag, and box-select identically (§0.7,
+ * §4 RULE 1). Pan and wheel zoom stay with the canvas (they never touch
+ * nodes); the transform shell (SelectionOverlay) owns resize/rotate of an
+ * already-selected box.
+ */
+export class NodeInteractionController {
+  private dragging: DragState | null = null;
+  private boxOrigin: { x: number; y: number } | null = null;
+  private boxCurrent: { x: number; y: number } | null = null;
+  private hovered: BoardNode | null = null;
+
+  constructor(
+    private readonly host: InteractionHost,
+    private readonly callbacks: InteractionCallbacks,
+    private readonly snapToGrid: boolean,
+  ) {}
+
+  get isDragging(): boolean {
+    return this.dragging !== null;
+  }
+
+  /** Canvas press: hit-test, then the same path as a DOM-forwarded press. */
+  press(event: PointerEvent): void {
+    const point = this.host.worldPoint(event.clientX, event.clientY);
+    this.beginPress(this.hitTest(point), point, event);
+  }
+
+  /** Note DOM press: the article knows its node — skip the hit test. */
+  pressNodeById(nodeId: string, event: PointerEvent): void {
+    const node = this.host.allNodes().find((candidate) => candidate.id === nodeId);
+    // A forwarded DOM press is never an empty-canvas press: if the node
+    // hasn't reached the canvas yet, ignore it rather than box-selecting.
+    if (!node) return;
+    const point = this.host.worldPoint(event.clientX, event.clientY);
+    this.beginPress(node, point, event);
+  }
+
+  move(event: PointerEvent): void {
+    if (this.boxOrigin) {
+      this.boxCurrent = { x: event.clientX, y: event.clientY };
+      this.host.drawBoxSelect(this.boxOrigin, this.boxCurrent);
+      return;
+    }
+    if (this.dragging) {
+      const point = this.host.worldPoint(event.clientX, event.clientY);
+      const { node, startX, startY, originX, originY } = this.dragging;
+      // PureRef delta contract: node = origin + (pointer - startPointer),
+      // snapped to grid. origin never changes during the drag, so repeated
+      // pointermove events don't accumulate.
+      const grid = this.snapToGrid ? 24 : 1;
+      const nextX = Math.round((originX + point.x - startX) / grid) * grid;
+      const nextY = Math.round((originY + point.y - startY) / grid) * grid;
+      const deltaX = nextX - node.x;
+      const deltaY = nextY - node.y;
+      const moving = this.moveSet(node);
+      // Mutate in-place so the canvas repaint (which repositions sprites
+      // from these same objects) follows the drag each frame.
+      for (const candidate of moving) {
+        candidate.x += deltaX;
+        candidate.y += deltaY;
+      }
+      const preview = moving.filter((candidate) => candidate.kind === 'note').map(toChange);
+      if (preview.length > 0) this.callbacks.onDragPreview?.(preview);
+      return;
+    }
+    // §1 HOVERED: report the node under the cursor (or null) while idle so
+    // the UI can draw the 1px 40% hover outline on unselected nodes.
+    this.updateHover(this.hitTest(this.host.worldPoint(event.clientX, event.clientY)));
+  }
+
+  release(): void {
+    if (this.boxOrigin) {
+      this.commitBoxSelect();
+    } else if (this.dragging) {
+      // The nodes were already mutated in-place during the drag (move), so
+      // just read their current positions. Commit only when the drag
+      // actually moved something — a plain click sends no op. Mates share
+      // the dragged node's delta, so its origin decides for the whole set.
+      const { node, originX, originY } = this.dragging;
+      if (node.x !== originX || node.y !== originY) {
+        this.callbacks.onNodesChange?.(this.moveSet(node).map(toChange));
+      }
+    }
+    this.dragging = null;
+    this.boxOrigin = null;
+    this.boxCurrent = null;
+    this.host.drawBoxSelect(null, null);
+    this.updateHover(null);
+  }
+
+  clearHover(): void {
+    this.updateHover(null);
+  }
+
+  /** Group-aware drag: a grouped node drags every group-mate with it. */
+  private moveSet(node: BoardNode): BoardNode[] {
+    return node.groupId
+      ? this.host.allNodes().filter((candidate) => candidate.groupId === node.groupId)
+      : [node];
+  }
+
+  private beginPress(
+    node: BoardNode | null,
+    point: { x: number; y: number },
+    event: PointerEvent,
+  ): void {
+    if (node && event.shiftKey) {
+      // Shift-click toggles membership without disturbing the rest of the
+      // selection — and never starts a drag.
+      this.callbacks.onSelectionToggle?.(node.id);
+      return;
+    }
+    if (node) {
+      // Select + drag node. Selecting happens on press, not release.
+      this.callbacks.onSelectionChange?.(node.id);
+      this.updateHover(null);
+      this.dragging = {
+        node,
+        startX: point.x,
+        startY: point.y,
+        originX: node.x,
+        originY: node.y,
+      };
+      return;
+    }
+    // §14 BOX SELECT: left-click on empty canvas starts box selection.
+    this.callbacks.onClearSelection?.();
+    this.callbacks.onSelectionChange?.(null);
+    this.updateHover(null);
+    this.boxOrigin = { x: event.clientX, y: event.clientY };
+    this.boxCurrent = { x: event.clientX, y: event.clientY };
+    this.host.drawBoxSelect(this.boxOrigin, this.boxCurrent);
+  }
+
+  private commitBoxSelect(): void {
+    if (!this.boxOrigin || !this.boxCurrent) return;
+    const dx = Math.abs(this.boxCurrent.x - this.boxOrigin.x);
+    const dy = Math.abs(this.boxCurrent.y - this.boxOrigin.y);
+    // Too small to be intentional → treat as click (deselect all).
+    if (dx < 3 && dy < 3) {
+      this.callbacks.onMultiSelectChange?.([]);
+      return;
+    }
+    const origin = this.host.worldPoint(this.boxOrigin.x, this.boxOrigin.y);
+    const current = this.host.worldPoint(this.boxCurrent.x, this.boxCurrent.y);
+    const wx1 = Math.min(origin.x, current.x);
+    const wy1 = Math.min(origin.y, current.y);
+    const wx2 = Math.max(origin.x, current.x);
+    const wy2 = Math.max(origin.y, current.y);
+    // All node kinds, rotation-aware (rotated AABB intersect).
+    const hit = this.host.allNodes().filter((node) => {
+      const bounds = node.rotatedBounds();
+      return bounds.left < wx2 && bounds.right > wx1 && bounds.top < wy2 && bounds.bottom > wy1;
+    });
+    this.callbacks.onMultiSelectChange?.(hit.map((node) => node.id));
+    this.callbacks.onBoxSelect?.({ x1: wx1, y1: wy1, x2: wx2, y2: wy2 });
+  }
+
+  /**
+   * Unified z order at the interaction level: notes render in the DOM layer
+   * above the canvas, so they win over sprites; within a layer, higher
+   * zIndex wins. Hit tests use node.containsPoint (rotation-aware).
+   */
+  private hitTest(point: { x: number; y: number }): BoardNode | null {
+    const byZDesc = (left: BoardNode, right: BoardNode) => right.zIndex - left.zIndex;
+    const note = [...this.host.noteNodes()].sort(byZDesc).find((node) => node.containsPoint(point));
+    if (note) return note;
+    return (
+      [...this.host.spriteCandidates()].sort(byZDesc).find((node) => node.containsPoint(point)) ??
+      null
+    );
+  }
+
+  private updateHover(node: BoardNode | null): void {
+    if (node === this.hovered) return;
+    this.hovered = node;
+    this.callbacks.onHoverChange?.(node?.id ?? null);
+  }
+}

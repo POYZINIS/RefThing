@@ -32,14 +32,27 @@ use crate::state::AppState;
 /// Returns on config parse failure, DB connection/migration failure, or bind
 /// failure.
 pub async fn run() -> anyhow::Result<()> {
+    run_with_shutdown(AppConfig::from_env()?, shutdown_signal()).await
+}
+
+/// Boot the server with an explicit config and shutdown trigger. Used by the
+/// desktop app, which embeds the server in-process and shuts it down when the
+/// window closes.
+///
+/// # Errors
+/// Returns on DB connection/migration failure or bind failure.
+pub async fn run_with_shutdown(
+    config: AppConfig,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
-        .init();
+        .try_init()
+        .ok();
 
-    let config = AppConfig::from_env()?;
     tokio::fs::create_dir_all(&config.data_dir).await?;
 
     let pools = refthing_core::db::connect(&config.data_dir.join("refthing.db")).await?;
@@ -87,7 +100,7 @@ pub async fn run() -> anyhow::Result<()> {
     let app = router::build_router(state);
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown)
         .await?;
 
     Ok(())

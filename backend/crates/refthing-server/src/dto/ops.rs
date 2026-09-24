@@ -72,6 +72,31 @@ pub enum BatchOp {
         op_id: Uuid,
         order: Vec<Uuid>,
     },
+    /// Recreate a deleted item with its identity, metadata and tag assignments.
+    RestoreItem {
+        op_id: Uuid,
+        item: super::Item,
+        #[serde(default)]
+        tag_ids: Vec<Uuid>,
+    },
+    /// Insert or replace a note on this board, for reversible note commands.
+    PutNote {
+        op_id: Uuid,
+        note: super::Note,
+    },
+    DeleteNotes {
+        op_id: Uuid,
+        note_ids: Vec<Uuid>,
+    },
+    RestoreGroup {
+        op_id: Uuid,
+        group: super::Group,
+    },
+    /// Only empty leaf groups can be removed through the command protocol.
+    RemoveGroup {
+        op_id: Uuid,
+        group_id: Uuid,
+    },
 }
 
 impl BatchOp {
@@ -82,7 +107,12 @@ impl BatchOp {
             | Self::Update { op_id, .. }
             | Self::Delete { op_id, .. }
             | Self::SetGroup { op_id, .. }
-            | Self::SetZ { op_id, .. } => *op_id,
+            | Self::SetZ { op_id, .. }
+            | Self::RestoreItem { op_id, .. }
+            | Self::PutNote { op_id, .. }
+            | Self::DeleteNotes { op_id, .. }
+            | Self::RestoreGroup { op_id, .. }
+            | Self::RemoveGroup { op_id, .. } => *op_id,
         }
     }
 }
@@ -93,6 +123,9 @@ impl BatchOp {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BatchRequest {
     pub base_seq: i64,
+    /// Command history requires all-or-nothing application of a gesture.
+    #[serde(default)]
+    pub atomic: bool,
     /// Echo-suppression token: the sender ignores diffs with its own id.
     pub client_id: String,
     pub ops: Vec<BatchOp>,

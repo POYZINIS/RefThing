@@ -17,7 +17,7 @@ use refthing_core::error::CoreError;
 use refthing_core::models;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sqlx::{SqlitePool, SqliteTransaction};
+use sqlx::{SqliteConnection, SqlitePool, SqliteTransaction};
 use uuid::Uuid;
 
 use crate::dto::{self, BlobLevel};
@@ -44,12 +44,22 @@ pub async fn snapshot(
     pool: &SqlitePool,
     board_id: Uuid,
 ) -> Result<Option<dto::BoardSnapshot>, CoreError> {
-    let Some(board) = boards::get(pool, board_id).await? else {
+    let mut conn = pool.acquire().await.map_err(|error| core_err(&error))?;
+    snapshot_on_connection(&mut conn, board_id).await
+}
+
+/// [`snapshot`] on an existing connection, so callers inside a transaction
+/// (e.g. versioned snapshot capture) read one coherent board state.
+pub async fn snapshot_on_connection(
+    conn: &mut SqliteConnection,
+    board_id: Uuid,
+) -> Result<Option<dto::BoardSnapshot>, CoreError> {
+    let Some(board) = boards::get(&mut *conn, board_id).await? else {
         return Ok(None);
     };
 
-    let metadata = snapshot_metadata(pool, board_id).await?;
-    let items = items::list_by_board(pool, board_id)
+    let metadata = snapshot_metadata(conn, board_id).await?;
+    let items = items::list_by_board(&mut *conn, board_id)
         .await?
         .into_iter()
         .map(|item| {
@@ -62,25 +72,29 @@ pub async fn snapshot(
         seq: board.seq,
         board: board_dto(board),
         items,
-        groups: groups::list_by_board(pool, board_id)
+        groups: groups::list_by_board(&mut *conn, board_id)
             .await?
             .into_iter()
             .map(group_dto)
             .collect(),
-        notes: notes::list_by_board(pool, board_id)
+        notes: notes::list_by_board(&mut *conn, board_id)
             .await?
             .into_iter()
             .map(note_dto)
             .collect(),
-        tags: tags::list(pool).await?.into_iter().map(tag_dto).collect(),
-        item_tags: snapshot_item_tags(pool, board_id).await?,
-        blobs: snapshot_blobs(pool, board_id).await?,
+        tags: tags::list(&mut *conn)
+            .await?
+            .into_iter()
+            .map(tag_dto)
+            .collect(),
+        item_tags: snapshot_item_tags(conn, board_id).await?,
+        blobs: snapshot_blobs(conn, board_id).await?,
     }))
 }
 
 /// `item_id` → merged `item_metadata.json` payload, one query for the board.
 async fn snapshot_metadata(
-    pool: &SqlitePool,
+    conn: &mut SqliteConnection,
     board_id: Uuid,
 ) -> Result<HashMap<Uuid, Value>, CoreError> {
     let rows: Vec<(Uuid, Value)> = sqlx::query_as(
@@ -88,7 +102,7 @@ async fn snapshot_metadata(
          JOIN items i ON i.id = m.item_id WHERE i.board_id = ?",
     )
     .bind(board_id)
-    .fetch_all(pool)
+    .fetch_all(conn)
     .await
     .map_err(|error| core_err(&error))?;
     Ok(rows.into_iter().collect())
@@ -96,7 +110,7 @@ async fn snapshot_metadata(
 
 /// `item_id` → assigned `tag_id`s, one query for the board.
 async fn snapshot_item_tags(
-    pool: &SqlitePool,
+    conn: &mut SqliteConnection,
     board_id: Uuid,
 ) -> Result<HashMap<Uuid, Vec<Uuid>>, CoreError> {
     let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
@@ -105,7 +119,7 @@ async fn snapshot_item_tags(
          ORDER BY it.item_id, it.tag_id",
     )
     .bind(board_id)
-    .fetch_all(pool)
+    .fetch_all(conn)
     .await
     .map_err(|error| core_err(&error))?;
 
@@ -121,7 +135,7 @@ async fn snapshot_item_tags(
 /// to a synthesized `full` from the blob's intrinsic dimensions when the
 /// pyramid job has not recorded rows yet.
 async fn snapshot_blobs(
-    pool: &SqlitePool,
+    conn: &mut SqliteConnection,
     board_id: Uuid,
 ) -> Result<Vec<dto::BlobInfo>, CoreError> {
     let blobs = sqlx::query_as::<_, models::Blob>(
@@ -130,7 +144,7 @@ async fn snapshot_blobs(
          FROM blobs b JOIN items i ON i.blob_id = b.hash WHERE i.board_id = ?",
     )
     .bind(board_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(|error| core_err(&error))?;
 
@@ -141,7 +155,7 @@ async fn snapshot_blobs(
          WHERE i.board_id = ? AND d.status = 'ready'",
     )
     .bind(board_id)
-    .fetch_all(pool)
+    .fetch_all(conn)
     .await
     .map_err(|error| core_err(&error))?;
     let mut derivative_levels: HashMap<String, HashMap<String, BlobLevel>> = HashMap::new();

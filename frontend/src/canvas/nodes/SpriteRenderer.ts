@@ -1,0 +1,54 @@
+import { ColorMatrixFilter, type Container, Sprite } from 'pixi.js';
+import type { NodeRenderer, RenderFrame } from './NodeRenderer';
+import type { BoardNode } from './types';
+
+export class SpriteRenderer implements NodeRenderer {
+  private sprite: Sprite | null = null;
+  private grayscale = false;
+
+  mount(parent: Container): void {
+    const sprite = new Sprite();
+    sprite.anchor.set(0.5);
+    sprite.eventMode = 'static';
+    // §5: hover over an unselected item body = grab (open hand / four-way
+    // move icon), not the default pointer arrow.
+    sprite.cursor = 'grab';
+    parent.addChild(sprite);
+    this.sprite = sprite;
+  }
+
+  sync(node: BoardNode, frame: RenderFrame): void {
+    const sprite = this.sprite;
+    if (!sprite) return;
+    if (frame.texture) sprite.texture = frame.texture;
+    sprite.position.set(node.x + node.width / 2, node.y + node.height / 2);
+    sprite.width = node.width;
+    sprite.height = node.height;
+    sprite.rotation = (node.rotation * Math.PI) / 180;
+    sprite.zIndex = node.zIndex;
+    this.applyGrayscale(frame.grayscale ?? false);
+  }
+
+  setGrayscale(enabled: boolean): void {
+    this.applyGrayscale(enabled);
+  }
+
+  destroy(): void {
+    this.sprite?.destroy();
+    this.sprite = null;
+  }
+
+  private applyGrayscale(enabled: boolean): void {
+    if (enabled === this.grayscale) return;
+    this.grayscale = enabled;
+    const sprite = this.sprite;
+    if (!sprite) return;
+    if (enabled) {
+      const filter = new ColorMatrixFilter();
+      filter.grayscale(1, false);
+      sprite.filters = [filter];
+    } else {
+      sprite.filters = [];
+    }
+  }
+}

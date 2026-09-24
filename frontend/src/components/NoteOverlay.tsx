@@ -9,10 +9,13 @@ type NoteOverlayProps = {
   /** Text-edit mode (§4 RULE 2 — double-click only). While editing, the 8
    *  transform zones are hidden AND non-interactive (§4 RULE 3). */
   editing: boolean;
+  /** Press on the note body, forwarded (with the native event) so the
+   *  canvas interaction controller runs select/move — the same path a
+   *  sprite press takes (§4 RULE 1). Never called while editing. */
+  onPress: (event: React.PointerEvent) => void;
   onSelect: () => void;
   onHover: (hovering: boolean) => void;
   onSave: (content: string) => void;
-  onMove: (noteId: string, x: number, y: number) => void;
   onEditingChange: (editing: boolean) => void;
 };
 
@@ -26,46 +29,27 @@ function noteText(content: unknown): string {
 
 /**
  * PureRef note overlay (§4). Single click, or click-and-drag, anywhere on a
- * note ALWAYS means select/move (§4 RULE 1) — identical to an image. It is
- * only editable on double-click (§4 RULE 2).
+ * note ALWAYS means select/move (§4 RULE 1) — identical to an image, and
+ * literally the same code path: presses forward to the canvas interaction
+ * controller. It is only editable on double-click (§4 RULE 2).
  *
- * Drag math mirrors images: snapshot pointer + note position at pointerdown,
- * on move set `note = start + delta`, commit on pointerup. The drag runs on
- * WINDOW listeners so it survives the SelectionOverlay shell appearing above
- * the article the moment the note becomes selected — the same reason the
- * shell itself listens on window.
- *
- * When selected, the article is inert for gestures (the shell owns move,
- * resize, rotate). Only hover + double-click-to-edit remain meaningful, and
- * the shell forwards double-clicks.
+ * When selected, the article is inert for gestures (the SelectionOverlay
+ * shell owns move, resize, rotate). Only hover + double-click-to-edit
+ * remain meaningful, and the shell forwards double-clicks.
  */
 export function NoteOverlay({
   note,
   viewport,
   selected,
   editing,
+  onPress,
   onSelect,
   onHover,
   onSave,
-  onMove,
   onEditingChange,
 }: NoteOverlayProps) {
   const [value, setValue] = useState(noteText(note.content_json));
-  const drag = useRef<{
-    pointerId: number;
-    startScreenX: number;
-    startScreenY: number;
-    // Frozen note position at drag start (world-space).
-    startNoteX: number;
-    startNoteY: number;
-  } | null>(null);
-  const moved = useRef(false);
-  const lastPointer = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const noteRef = useRef(note);
-  noteRef.current = note;
-  const viewportRef = useRef(viewport);
-  viewportRef.current = viewport;
 
   useEffect(() => setValue(noteText(note.content_json)), [note.content_json]);
 
@@ -82,94 +66,6 @@ export function NoteOverlay({
     }
   }, [editing]);
 
-  const moveDrag = (event: PointerEvent): void => {
-    const d = drag.current;
-    if (!d || d.pointerId !== event.pointerId) return;
-    // After onSelect() fires, the SelectionOverlay takes over all move/
-    // resize/rotate.  Bail so the note's own drag system stops processing
-    // — otherwise BOTH the note and the overlay move the item, doubling
-    // the apparent movement on the first drag of an unselected note.
-    if (selected) { drag.current = null; return; }
-    if (Math.abs(event.clientX - d.startScreenX) + Math.abs(event.clientY - d.startScreenY) > 3) {
-      moved.current = true;
-    }
-    if (!moved.current) return;
-    // Store the latest pointer position — the actual offset is derived
-    // during render so it always uses the CURRENT viewport (pan follows).
-    lastPointer.current = { x: event.clientX, y: event.clientY };
-    // Trigger a re-render so the inline style updates.
-    setRenderTick((t) => t + 1);
-  };
-
-  const endDrag = (event: PointerEvent): void => {
-    const d = drag.current;
-    if (!d || d.pointerId !== event.pointerId) return;
-    drag.current = null;
-    if (!moved.current || selected) return;
-    // Compute final world position using the current viewport.
-    const vp = viewportRef.current;
-    const worldDx = (event.clientX - d.startScreenX) / vp.zoom;
-    const worldDy = (event.clientY - d.startScreenY) / vp.zoom;
-    const nextX = d.startNoteX + worldDx;
-    const nextY = d.startNoteY + worldDy;
-    onMove(noteRef.current.id, nextX, nextY);
-  };
-
-  // Drag runs on window listeners (matching SelectionOverlay) so it survives
-  // the transform shell appearing above the article mid-gesture. The handlers
-  // read through refs so the once-registered listeners never go stale.
-  const onMoveRef = useRef<(event: PointerEvent) => void>(() => undefined);
-  onMoveRef.current = moveDrag;
-  const onUpRef = useRef<(event: PointerEvent) => void>(() => undefined);
-  onUpRef.current = endDrag;
-  useEffect(() => {
-    const onMove = (event: PointerEvent) => onMoveRef.current(event);
-    const onUp = (event: PointerEvent) => onUpRef.current(event);
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    window.addEventListener('pointercancel', onUp);
-    return () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      window.removeEventListener('pointercancel', onUp);
-    };
-  }, []);
-
-  const [_renderTick, setRenderTick] = useState(0);
-
-  const beginDrag = (event: React.PointerEvent): void => {
-    if (editing || selected) return;
-    moved.current = false;
-    const n = noteRef.current;
-    drag.current = {
-      pointerId: event.pointerId,
-      startScreenX: event.clientX,
-      startScreenY: event.clientY,
-      startNoteX: n.x,
-      startNoteY: n.y,
-    };
-    lastPointer.current = { x: event.clientX, y: event.clientY };
-    // Selecting (and bringing to front) happens on press, not release —
-    // exactly like clicking an image sprite.
-    onSelect();
-    // No setPointerCapture — the window listeners already handle the
-    // gesture, and pointer capture would route events to the inert note
-    // after the SelectionOverlay appears, causing double processing.
-  };
-
-  // Render-time offset: recomputed every render using the CURRENT viewport,
-  // so panning mid-drag keeps the note glued to the cursor.
-  const dragOffsetX = (() => {
-    const d = drag.current;
-    if (!d || !moved.current) return 0;
-    return (lastPointer.current.x - d.startScreenX) / viewport.zoom;
-  })();
-  const dragOffsetY = (() => {
-    const d = drag.current;
-    if (!d || !moved.current) return 0;
-    return (lastPointer.current.y - d.startScreenY) / viewport.zoom;
-  })();
-
   // Font size scales with note height.  The base design is ~12px at h=145.
   const fontSize = Math.max(8, note.height * 0.083);
 
@@ -179,8 +75,8 @@ export function NoteOverlay({
         selected ? ' note-overlay-selected' : ''
       }`}
       style={{
-        left: viewport.x + (note.x + dragOffsetX) * viewport.zoom,
-        top: viewport.y + (note.y + dragOffsetY) * viewport.zoom,
+        left: viewport.x + note.x * viewport.zoom,
+        top: viewport.y + note.y * viewport.zoom,
         width: note.width * viewport.zoom,
         height: note.height * viewport.zoom,
         opacity: note.opacity,
@@ -193,7 +89,11 @@ export function NoteOverlay({
         // non-editing selected state goes inert.
         pointerEvents: selected && !editing ? 'none' : 'auto',
       }}
-      onPointerDown={beginDrag}
+      onPointerDown={(event) => {
+        // §4 RULE 3 — while editing, presses are text-cursor placements,
+        // never the start of a move; the controller stays out of it.
+        if (!editing) onPress(event);
+      }}
       onPointerEnter={() => onHover(true)}
       onPointerLeave={() => onHover(false)}
       onDoubleClick={(event) => {

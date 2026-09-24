@@ -52,13 +52,16 @@ pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<Note>, CoreError>
 }
 
 /// Lists a board's notes, ordered by creation time.
-pub async fn list_by_board(pool: &SqlitePool, board_id: Uuid) -> Result<Vec<Note>, CoreError> {
+pub async fn list_by_board(
+    executor: impl sqlx::SqliteExecutor<'_>,
+    board_id: Uuid,
+) -> Result<Vec<Note>, CoreError> {
     sqlx::query_as!(
         Note,
         "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", x, y, width, height, rotation, z_index, content_json AS \"content_json: serde_json::Value\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", updated_at AS \"updated_at: DateTime<Utc>\" FROM notes WHERE board_id = ? ORDER BY z_index ASC, id",
         board_id,
     )
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await
     .map_err(|error| CoreError::Db(error.to_string()))
 }

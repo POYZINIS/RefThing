@@ -45,6 +45,7 @@ async fn spawn_app(workers: usize) -> TestApp {
         host: "127.0.0.1".to_string(),
         port: 0,
         data_dir: data_dir.clone(),
+        static_dir: None,
     };
     let pools = db::connect(&data_dir.join("refthing.db"))
         .await

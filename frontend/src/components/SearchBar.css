@@ -1,0 +1,37 @@
+.search-input-row {
+  position: relative;
+}
+
+.search-options,
+.search-feedback {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid #2a313a;
+  border-radius: 8px;
+  color: #c7ced6;
+  background: rgb(21 25 30 / 0.92);
+  font-size: 11px;
+}
+
+.search-colour-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.search-colour-input {
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.search-filter .search-tags {
+  max-height: 112px;
+  overflow-y: auto;
+}

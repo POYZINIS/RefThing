@@ -13,7 +13,9 @@ use uuid::Uuid;
 
 use refthing_server::services::snapshots;
 
-use crate::error::AppResult;
+use crate::auth::Principal;
+use crate::error::{AppError, AppResult};
+use crate::events::hub::ServerMsg;
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -29,11 +31,14 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn capture_snapshot(
+    _principal: Principal,
     State(state): State<AppState>,
     Path(board_id): Path<Uuid>,
     Json(body): Json<CaptureBody>,
 ) -> AppResult<Response> {
-    let snapshot = snapshots::capture(&state.pools.write, board_id, &body.label).await?;
+    let snapshot = snapshots::capture(&state.pools.write, board_id, &body.label)
+        .await?
+        .ok_or(AppError::NotFound("board"))?;
     Ok((StatusCode::CREATED, Json(snapshot)).into_response())
 }
 
@@ -47,18 +52,32 @@ async fn list_snapshots(
     State(state): State<AppState>,
     Path(board_id): Path<Uuid>,
 ) -> AppResult<Response> {
+    if refthing_core::db::boards::get(&state.pools.read, board_id)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::NotFound("board"));
+    }
     let list = snapshots::list(&state.pools.read, board_id).await?;
     Ok(Json(list).into_response())
 }
 
 async fn restore_snapshot(
+    _principal: Principal,
     State(state): State<AppState>,
     Path((board_id, created_at)): Path<(Uuid, i64)>,
 ) -> AppResult<Response> {
-    let restored = snapshots::restore(&state.pools.write, board_id, created_at).await?;
-    if restored {
-        Ok(Json(serde_json::json!({"status": "restored"})).into_response())
-    } else {
-        Ok(StatusCode::NOT_FOUND.into_response())
-    }
+    let seq = snapshots::restore(&state.pools.write, board_id, created_at)
+        .await?
+        .ok_or(AppError::NotFound("snapshot"))?;
+    state.hub.broadcast(
+        board_id,
+        ServerMsg::Diff {
+            board_id,
+            seq,
+            origin: None,
+            ops: vec![],
+        },
+    );
+    Ok(Json(serde_json::json!({"status": "restored", "seq": seq})).into_response())
 }

@@ -5,6 +5,15 @@ rule here is the specification. Deviating from it requires updating
 this file first, not the other way around.
 ========================================================================
 
+ACCEPTED NOTE RESIZE EXCEPTION (2026-09-10)
+--------------------------------------------------------------------
+The user approved the existing note free-resize behavior: notes stretch
+freely by default, and Shift restores proportional scaling. Alt retains
+center anchoring. Notes do not use the image-only Alt-click square reset.
+This exception overrides the uniform aspect-ratio rules below; preserve
+it while fixing genuine geometry, input-routing, and persistence bugs.
+Hit-zone sizes, selection visuals, and editing protections remain shared.
+
 PURPOSE
 --------------------------------------------------------------------
 This document defines exactly how the app behaves, pixel by pixel and

@@ -1,5 +1,12 @@
-﻿import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ViewportState } from '@/canvas/BoardCanvas';
+import { screenToWorld } from '@/canvas/coordinates';
+import {
+  type BoardNode,
+  type NodeChange,
+  type NodePatch,
+  nodeChangeKind,
+} from '@/canvas/nodes/types';
 import {
   ACCENT,
   ACTIVE_EDGE_OUTLINE_PX,
@@ -10,71 +17,64 @@ import {
   SELECTED_OUTLINE_PX,
 } from './interactionConstants';
 
-/**
- * Anything with a transformable box: an image item or a note (§0.7 uniform
- * shell). Selection/transform math only reads these geometry fields — the
- * shell never touches type-specific content.
- */
-export type Selectable = {
-  kind: 'item' | 'note';
-  id: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  rotation: number;
-};
-
-/** Geometry patch for a `Selectable` — subset of the box the shell can
- * transform. Item patches also carry `z_index`/`metadata` etc.; notes carry
- * `bg_color`/`opacity`. The overlay only ever emits `BoxPatch` and App
- * routes it to the right entity. */
-export type BoxPatch = Partial<Pick<Selectable, 'x' | 'y' | 'width' | 'height' | 'rotation'>>;
-
-export type SelectableChange = { id: string; kind: 'item' | 'note'; patch: BoxPatch };
+export type { NodeChange, NodePatch };
 
 type SelectionOverlayProps = {
-  items: Selectable[];
+  /** The selected nodes the shell frames and transforms (§0.7 uniform shell). */
+  nodes: BoardNode[];
+  /** Selection plus group-mates — the set that actually translates on a
+   *  move drag (group-aware drag). Defaults to `nodes`. */
+  moveNodes?: BoardNode[];
   viewport: ViewportState;
-  onPreview: (patch: BoxPatch) => void;
-  onCommit: (patch: BoxPatch) => void;
-  onPreviewItems?: (changes: SelectableChange[]) => void;
-  onCommitItems?: (changes: SelectableChange[]) => void;
-  /** Called when the user clicks on the overlay outside the selection box
-   *  (no drag started). Used to clear selection when clicking empty space. */
-  onClearSelection?: () => void;
+  onPreview: (patch: NodePatch) => void;
+  onCommit: (patch: NodePatch) => void;
+  onPreviewItems?: (changes: NodeChange[]) => void;
+  onCommitItems?: (changes: NodeChange[]) => void;
+  /** The user pressed outside the selection box (no zone hit). The shell
+   *  can't tell empty canvas from another node — the press forwards to the
+   *  canvas controller, which hit-tests and clears or re-selects. */
+  onOutsidePress?: (event: PointerEvent) => void;
   editing?: boolean;
-  /** When true, resize is free-form (no aspect lock).  Shift+drag locks
-   *  aspect instead of the default (images: default locks, notes: free). */
-  freeTransform?: boolean;
   /** Forwarded through the overlay (notes enter edit on double-click; the
    * overlay covers the note body while selected, so it must pass the event
    * through). */
   onDoubleClick?: () => void;
 };
 
-/** Combined AABB of a selection — the virtual "item" the overlay/shell
+/** Combined AABB of a selection — the virtual "node" the overlay/shell
  *  draws around and transforms. §1 MULTI-SELECTED: exactly ONE box. */
 type SelectionBox = { x: number; y: number; width: number; height: number; rotation: number };
 
-function selectionBox(items: Selectable[]): SelectionBox | null {
-  if (items.length === 0) return null;
+function selectionBox(nodes: BoardNode[]): SelectionBox | null {
+  if (nodes.length === 0) return null;
+  const only = nodes[0];
+  if (nodes.length === 1 && only) {
+    // Single selection: the shell frames the node itself, rotation included.
+    return {
+      x: only.x,
+      y: only.y,
+      width: only.width,
+      height: only.height,
+      rotation: only.rotation,
+    };
+  }
   let x1 = Infinity,
     y1 = Infinity,
     x2 = -Infinity,
     y2 = -Infinity;
-  for (const it of items) {
-    x1 = Math.min(x1, it.x);
-    y1 = Math.min(y1, it.y);
-    x2 = Math.max(x2, it.x + it.width);
-    y2 = Math.max(y2, it.y + it.height);
+  for (const node of nodes) {
+    const bounds = node.rotatedBounds();
+    x1 = Math.min(x1, bounds.left);
+    y1 = Math.min(y1, bounds.top);
+    x2 = Math.max(x2, bounds.right);
+    y2 = Math.max(y2, bounds.bottom);
   }
   return {
     x: x1,
     y: y1,
     width: x2 - x1,
     height: y2 - y1,
-    // Multi-select boxes have no intrinsic rotation; each item keeps its own.
+    // Multi-select boxes have no intrinsic rotation; each node keeps its own.
     rotation: 0,
   };
 }
@@ -113,48 +113,58 @@ function hostRect(): DOMRect {
   return document.getElementById('canvas-host')?.getBoundingClientRect() ?? new DOMRect();
 }
 
-function screenToWorld(clientX: number, clientY: number, viewport: ViewportState) {
-  const r = hostRect();
-  return {
-    x: (clientX - r.left - viewport.x) / viewport.zoom,
-    y: (clientY - r.top - viewport.y) / viewport.zoom,
-  };
+function pointerWorld(clientX: number, clientY: number, viewport: ViewportState) {
+  return screenToWorld({ clientX, clientY }, viewport, hostRect());
 }
 
-type BoxLike = Pick<Selectable, 'x' | 'y' | 'width' | 'height'>;
-
-function hitZone(clientX: number, clientY: number, item: BoxLike, viewport: ViewportState): Zone {
+/**
+ * Rotation-aware hit zones: the pointer is unrotated around the box's
+ * screen center (node.containsPoint-style math), then tested against the
+ * axis-aligned box. §2 zone sizes stay exact screen-space px; §2 corner
+ * priority holds because corners are still tested first.
+ */
+function hitZone(
+  clientX: number,
+  clientY: number,
+  box: SelectionBox,
+  viewport: ViewportState,
+): Zone {
   const r = hostRect();
-  const left = r.left + viewport.x + item.x * viewport.zoom;
-  const top = r.top + viewport.y + item.y * viewport.zoom;
-  const w = item.width * viewport.zoom;
-  const h = item.height * viewport.zoom;
+  const left = r.left + viewport.x + box.x * viewport.zoom;
+  const top = r.top + viewport.y + box.y * viewport.zoom;
+  const w = box.width * viewport.zoom;
+  const h = box.height * viewport.zoom;
   const right = left + w;
   const bottom = top + h;
+  const cx = left + w / 2;
+  const cy = top + h / 2;
+  const radians = (-box.rotation * Math.PI) / 180;
+  const px = cx + (clientX - cx) * Math.cos(radians) - (clientY - cy) * Math.sin(radians);
+  const py = cy + (clientX - cx) * Math.sin(radians) + (clientY - cy) * Math.cos(radians);
   // §2 screen-space hit zones: edge band is 8px wide (4px each side of the
   // edge line), corner hit-zone is 10x10 (5px each way from the corner).
   const edgeHalf = EDGE_HIT_ZONE_PX / 2;
   const cornerHalf = CORNER_HIT_ZONE_PX / 2;
   // §3 RULE — corner priority: corners are tested first, so a corner
   // hit-zone always wins over an overlapping edge hit-zone.
-  const inCorner = (cx: number, cy: number) =>
-    clientX >= cx - cornerHalf &&
-    clientX <= cx + cornerHalf &&
-    clientY >= cy - cornerHalf &&
-    clientY <= cy + cornerHalf;
+  const inCorner = (cornerX: number, cornerY: number) =>
+    px >= cornerX - cornerHalf &&
+    px <= cornerX + cornerHalf &&
+    py >= cornerY - cornerHalf &&
+    py <= cornerY + cornerHalf;
   if (inCorner(left, top)) return 'top-left';
   if (inCorner(right, top)) return 'top-right';
   if (inCorner(right, bottom)) return 'bottom-right';
   if (inCorner(left, bottom)) return 'bottom-left';
-  const inTop = clientY >= top - edgeHalf && clientY <= top + edgeHalf;
-  const inBottom = clientY >= bottom - edgeHalf && clientY <= bottom + edgeHalf;
-  const inLeft = clientX >= left - edgeHalf && clientX <= left + edgeHalf;
-  const inRight = clientX >= right - edgeHalf && clientX <= right + edgeHalf;
+  const inTop = py >= top - edgeHalf && py <= top + edgeHalf;
+  const inBottom = py >= bottom - edgeHalf && py <= bottom + edgeHalf;
+  const inLeft = px >= left - edgeHalf && px <= left + edgeHalf;
+  const inRight = px >= right - edgeHalf && px <= right + edgeHalf;
   if (inTop) return 'top';
   if (inBottom) return 'bottom';
   if (inLeft) return 'left';
   if (inRight) return 'right';
-  if (clientX > left && clientX < right && clientY > top && clientY < bottom) return 'body';
+  if (px > left && px < right && py > top && py < bottom) return 'body';
   return null;
 }
 
@@ -163,13 +173,18 @@ const isCorner = (z: Zone): z is 'top-left' | 'top-right' | 'bottom-left' | 'bot
 const isEdge = (z: Zone): z is 'top' | 'bottom' | 'left' | 'right' =>
   z === 'top' || z === 'bottom' || z === 'left' || z === 'right';
 
+/** Multi-node selection, or a single node whose move set has group-mates —
+ *  both distribute per-node changes through the Items callbacks. */
+const patchDistributed = (origin: { selected: BoardNode[]; moving: BoardNode[] }): boolean =>
+  origin.selected.length > 1 || origin.moving.length > 1;
+
 /**
  * §2 minimum size collapse: if the item's on-screen box is smaller than
  * 24x24px in either dimension, all 8 transform zones are disabled. Only
  * move and rotate (Ctrl+drag) remain.
  */
-function zonesDisabled(item: BoxLike, viewport: ViewportState): boolean {
-  return Math.min(item.width * viewport.zoom, item.height * viewport.zoom) < MIN_SCREEN_SIZE_PX;
+function zonesDisabled(box: SelectionBox, viewport: ViewportState): boolean {
+  return Math.min(box.width * viewport.zoom, box.height * viewport.zoom) < MIN_SCREEN_SIZE_PX;
 }
 
 /**
@@ -188,8 +203,8 @@ function computePatch(
   my: number,
   shiftKey: boolean,
   zoom: number,
-  freeTransform?: boolean,
-): BoxPatch | null {
+  freeTransform: boolean,
+): NodePatch | null {
   if (d.mode === 'aspect-reset') {
     // §3 RESET ASPECT RATIO: a click, not a drag — fires on click-up only if
     // the pointer barely moved (within one screen px of where it went down),
@@ -225,21 +240,26 @@ function computePatch(
     return { rotation: Math.round((shiftKey ? Math.round(angle / 45) * 45 : angle) * 10) / 10 };
   }
 
-  // resize — all dims are world px; enforce a minimum on-screen size by
-  // converting the 24px screen minimum to world px.
+  // resize — all dims are world px in the node's own frame: the shell
+  // rotates with the node, so the drag delta is unrotated by the box's
+  // rotation before touching the axis-aligned math. Enforce a minimum
+  // on-screen size by converting the 24px screen minimum to world px.
+  const radians = (-d.startRot * Math.PI) / 180;
+  const lmx = mx * Math.cos(radians) - my * Math.sin(radians);
+  const lmy = mx * Math.sin(radians) + my * Math.cos(radians);
   const minDim = Math.max(MIN_SCREEN_SIZE_PX / zoom, 4);
   const corner = isCorner(d.zone);
   // freeTransform (notes): Shift LOCKS aspect; default is free.
   // images: default locks aspect; Shift unlocks.
   const proportional = freeTransform ? shiftKey : !shiftKey;
-  const absW = Math.max(minDim, Math.abs(mx));
-  const absH = Math.max(minDim, Math.abs(my));
+  const absW = Math.max(minDim, Math.abs(lmx));
+  const absH = Math.max(minDim, Math.abs(lmy));
   if (corner) {
     // Scale about the anchor (opposite corner or center). Both dimensions
     // follow the larger axis delta, scaled to preserve aspect ratio when
     // proportional; with Shift each axis is controlled independently.
-    const sxs = d.startW > 1 ? mx / d.startW : 1;
-    const sys = d.startH > 1 ? my / d.startH : 1;
+    const sxs = d.startW > 1 ? lmx / d.startW : 1;
+    const sys = d.startH > 1 ? lmy / d.startH : 1;
     const scale = proportional ? Math.max(Math.abs(sxs), Math.abs(sys)) : 1;
     const w = proportional ? Math.abs(d.startW * scale) : absW;
     const h = proportional ? Math.abs(d.startH * scale) : absH;
@@ -249,8 +269,8 @@ function computePatch(
     // When not proportional (Shift), the dragged axis extends toward the
     // cursor with the anchor fixed; the other axis extents from the anchor
     // toward the handle side.
-    const x = d.fromCenter ? d.ox - w / 2 : d.ox + sx2 * (mx >= 0 ? 0 : w);
-    const y = d.fromCenter ? d.oy - h / 2 : d.oy + sy2 * (my >= 0 ? 0 : h);
+    const x = d.fromCenter ? d.ox - w / 2 : d.ox + sx2 * (lmx >= 0 ? 0 : w);
+    const y = d.fromCenter ? d.oy - h / 2 : d.oy + sy2 * (lmy >= 0 ? 0 : h);
     return { x, y, width: w, height: h };
   }
   // Edge zones. Left/right control width; top/bottom control height.
@@ -291,78 +311,88 @@ function computePatch(
 
 /**
  * §1 MULTI-SELECTED: distribute a transform computed for the combined box
- * onto every selected item.
+ * onto every node it applies to.
  *
- * - move: every item translates by the box delta.
- * - resize: items keep their relative positions within the box; each is
+ * - move: every node in the move set (selection + group-mates) translates
+ *   by the box delta.
+ * - resize: nodes keep their relative positions within the box; each is
  *   scaled by (newW/startW, newH/startH) about the box's anchor, and the
  *   whole selection's top-left maps to the box's new top-left.
- * - rotate: every item rotates by the same delta (about its own center how
- *   the single-item rotate works — but multi-selection rotation rotates
- *   about the box center in most tools; the convention only says "same
- *   rules as single selection", so we keep the simpler "add delta rotation"
- *   for now).
- * - aspect-reset: applies only to a 1-item selection (computePatch guards).
+ * - rotate: every selected node rotates by the same delta (about its own
+ *   center, matching single-node rotate).
+ * - aspect-reset: applies only to a 1-node selection (computePatch guards).
  */
 function distributeBoxPatch(
   d: DragState,
-  boxPatch: BoxPatch,
-  items: Selectable[],
-): SelectableChange[] {
-  if (items.length === 1) {
-    const only = items[0];
-    if (only) return [{ id: only.id, kind: only.kind, patch: boxPatch }];
-  }
-  if (d.mode === 'move' || d.mode === 'aspect-reset') {
+  boxPatch: NodePatch,
+  selected: BoardNode[],
+  moving: BoardNode[],
+): NodeChange[] {
+  if (d.mode === 'move') {
+    // Group-aware: the whole move set (selection + group-mates) translates
+    // by the box delta, even when only one node is selected.
     const dx = boxPatch.x !== undefined ? boxPatch.x - d.startX : 0;
     const dy = boxPatch.y !== undefined ? boxPatch.y - d.startY : 0;
-    return items.map((it) => ({
-      id: it.id,
-      kind: it.kind,
-      patch: { x: it.x + dx, y: it.y + dy },
+    return moving.map((node) => ({
+      id: node.id,
+      kind: nodeChangeKind(node),
+      patch: { x: node.x + dx, y: node.y + dy },
+    }));
+  }
+  if (selected.length === 1) {
+    const only = selected[0];
+    if (only) return [{ id: only.id, kind: nodeChangeKind(only), patch: boxPatch }];
+  }
+  if (d.mode === 'aspect-reset') {
+    const dx = boxPatch.x !== undefined ? boxPatch.x - d.startX : 0;
+    const dy = boxPatch.y !== undefined ? boxPatch.y - d.startY : 0;
+    return selected.map((node) => ({
+      id: node.id,
+      kind: nodeChangeKind(node),
+      patch: { x: node.x + dx, y: node.y + dy },
     }));
   }
   if (d.mode === 'rotate') {
     const delta = (boxPatch.rotation ?? 0) - d.startRot;
-    return items.map((it) => ({
-      id: it.id,
-      kind: it.kind,
-      patch: { rotation: it.rotation + delta },
+    return selected.map((node) => ({
+      id: node.id,
+      kind: nodeChangeKind(node),
+      patch: { rotation: node.rotation + delta },
     }));
   }
   // resize
   const scaleX = boxPatch.width !== undefined && d.startW > 0 ? boxPatch.width / d.startW : 1;
   const scaleY = boxPatch.height !== undefined && d.startH > 0 ? boxPatch.height / d.startH : 1;
-  return items.map((it) => {
-    // Item position relative to the box's original top-left.
-    const relX = it.x - d.startX;
-    const relY = it.y - d.startY;
-    const newX = boxPatch.x !== undefined ? boxPatch.x + relX * scaleX : it.x;
-    const newY = boxPatch.y !== undefined ? boxPatch.y + relY * scaleY : it.y;
-    const patch: BoxPatch = {};
+  return selected.map((node) => {
+    // Node position relative to the box's original top-left.
+    const relX = node.x - d.startX;
+    const relY = node.y - d.startY;
+    const newX = boxPatch.x !== undefined ? boxPatch.x + relX * scaleX : node.x;
+    const newY = boxPatch.y !== undefined ? boxPatch.y + relY * scaleY : node.y;
+    const patch: NodePatch = {};
     if (boxPatch.x !== undefined) patch.x = newX;
     if (boxPatch.y !== undefined) patch.y = newY;
-    if (boxPatch.width !== undefined) patch.width = it.width * scaleX;
-    if (boxPatch.height !== undefined) patch.height = it.height * scaleY;
-    return { id: it.id, kind: it.kind, patch };
+    if (boxPatch.width !== undefined) patch.width = node.width * scaleX;
+    if (boxPatch.height !== undefined) patch.height = node.height * scaleY;
+    return { id: node.id, kind: nodeChangeKind(node), patch };
   });
 }
 
 export function SelectionOverlay({
-  items,
+  nodes,
+  moveNodes,
   viewport,
   onPreview,
   onCommit,
   onPreviewItems,
   onCommitItems,
-  onClearSelection,
+  onOutsidePress,
   editing,
-  freeTransform,
   onDoubleClick,
 }: SelectionOverlayProps) {
-  // The combined AABB of every selected item — the ONE box the overlay draws
+  // The combined AABB of every selected node — the ONE box the overlay draws
   // and transforms (§1 MULTI-SELECTED hard rule: never N outlines).
-  const box = selectionBox(items);
+  const box = selectionBox(nodes);
   const [hovered, setHovered] = useState<Zone>(null);
   const dragRef = useRef<DragState | null>(null);
   const lastPtr = useRef({ x: 0, y: 0 });
@@ -380,21 +410,27 @@ export function SelectionOverlay({
   onPreviewItemsRef.current = onPreviewItems;
   const onCommitItemsRef = useRef(onCommitItems);
   onCommitItemsRef.current = onCommitItems;
-  const onClearSelectionRef = useRef(onClearSelection);
-  onClearSelectionRef.current = onClearSelection;
+  const onOutsidePressRef = useRef(onOutsidePress);
+  onOutsidePressRef.current = onOutsidePress;
   const lastViewport = useRef(viewport);
   lastViewport.current = viewport;
+  // Resize default comes from the registry, per kind: images are
+  // aspect-locked (Shift unlocks), notes are free (Shift locks) — the
+  // sanctioned note exception. A mixed selection falls back to locked.
+  const freeTransform = nodes.length > 0 && nodes.every((node) => node.capabilities.freeTransform);
   const freeTransformRef = useRef(freeTransform);
   freeTransformRef.current = freeTransform;
   const boxRef = useRef<SelectionBox | null>(box);
   boxRef.current = box;
-  const itemsRef = useRef(items);
-  itemsRef.current = items;
-  // Original (unpreviewed) positions captured at drag start. The items prop
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+  const moveNodesRef = useRef(moveNodes ?? nodes);
+  moveNodesRef.current = moveNodes ?? nodes;
+  // Original (unpreviewed) geometry captured at drag start. The nodes prop
   // carries live preview patches during a drag, so commit-time distribution
   // must apply deltas to the originals — never the previewed ones, or the
   // delta double-applies.
-  const dragOriginItemsRef = useRef<Selectable[] | null>(null);
+  const dragOriginRef = useRef<{ selected: BoardNode[]; moving: BoardNode[] } | null>(null);
 
   const sx = box ? viewport.x + box.x * viewport.zoom : 0;
   const sy = box ? viewport.y + box.y * viewport.zoom : 0;
@@ -403,18 +439,22 @@ export function SelectionOverlay({
   const collapsed = box ? zonesDisabled(box, viewport) : false;
 
   const startDrag = useCallback(
-    (clientX: number, clientY: number, ctrlKey: boolean, altKey: boolean, shiftKey: boolean) => {
+    (event: PointerEvent, ctrlKey: boolean, altKey: boolean, shiftKey: boolean) => {
+      const { clientX, clientY } = event;
       const vp = lastViewport.current;
       const b = boxRef.current;
       if (!b) return;
-      // Snapshot the current (unpreviewed) items — deltas commit from here.
-      dragOriginItemsRef.current = itemsRef.current.map((it) => ({ ...it }));
+      // Snapshot the current (unpreviewed) geometry — deltas commit from here.
+      dragOriginRef.current = {
+        selected: nodesRef.current.map((node) => ({ ...node })),
+        moving: moveNodesRef.current.map((node) => ({ ...node })),
+      };
       // Always record the pointer down position so a click-without-drag (e.g.
       // §3 RESET ASPECT RATIO) commits from the actual down point, not a
       // stale last-pointer.
       lastPtr.current = { x: clientX, y: clientY };
       const zone = hitZone(clientX, clientY, b, vp);
-      const w = screenToWorld(clientX, clientY, vp);
+      const w = pointerWorld(clientX, clientY, vp);
       const bodyZone = zone === 'body' || zonesDisabled(b, vp);
       // §3 RESET ASPECT RATIO — Alt + click on the body only, never inside a
       // corner/edge hit-zone. Fires on release (no drag), snaps to 1:1 while
@@ -438,11 +478,10 @@ export function SelectionOverlay({
         return;
       }
       if (!zone) {
-        // Clicked the overlay OUTSIDE the selection box — treat like
-        // clicking empty canvas: clear selection (notes included), which
-        // removes this overlay and lets the click fall through to the
-        // canvas / underlying notes.
-        onClearSelectionRef.current?.();
+        // Pressed outside the selection box — forward to the canvas
+        // controller: it hit-tests (another node → select it) and treats
+        // anything else as an empty-canvas press (clear + box select).
+        onOutsidePressRef.current?.(event);
         return;
       }
       const cx = b.x + b.width / 2;
@@ -561,13 +600,7 @@ export function SelectionOverlay({
   const onOverlayPointerDown = useCallback(
     (event: React.PointerEvent) => {
       if (editing) return;
-      startDrag(
-        event.clientX,
-        event.clientY,
-        event.ctrlKey || event.metaKey,
-        event.altKey,
-        event.shiftKey,
-      );
+      startDrag(event.nativeEvent, event.ctrlKey || event.metaKey, event.altKey, event.shiftKey);
     },
     [editing, startDrag],
   );
@@ -580,13 +613,7 @@ export function SelectionOverlay({
       // Only handle clicks outside the overlay (the overlay has its own handler).
       const overlay = document.querySelector('.selection-overlay');
       if (overlay?.contains(event.target as Node)) return;
-      startDrag(
-        event.clientX,
-        event.clientY,
-        event.ctrlKey || event.metaKey,
-        event.altKey,
-        event.shiftKey,
-      );
+      startDrag(event, event.ctrlKey || event.metaKey, event.altKey, event.shiftKey);
     };
     window.addEventListener('pointerdown', onWinDown);
     return () => window.removeEventListener('pointerdown', onWinDown);
@@ -608,7 +635,7 @@ export function SelectionOverlay({
     };
   }, []);
 
-  // Global move/up — registered once on mount, reads viewport/item through refs.
+  // Global move/up — registered once on mount, reads viewport/nodes through refs.
   useEffect(() => {
     const onMove = (event: PointerEvent) => {
       const d = dragRef.current;
@@ -616,7 +643,7 @@ export function SelectionOverlay({
       lastPtr.current = { x: event.clientX, y: event.clientY };
       lastShift.current = event.shiftKey;
       const vp = lastViewport.current;
-      const w = screenToWorld(event.clientX, event.clientY, vp);
+      const w = pointerWorld(event.clientX, event.clientY, vp);
       // §2 / §3: the delta that drives the transform. Move (and the click
       // gesture RESET ASPECT RATIO) preserve the grab offset by measuring
       // from the pointer start; resize/rotate measure from the anchor.
@@ -625,9 +652,12 @@ export function SelectionOverlay({
       const dy = fromStart ? w.y - d.startPY : w.y - d.oy;
       const patch = computePatch(d, dx, dy, event.shiftKey, vp.zoom, freeTransformRef.current);
       if (!patch) return;
-      const origin = dragOriginItemsRef.current ?? itemsRef.current;
-      if (origin.length > 1 && onPreviewItemsRef.current) {
-        onPreviewItemsRef.current(distributeBoxPatch(d, patch, origin));
+      const origin = dragOriginRef.current ?? {
+        selected: nodesRef.current,
+        moving: moveNodesRef.current,
+      };
+      if (patchDistributed(origin) && onPreviewItemsRef.current) {
+        onPreviewItemsRef.current(distributeBoxPatch(d, patch, origin.selected, origin.moving));
       } else {
         onPreviewRef.current(patch);
       }
@@ -638,7 +668,7 @@ export function SelectionOverlay({
       dragRef.current = null;
       if (!d) return;
       const vp = lastViewport.current;
-      const w = screenToWorld(lastPtr.current.x, lastPtr.current.y, vp);
+      const w = pointerWorld(lastPtr.current.x, lastPtr.current.y, vp);
       const fromStart = d.mode === 'move' || d.mode === 'aspect-reset';
       const dx = fromStart ? w.x - d.startPX : w.x - d.ox;
       const dy = fromStart ? w.y - d.startPY : w.y - d.oy;
@@ -646,13 +676,16 @@ export function SelectionOverlay({
       // the committed patch never jumps from what the user saw.
       const patch = computePatch(d, dx, dy, lastShift.current, vp.zoom, freeTransformRef.current);
       if (!patch) return;
-      const origin = dragOriginItemsRef.current ?? itemsRef.current;
-      if (origin.length > 1 && onCommitItemsRef.current) {
-        onCommitItemsRef.current(distributeBoxPatch(d, patch, origin));
+      const origin = dragOriginRef.current ?? {
+        selected: nodesRef.current,
+        moving: moveNodesRef.current,
+      };
+      if (patchDistributed(origin) && onCommitItemsRef.current) {
+        onCommitItemsRef.current(distributeBoxPatch(d, patch, origin.selected, origin.moving));
       } else {
         onCommitRef.current(patch);
       }
-      dragOriginItemsRef.current = null;
+      dragOriginRef.current = null;
       dragRef.current = null;
       setHovered(null);
     };
@@ -738,6 +771,9 @@ export function SelectionOverlay({
               : `${SELECTED_OUTLINE_PX}px solid ${ACCENT}`,
             outlineOffset: 0,
             boxShadow: '0 0 18px rgb(196 240 108 / 18%)',
+            // Single-node boxes carry the node's rotation; the shell rotates
+            // with the node (zones are computed in the same unrotated frame).
+            transform: `rotate(${box.rotation}deg)`,
             transformOrigin: 'center',
             zIndex: 3,
           }}

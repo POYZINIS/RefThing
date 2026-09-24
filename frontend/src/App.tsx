@@ -1,22 +1,33 @@
 import { type ComponentType, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  type BatchRequestOp,
   createSession,
   fetchHealth,
   type HealthStatus,
   type Item,
   type ItemPatch,
+  type Note,
   searchBoard,
   submitBatch,
 } from '@/api/client';
 import { BoardSync } from '@/api/ws';
 import { BoardCanvas, type ViewportState } from '@/canvas/BoardCanvas';
+import { keyboardAction } from '@/canvas/controls';
+import { itemToNode, noteToNode } from '@/canvas/nodes/adapters';
+import {
+  type BoardNode,
+  type NodeChange,
+  type NodePatch,
+  nodeChangeKind,
+} from '@/canvas/nodes/types';
 import BoardViewManager from '@/components/BoardViewManager';
 import { DrawingOverlay } from '@/components/DrawingOverlay';
 import { NoteOverlay } from '@/components/NoteOverlay';
 import SearchBar, { emptyFilter, type FilterState, filterIsEmpty } from '@/components/SearchBar';
-import { type SelectableChange, SelectionOverlay } from '@/components/SelectionOverlay';
+import { SelectionOverlay } from '@/components/SelectionOverlay';
 import TagManager from '@/components/TagManager';
 import { useBoardStore } from '@/state/boardStore';
+import { type HistoryEntry, prepareCommand } from '@/state/history';
 
 type HealthState =
   | { kind: 'loading' }
@@ -80,15 +91,14 @@ function BoardApp() {
   const [health, setHealth] = useState<HealthState>({ kind: 'loading' });
   const [newBoardName, setNewBoardName] = useState('');
   const [isCreating, setIsCreating] = useState(false);
-  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
-  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
-  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  // Unified selection: items and notes share one id list (mixed multi-select
+  // works); the noteIds set below routes persistence per kind.
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   // The note currently in text-edit mode (§4 RULE 2 — double-click only).
   const [noteEditingId, setNoteEditingId] = useState<string | null>(null);
-  const [hoveredItemId, setHoveredItemId] = useState<string | null>(null);
-  const [hoveredNoteId, setHoveredNoteId] = useState<string | null>(null);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [previewPatch, setPreviewPatch] = useState<ItemPatch>({});
-  // Live multi-select preview: itemId → patch (used with onPreviewItems).
+  // Live multi-select preview: nodeId → patch (used with onPreviewItems).
   const [previewPatches, setPreviewPatches] = useState<Record<string, ItemPatch>>({});
   // Live preview for a selected note's transform (resize/rotate/move).
   const [previewNote, setPreviewNote] = useState<ItemPatch>({});
@@ -105,14 +115,21 @@ function BoardApp() {
   const panViewportRef = useRef(false);
   const clientId = useRef(crypto.randomUUID());
   const commitItemChange = useRef<(itemId: string, patch: ItemPatch) => void>(() => undefined);
-  const commitItemChanges = useRef<(changes: SelectableChange[]) => void>(() => undefined);
-  const commitNoteChange = useRef<(noteId: string, patch: ItemPatch) => void>(() => undefined);
+  const commitItemChanges = useRef<(changes: NodeChange[]) => void>(() => undefined);
+  // Kind-routing commit: items go through batch update ops, notes through
+  // put_note upserts — one command, one undo entry (history.ts).
+  const commitNodeChanges = useRef<(changes: NodeChange[]) => void>(() => undefined);
+  // The ONE command pipeline: every board mutation (both kinds) goes through
+  // prepareCommand → WS/REST batch + optimistic apply → undo stack.
+  const commitBoardOps = useRef<(ops: BatchRequestOp[], label: string) => void>(() => undefined);
+  const undoStack = useRef<HistoryEntry[]>([]);
+  const redoStack = useRef<HistoryEntry[]>([]);
+  const undoRef = useRef<() => void>(() => undefined);
+  const redoRef = useRef<() => void>(() => undefined);
   // Set on each render; the canvas callback can call it to raise a clicked
-  // item to the top of the paint order.
-  const bringToFrontRef = useRef<(itemId: string) => void>(() => undefined);
-  // Raise a clicked note above every other note (notes have their own z
-  // order in the notes table; items and notes are separate layers).
-  const bringNoteToFrontRef = useRef<(noteId: string) => void>(() => undefined);
+  // node to the top of its layer's paint order (items via set_z, notes via
+  // z_index — persistence stays per-kind until the protocol unifies).
+  const bringNodeToFrontRef = useRef<(nodeId: string) => void>(() => undefined);
   const boards = useBoardStore((state) => state.boards);
   const snapshot = useBoardStore((state) => state.snapshot);
   const activeBoardId = useBoardStore((state) => state.activeBoardId);
@@ -123,9 +140,45 @@ function BoardApp() {
   const createAndOpenBoard = useBoardStore((state) => state.createAndOpenBoard);
   const ingest = useBoardStore((state) => state.ingest);
   const saveViewport = useBoardStore((state) => state.saveViewport);
-  const addNote = useBoardStore((state) => state.addNote);
-  const saveNote = useBoardStore((state) => state.saveNote);
-  const updateNoteGeo = useBoardStore((state) => state.updateNoteGeo);
+  const addNote = () => {
+    if (!activeBoardId || !snapshot) return;
+    const maxZ = snapshot.notes.reduce((max, note) => Math.max(max, note.z_index), 0);
+    const now = Date.now();
+    const note: Note = {
+      id: crypto.randomUUID(),
+      board_id: activeBoardId,
+      x: 96,
+      y: 96,
+      width: 280,
+      height: 180,
+      rotation: 0,
+      z_index: maxZ + 1,
+      content_json: { text: 'New note' },
+      bg_color: null,
+      opacity: 1,
+      created_at: now,
+      updated_at: now,
+    };
+    commitBoardOps.current([{ kind: 'put_note', op_id: crypto.randomUUID(), note }], 'Add note');
+  };
+  // §4 RULE 4 — text edits commit ONCE on editing exit, as a single undo
+  // entry. No content change → no op, no history entry.
+  const saveNote = (noteId: string, content: string) => {
+    const note = snapshot?.notes.find((candidate) => candidate.id === noteId);
+    if (!note) return;
+    const current = (note.content_json as { text?: unknown })?.text;
+    if (current === content) return;
+    commitBoardOps.current(
+      [
+        {
+          kind: 'put_note',
+          op_id: crypto.randomUUID(),
+          note: { ...note, content_json: { text: content }, updated_at: Date.now() },
+        },
+      ],
+      'Edit note',
+    );
+  };
   const groupItems = useBoardStore((state) => state.groupItems);
   const ungroupItems = useBoardStore((state) => state.ungroupItems);
   const createTag = useBoardStore((state) => state.createTag);
@@ -134,31 +187,37 @@ function BoardApp() {
   const applyOps = useBoardStore((state) => state.applyOps);
 
   const snapshotItems = snapshot?.items;
-  const selectedItem = snapshotItems?.find((item) => item.id === selectedItemId) ?? null;
-  const selectedItems = useMemo(
-    () =>
-      selectedItemIds
-        .map((id) => snapshotItems?.find((it) => it.id === id))
-        .filter((it): it is Item => !!it),
-    [selectedItemIds, snapshotItems],
+  const noteIds = useMemo(
+    () => new Set(snapshot?.notes.map((note) => note.id) ?? []),
+    [snapshot?.notes],
   );
+  const primaryNodeId = selectedNodeIds[0] ?? null;
+  const primaryItemId = primaryNodeId && !noteIds.has(primaryNodeId) ? primaryNodeId : null;
+  const selectedNoteId =
+    selectedNodeIds.length === 1 && primaryNodeId && noteIds.has(primaryNodeId)
+      ? primaryNodeId
+      : null;
+  const selectedItem = snapshotItems?.find((item) => item.id === primaryItemId) ?? null;
   const selectedItemTags = useMemo(
-    () => new Set(selectedItemId ? (snapshot?.item_tags[selectedItemId] ?? []) : []),
-    [snapshot?.item_tags, selectedItemId],
+    () => new Set(primaryItemId ? (snapshot?.item_tags[primaryItemId] ?? []) : []),
+    [snapshot?.item_tags, primaryItemId],
   );
   // Notes keep a live preview while the transform shell drags them.
   const renderedNotes = useMemo(
     () =>
-      snapshot?.notes.map((note) =>
-        note.id === selectedNoteId && Object.keys(previewNote).length > 0
-          ? { ...note, ...previewNote }
-          : note,
-      ) ?? [],
-    [snapshot?.notes, selectedNoteId, previewNote],
+      snapshot?.notes.map((note) => {
+        const preview =
+          previewPatches[note.id] ?? (note.id === selectedNoteId ? previewNote : undefined);
+        return preview && Object.keys(preview).length > 0 ? { ...note, ...preview } : note;
+      }) ?? [],
+    [snapshot?.notes, selectedNoteId, previewNote, previewPatches],
   );
   // The selected note reads from the LIVE (previewed) list so the transform
   // shell and the note body always match what the user is dragging.
-  const selectedNote = renderedNotes.find((note) => note.id === selectedNoteId) ?? null;
+  const selectedNote = selectedNoteId
+    ? (renderedNotes.find((note) => note.id === selectedNoteId) ?? null)
+    : null;
+  const noteEditing = selectedNote !== null && noteEditingId === selectedNote.id;
   const [filter, setFilter] = useState<FilterState>(emptyFilter);
 
   // Phase 6: FTS5 server-side search. When the text query is non-empty,
@@ -195,7 +254,7 @@ function BoardApp() {
         // included — the primary must not stay frozen while its siblings
         // move). Single-select falls back to previewPatch on the primary.
         const preview =
-          previewPatches[item.id] ?? (item.id === selectedItemId ? previewPatch : undefined);
+          previewPatches[item.id] ?? (item.id === primaryItemId ? previewPatch : undefined);
         return preview ? { ...item, ...preview } : item;
       }) ?? [];
     if (filterIsEmpty(filter)) return items;
@@ -230,7 +289,7 @@ function BoardApp() {
     snapshot?.blobs,
     snapshot?.tags,
     snapshot?.item_tags,
-    selectedItemId,
+    primaryItemId,
     previewPatch,
     previewPatches,
     filter,
@@ -276,42 +335,51 @@ function BoardApp() {
           void saveViewport(viewport);
         }, 250);
       },
-      onSelectionChange: (itemId) => {
-        setSelectedItemId(itemId);
-        setSelectedItemIds(itemId ? [itemId] : []);
-        setSelectedNoteId(null);
+      onSelectionChange: (nodeId) => {
+        setSelectedNodeIds(nodeId ? [nodeId] : []);
         setNoteEditingId(null);
         setPreviewPatch({});
         setPreviewPatches({});
         setPreviewNote({});
-        if (itemId) bringToFrontRef.current(itemId);
+        if (nodeId) bringNodeToFrontRef.current(nodeId);
+      },
+      onSelectionToggle: (nodeId) => {
+        setNoteEditingId(null);
+        setSelectedNodeIds((previous) =>
+          previous.includes(nodeId)
+            ? previous.filter((id) => id !== nodeId)
+            : [...previous, nodeId],
+        );
       },
       onMultiSelectChange: (ids) => {
-        setSelectedItemIds(ids);
-        setSelectedItemId(ids[0] ?? null);
-        setSelectedNoteId(null);
+        setSelectedNodeIds(ids);
         setNoteEditingId(null);
         setPreviewPatch({});
         setPreviewPatches({});
         setPreviewNote({});
       },
       onClearSelection: () => {
-        setSelectedItemId(null);
-        setSelectedItemIds([]);
-        setSelectedNoteId(null);
+        setSelectedNodeIds([]);
         setNoteEditingId(null);
         setPreviewPatch({});
         setPreviewPatches({});
         setPreviewNote({});
       },
-      onHoverChange: (itemId) => setHoveredItemId(itemId),
-      onItemChange: (itemId, patch) => {
-        commitItemChange.current(itemId, patch);
+      onHoverChange: (nodeId) => setHoveredNodeId(nodeId),
+      // The controller mutates canvas-side node objects during a drag;
+      // DOM-rendered notes need their live positions relayed for preview.
+      onDragPreview: (changes) => {
+        for (const change of changes) {
+          if (change.kind === 'note') {
+            setPreviewNote((previous) => ({ ...previous, ...change.patch }));
+          }
+        }
       },
-      onItemsChange: (changes) =>
-        commitItemChanges.current(
-          changes.map(({ itemId, patch }) => ({ id: itemId, kind: 'item' as const, patch })),
-        ),
+      onNodesChange: (changes) => {
+        commitNodeChanges.current(changes);
+        // Drop the drag preview once the note's committed position lands.
+        if (changes.some((change) => change.kind === 'note')) setPreviewNote({});
+      },
       snapToGrid: false,
     });
     boardCanvas.current = canvas;
@@ -372,72 +440,60 @@ function BoardApp() {
   );
 
   useEffect(() => {
-    boardCanvas.current?.update(renderedItems, gifHashes);
-  }, [renderedItems, gifHashes]);
+    // Notes go in as geometry-only nodes (hit-testing, box select); they
+    // keep rendering through the DOM NoteOverlay.
+    boardCanvas.current?.update(renderedItems, gifHashes, renderedNotes);
+  }, [renderedItems, gifHashes, renderedNotes]);
 
   commitItemChange.current = (itemId, patch) => {
     commitItemChanges.current([{ id: itemId, kind: 'item', patch }]);
   };
 
-  // Raise an item to the front of the paint order via a `set_z` op. The order
-  // array is index-mapped by the store (index 0 = backmost), so the clicked
-  // item goes last; everything else keeps its relative order.
-  bringToFrontRef.current = (itemId) => {
-    if (!activeBoardId || !snapshot) return;
-    const ids = snapshot.items.map((it) => it.id);
-    if (!ids.includes(itemId) || ids[ids.length - 1] === itemId) return;
-    const order = [...ids.filter((id) => id !== itemId), itemId];
-    const op = { kind: 'set_z' as const, op_id: crypto.randomUUID(), order };
-    const request = { base_seq: snapshot.seq, client_id: clientId.current, ops: [op] };
-    if (socket.current?.send(request)) {
-      applyOps([op]);
-      return;
-    }
-    void submitBatch(activeBoardId, request)
-      .then((result) => applyOps([op], result.seq))
-      .catch(() => openBoard(activeBoardId));
-  };
+  // Unified node view of the board for selection chrome, hover outlines, and
+  // group-mate lookup. Unfiltered — the shell tracks selected nodes even
+  // when a search filter hides them — with live preview patches merged.
+  const boardNodes = useMemo(() => {
+    const itemNodes = (snapshotItems ?? [])
+      .filter(
+        (item): item is Item & { blob_hash: string } => item.type === 'image' && !!item.blob_hash,
+      )
+      .map((item) => {
+        const preview =
+          previewPatches[item.id] ?? (item.id === primaryItemId ? previewPatch : undefined);
+        const merged = preview ? { ...item, ...preview } : item;
+        return itemToNode(merged, gifHashes.has(item.blob_hash));
+      });
+    return [...itemNodes, ...renderedNotes.map(noteToNode)];
+  }, [snapshotItems, renderedNotes, previewPatch, previewPatches, primaryItemId, gifHashes]);
+  const boardNodesById = useMemo(
+    () => new Map(boardNodes.map((node) => [node.id, node])),
+    [boardNodes],
+  );
+  const selectedNodes = useMemo(
+    () =>
+      selectedNodeIds
+        .map((id) => boardNodesById.get(id))
+        .filter((node): node is BoardNode => !!node),
+    [selectedNodeIds, boardNodesById],
+  );
+  // Group-aware shell drags: moving a grouped node moves its mates too.
+  const moveNodes = useMemo(() => {
+    const groupIds = new Set(
+      selectedNodes.map((node) => node.groupId).filter((id): id is string => id !== null),
+    );
+    if (groupIds.size === 0) return selectedNodes;
+    const selectedIdSet = new Set(selectedNodeIds);
+    const mates = boardNodes.filter(
+      (node) => node.groupId && groupIds.has(node.groupId) && !selectedIdSet.has(node.id),
+    );
+    return [...selectedNodes, ...mates];
+  }, [selectedNodes, selectedNodeIds, boardNodes]);
 
-  // Notes: same geometry commit path as items (updateNoteGeo is store-side,
-  // already optimistic). The overlay emits BoxPatch; route to updateNoteGeo.
-  commitNoteChange.current = (noteId, patch) => {
-    const geo = { ...patch };
-    void updateNoteGeo(noteId, geo);
-  };
-
-  // Bring a note to the top of the note layer. Note z_index is notes-relative
-  // (items and notes are separate tables/layers), so "front" = max note
-  // z_index + 1.
-  bringNoteToFrontRef.current = (noteId) => {
-    if (!snapshot) return;
-    const maxZ = snapshot.notes.reduce((max, note) => Math.max(max, note.z_index), 0);
-    const note = snapshot.notes.find((n) => n.id === noteId);
-    // Skip if the note is already strictly ahead of every other note.
-    if (!note || note.z_index > maxZ) return;
-    void updateNoteGeo(noteId, { z_index: maxZ + 1 });
-  };
-
-  const toggleTagOnSelection = (tagId: string) => {
-    if (!selectedItemId) return;
-    const hasTag = selectedItemTags.has(tagId);
-    commitItemChange.current(selectedItemId, {
-      ...(hasTag ? { remove_tag_ids: [tagId] } : { add_tag_ids: [tagId] }),
-    });
-  };
-
-  commitItemChanges.current = (changes) => {
-    if (!activeBoardId || !snapshot) return;
-    const ops = changes.map(({ id, patch }) => ({
-      kind: 'update' as const,
-      op_id: crypto.randomUUID(),
-      item_id: id,
-      fields: patch,
-    }));
-    const request = {
-      base_seq: snapshot.seq,
-      client_id: clientId.current,
-      ops,
-    };
+  // Send a batch (WS first, REST fallback) + optimistic local apply. Shared
+  // by fresh commands and undo/redo replays.
+  const sendOps = (ops: BatchRequestOp[]) => {
+    if (!activeBoardId || !snapshot || ops.length === 0) return;
+    const request = { base_seq: snapshot.seq, client_id: clientId.current, ops };
     if (socket.current?.send(request)) {
       // Optimistic apply; the echo diff only advances our seq cursor.
       applyOps(ops);
@@ -447,6 +503,161 @@ function BoardApp() {
       .then((result) => applyOps(ops, result.seq))
       .catch(() => openBoard(activeBoardId));
   };
+
+  commitBoardOps.current = (ops, label) => {
+    if (!snapshot) return;
+    // prepareCommand computes inverse ops against the CURRENT snapshot and
+    // drops no-op ops from the forward set. If a referenced row vanished
+    // mid-gesture (raced remote delete), commit without a history entry.
+    let entry: HistoryEntry | null = null;
+    try {
+      entry = prepareCommand(snapshot, ops, label);
+    } catch {
+      entry = null;
+    }
+    const forward = entry ? entry.forward : ops;
+    sendOps(forward);
+    if (entry && entry.forward.length > 0) {
+      undoStack.current.push(entry);
+      redoStack.current = [];
+    }
+  };
+
+  undoRef.current = () => {
+    const entry = undoStack.current.pop();
+    if (!entry) return;
+    redoStack.current.push(entry);
+    sendOps(entry.inverse);
+  };
+  redoRef.current = () => {
+    const entry = redoStack.current.pop();
+    if (!entry) return;
+    undoStack.current.push(entry);
+    sendOps(entry.forward);
+  };
+
+  // Raise a clicked node to the front of its layer. Item order is one
+  // set_z op (index 0 = backmost, so the clicked item goes last); notes
+  // have their own notes-relative z order, so "front" = max note z_index + 1.
+  bringNodeToFrontRef.current = (nodeId) => {
+    if (!activeBoardId || !snapshot) return;
+    if (noteIds.has(nodeId)) {
+      const maxZ = snapshot.notes.reduce((max, note) => Math.max(max, note.z_index), 0);
+      const note = snapshot.notes.find((candidate) => candidate.id === nodeId);
+      // Skip if the note is already strictly ahead of every other note.
+      if (!note || note.z_index > maxZ) return;
+      commitBoardOps.current(
+        [
+          {
+            kind: 'put_note',
+            op_id: crypto.randomUUID(),
+            note: { ...note, z_index: maxZ + 1, updated_at: Date.now() },
+          },
+        ],
+        'Bring to front',
+      );
+      return;
+    }
+    const ids = snapshot.items.map((it) => it.id);
+    if (!ids.includes(nodeId) || ids[ids.length - 1] === nodeId) return;
+    const order = [...ids.filter((id) => id !== nodeId), nodeId];
+    commitBoardOps.current(
+      [{ kind: 'set_z' as const, op_id: crypto.randomUUID(), order }],
+      'Bring to front',
+    );
+  };
+
+  // One command for a mixed item+note change set (e.g. a group drag ending
+  // with notes in the move set): items update in place, notes upsert whole.
+  commitNodeChanges.current = (changes) => {
+    if (!snapshot) return;
+    const ops: BatchRequestOp[] = [];
+    for (const change of changes) {
+      if (change.kind === 'item') {
+        ops.push({
+          kind: 'update',
+          op_id: crypto.randomUUID(),
+          item_id: change.id,
+          fields: change.patch,
+        });
+      } else {
+        const note = snapshot.notes.find((candidate) => candidate.id === change.id);
+        if (!note) continue;
+        ops.push({
+          kind: 'put_note',
+          op_id: crypto.randomUUID(),
+          note: { ...note, ...change.patch, updated_at: Date.now() },
+        });
+      }
+    }
+    commitBoardOps.current(ops, 'Transform selection');
+  };
+
+  const toggleTagOnSelection = (tagId: string) => {
+    if (!primaryItemId) return;
+    const hasTag = selectedItemTags.has(tagId);
+    commitItemChange.current(primaryItemId, {
+      ...(hasTag ? { remove_tag_ids: [tagId] } : { add_tag_ids: [tagId] }),
+    });
+  };
+
+  commitItemChanges.current = (changes) => {
+    const ops: BatchRequestOp[] = changes.map(({ id, patch }) => ({
+      kind: 'update' as const,
+      op_id: crypto.randomUUID(),
+      item_id: id,
+      fields: patch,
+    }));
+    commitBoardOps.current(ops, 'Transform items');
+  };
+
+  const clearSelectionRef = useRef<() => void>(() => undefined);
+  clearSelectionRef.current = () => {
+    setSelectedNodeIds([]);
+    setNoteEditingId(null);
+    setPreviewPatch({});
+    setPreviewPatches({});
+    setPreviewNote({});
+  };
+  const deleteSelectionRef = useRef<() => void>(() => undefined);
+  deleteSelectionRef.current = () => {
+    if (!activeBoardId || !snapshot || selectedNodeIds.length === 0) return;
+    const itemIds = selectedNodeIds.filter((id) => !noteIds.has(id));
+    const deadNoteIds = selectedNodeIds.filter((id) => noteIds.has(id));
+    // One batch (and one undo entry): items via the delete op, notes via
+    // delete_notes.
+    const ops: BatchRequestOp[] = [];
+    if (itemIds.length > 0)
+      ops.push({ kind: 'delete', op_id: crypto.randomUUID(), item_ids: itemIds });
+    if (deadNoteIds.length > 0)
+      ops.push({ kind: 'delete_notes', op_id: crypto.randomUUID(), note_ids: deadNoteIds });
+    if (ops.length === 0) return;
+    clearSelectionRef.current();
+    commitBoardOps.current(ops, 'Delete selection');
+  };
+
+  // Board keyboard map (canvas/controls.ts). Typing targets keep their keys.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+      const action = keyboardAction(event);
+      if (action === 'escape') clearSelectionRef.current();
+      else if (action === 'delete') deleteSelectionRef.current();
+      else if (action === 'undo') undoRef.current();
+      else if (action === 'redo') redoRef.current();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // Undo history is per-board: switching boards drops both stacks. The dep
+  // is the point — the body only touches refs.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: fire on board switch
+  useEffect(() => {
+    undoStack.current = [];
+    redoStack.current = [];
+  }, [activeBoardId]);
 
   async function submitBoard(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -496,7 +707,7 @@ function BoardApp() {
           <button
             className="ghost-button"
             type="button"
-            onClick={() => void addNote()}
+            onClick={addNote}
             disabled={!activeBoardId}
           >
             Add note
@@ -504,15 +715,15 @@ function BoardApp() {
           <button
             className="ghost-button"
             type="button"
-            onClick={() => selectedItemId && void groupItems([selectedItemId])}
-            disabled={!selectedItemId}
+            onClick={() => primaryItemId && void groupItems([primaryItemId])}
+            disabled={!primaryItemId}
           >
             Group
           </button>
           <button
             className="ghost-button"
             type="button"
-            onClick={() => selectedItemId && void ungroupItems([selectedItemId])}
+            onClick={() => primaryItemId && void ungroupItems([primaryItemId])}
             disabled={!selectedItem?.group_id}
           >
             Ungroup
@@ -626,125 +837,78 @@ function BoardApp() {
             key={note.id}
             note={note}
             viewport={viewport}
-            selected={note.id === selectedNoteId}
-            editing={note.id === selectedNoteId && noteEditingId === note.id}
+            selected={selectedNodeIds.includes(note.id)}
+            editing={noteEditingId === note.id}
+            onPress={(event) => boardCanvas.current?.notePointerDown(note.id, event.nativeEvent)}
             onSelect={() => {
-              setSelectedNoteId(note.id);
-              setSelectedItemId(null);
-              setSelectedItemIds([]);
+              setSelectedNodeIds([note.id]);
+              setNoteEditingId(null);
               setPreviewPatch({});
               setPreviewPatches({});
               setPreviewNote({});
-              bringNoteToFrontRef.current(note.id);
+              bringNodeToFrontRef.current(note.id);
             }}
-            onHover={(hovering) => setHoveredNoteId(hovering ? note.id : null)}
+            onHover={(hovering) => setHoveredNodeId(hovering ? note.id : null)}
             onEditingChange={(editing) => setNoteEditingId(editing ? note.id : null)}
-            onSave={(content) => void saveNote(note.id, content)}
-            onMove={(noteId, x, y) => void updateNoteGeo(noteId, { x, y })}
+            onSave={(content) => saveNote(note.id, content)}
           />
         ))}
-        {/* §1 HOVERED — 1px 40% outline on an unselected item. Replaced by the
-            selection outline the moment that item is selected; never drawn
-            while a selection overlay is up for the same item. */}
-        {hoveredItemId &&
-          snapshotItems &&
-          hoveredItemId !== selectedItemId &&
+        {/* §1 HOVERED — 1px 40% outline on an unselected node (any kind).
+            Replaced by the selection outline the moment that node is
+            selected. rotatedBounds() keeps the outline tight on rotated
+            nodes. */}
+        {hoveredNodeId &&
+          !selectedNodeIds.includes(hoveredNodeId) &&
           (() => {
-            const h = snapshotItems.find((item) => item.id === hoveredItemId);
-            if (!h) return null;
+            const node = boardNodesById.get(hoveredNodeId);
+            if (!node) return null;
+            const bounds = node.rotatedBounds();
             return (
               <div
                 className="hover-outline"
                 style={{
                   position: 'absolute',
-                  left: viewport.x + h.x * viewport.zoom - 0.5,
-                  top: viewport.y + h.y * viewport.zoom - 0.5,
-                  width: h.width * viewport.zoom,
-                  height: h.height * viewport.zoom,
+                  left: viewport.x + bounds.left * viewport.zoom - 0.5,
+                  top: viewport.y + bounds.top * viewport.zoom - 0.5,
+                  width: (bounds.right - bounds.left) * viewport.zoom,
+                  height: (bounds.bottom - bounds.top) * viewport.zoom,
                 }}
               />
             );
           })()}
-        {selectedItems.length > 0 && (
+        {/* §0.7 / §1 MULTI-SELECTED — ONE kind-agnostic shell around the
+            whole selection (items and notes). Notes get the exact same 8
+            zones (§4 RULE 5); double-click on a lone note enters editing. */}
+        {selectedNodes.length > 0 && (
           <SelectionOverlay
-            items={selectedItems.map((it) => {
-              const preview =
-                previewPatches[it.id] ?? (it.id === selectedItemId ? previewPatch : undefined);
-              const merged = preview ? { ...it, ...preview } : it;
-              return {
-                kind: 'item' as const,
-                id: merged.id,
-                x: merged.x,
-                y: merged.y,
-                width: merged.width,
-                height: merged.height,
-                rotation: merged.rotation,
-              };
-            })}
+            nodes={selectedNodes}
+            moveNodes={moveNodes}
             viewport={viewport}
-            onPreview={setPreviewPatch}
+            editing={noteEditing}
+            onDoubleClick={selectedNote ? () => setNoteEditingId(selectedNote.id) : undefined}
+            onOutsidePress={(event) => boardCanvas.current?.overlayPointerDown(event)}
+            onPreview={(patch) => {
+              if (selectedNote) setPreviewNote((prev) => ({ ...prev, ...patch }));
+              else setPreviewPatch(patch);
+            }}
             onCommit={(patch) => {
-              setPreviewPatch({});
-              const primary = selectedItems[0];
-              if (primary) commitItemChange.current(primary.id, patch);
+              const primary = selectedNodes[0];
+              if (selectedNote) setPreviewNote({});
+              else setPreviewPatch({});
+              if (primary) {
+                commitNodeChanges.current([
+                  { id: primary.id, kind: nodeChangeKind(primary), patch },
+                ]);
+              }
             }}
             onPreviewItems={(changes) => {
-              const map: Record<string, ItemPatch> = {};
+              const map: Record<string, NodePatch> = {};
               for (const { id, patch } of changes) map[id] = patch;
               setPreviewPatches(map);
             }}
             onCommitItems={(changes) => {
               setPreviewPatches({});
-              commitItemChanges.current(changes);
-            }}
-          />
-        )}
-        {/* §1 HOVERED — same rule as items: 1px 40% outline on an unselected
-            note, replaced by the selection shell the moment it's selected. */}
-        {hoveredNoteId &&
-          hoveredNoteId !== selectedNoteId &&
-          (() => {
-            const n = renderedNotes.find((note) => note.id === hoveredNoteId);
-            if (!n) return null;
-            return (
-              <div
-                className="hover-outline"
-                style={{
-                  position: 'absolute',
-                  left: viewport.x + n.x * viewport.zoom - 0.5,
-                  top: viewport.y + n.y * viewport.zoom - 0.5,
-                  width: n.width * viewport.zoom,
-                  height: n.height * viewport.zoom,
-                }}
-              />
-            );
-          })()}
-        {/* §4 RULE 5 — a selected note gets the EXACT same 8-zone transform
-            shell as an image. The note article is inert while selected;
-            double-click (forwarded from the shell) enters text editing. */}
-        {selectedNote && (
-          <SelectionOverlay
-            items={[
-              {
-                kind: 'note',
-                id: selectedNote.id,
-                x: Number(selectedNote.x),
-                y: Number(selectedNote.y),
-                width: Number(selectedNote.width),
-                height: Number(selectedNote.height),
-                rotation: Number(selectedNote.rotation ?? 0),
-              },
-            ]}
-            viewport={viewport}
-            editing={noteEditingId === selectedNote.id}
-            freeTransform
-            onDoubleClick={() => setNoteEditingId(selectedNote.id)}
-            onPreview={(patch) => {
-              setPreviewNote((prev) => ({ ...prev, ...patch }));
-            }}
-            onCommit={(patch) => {
-              setPreviewNote({});
-              if (selectedNote) commitNoteChange.current(selectedNote.id, patch);
+              commitNodeChanges.current(changes);
             }}
           />
         )}

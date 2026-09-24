@@ -327,11 +327,14 @@ SECTION 4 — ASSERTIONS (pass/fail criteria)
    envelope — this is what catches a mid-gesture "teleport" bug that
    a final-position-only check would miss entirely.
 2. RESIZE: assert the correct axis/anchor behavior holds at EVERY
-   sampled frame, not just the last one. For default (no-modifier)
-   edge/corner behavior, assert aspect ratio stays within a tight
+   sampled frame, not just the last one. For proportional edge/corner behavior (images without Shift, notes
+   with Shift), assert aspect ratio stays within a tight
    tolerance (e.g. 0.5%) across all samples. For an edge zone under
-   the along-edge sine wobble, assert the ignored dimension's value
-   is bit-for-bit unchanged across every sample.
+   the along-edge sine wobble, assert the perpendicular dimension is bit-for-bit unchanged when
+   stretching a single axis (images with Shift; notes without Shift).
+   In proportional mode, assert it follows the aspect ratio regardless
+   of the along-edge wobble. Notes retain their approved default free
+   resize behavior; Shift enables proportional scaling for notes.
 3. ROTATE: assert monotonic angle accumulation across multi-revolution
    sweeps (no discontinuous jump at the 360-degree boundary). Assert
    snap increments land within a small epsilon (e.g. 0.1 degree) of

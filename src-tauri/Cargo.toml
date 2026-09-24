@@ -1,0 +1,21 @@
+[package]
+name = "refthing-app"
+version = "0.1.0"
+description = "RefThing desktop app"
+edition = "2024"
+license = "MIT"
+
+# Standalone crate at the repo root: NOT part of the backend workspace.
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+refthing-server = { path = "../backend/crates/refthing-server" }
+refthing-core = { path = "../backend/crates/refthing-core" }
+tokio = { version = "1", features = ["sync"] }
+
+[profile.release]
+lto = true
+codegen-units = 1

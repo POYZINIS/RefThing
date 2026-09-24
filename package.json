@@ -10,12 +10,16 @@
     "dev:api": "cargo run --manifest-path backend/Cargo.toml -p refthing-server",
     "dev:api:once": "cargo run --manifest-path backend/Cargo.toml -p refthing-server",
     "dev:web": "npm run dev -w frontend",
+    "dev:app": "tauri dev",
+    "build:app": "tauri build",
     "lint": "biome check . && cargo clippy --manifest-path backend/Cargo.toml --workspace --all-targets",
     "fmt": "biome check --write . && cargo fmt --manifest-path backend/Cargo.toml --all",
     "typecheck": "npm run typecheck -w frontend"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
-    "concurrently": "^9"
+    "@tauri-apps/cli": "^2.11.5",
+    "concurrently": "^9",
+    "root": "^3.2.0"
   }
 }

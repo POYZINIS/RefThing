@@ -10,6 +10,8 @@ product spec and `docs/architecture.md` for the module map.
 | Task | Command |
 |:-----|:--------|
 | Run frontend dev server | `npm run dev` |
+| Run desktop app (Tauri window) | `npm run dev:app` |
+| Build desktop app (installer) | `npm run build:app` |
 | Lint frontend (Biome) | `npm run lint` |
 | Format frontend (Biome) | `npm run fmt` |
 | Backend tests | `cargo test --manifest-path backend/Cargo.toml --workspace` |
@@ -27,10 +29,17 @@ backend/            Rust workspace
   migrations/       SQL migrations — embedded, run at startup (Phase 1)
 frontend/           React + PixiJS app (Vite)
   src/canvas/       PixiJS engine — imperative, owns the canvas
+  src/canvas/nodes/ unified node model (BoardNode), kind registry, texture
+                    sources (pyramid/GIF), sprite renderer; NodeInteractionController
+                    is the ONE pointer state machine for all node kinds
   src/components/   UI chrome only (toolbar, panels, dialogs)
-  src/state/        zustand stores
+  src/state/        zustand stores; history.ts = command/undo engine
+                    (prepareCommand + applyBoardOps — applyOps delegates to it)
   src/api/          HTTP + WebSocket client
 sidecar/            Node service for Node-only rendering (stub until Phase 11)
+src-tauri/          Tauri desktop app (standalone crate, NOT in the backend
+                    workspace) — embeds refthing-server in-process; the webview
+                    loads the app over HTTP from the embedded server itself
 docs/               architecture, prerequisites, ADRs, onboarding guides
 data/               local state (SQLite DB, uploads) — NEVER commit
 ```

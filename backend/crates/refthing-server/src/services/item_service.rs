@@ -81,6 +81,13 @@ pub async fn apply_batch(
         }
     }
 
+    if req.atomic && !rejected.is_empty() {
+        tx.rollback().await?;
+        return Err(AppError::BadRequest(format!(
+            "command rejected: {}",
+            rejected[0].reason
+        )));
+    }
     if applied_ops.is_empty() {
         tx.rollback().await?;
         return Ok(BatchResponse {
@@ -90,10 +97,8 @@ pub async fn apply_batch(
         });
     }
 
-    // The event row stores the batch verbatim (rejected ops included) so
-    // `/changes` replays exactly what the client sent; only the applied ops
-    // go out on the wire.
-    let ops_json = serde_json::to_value(&req.ops).map_err(json_codec_error)?;
+    // Recovery must replay only committed operations, exactly like live diffs.
+    let ops_json = serde_json::to_value(&applied_ops).map_err(json_codec_error)?;
     let origin = (!req.client_id.is_empty()).then_some(req.client_id.as_str());
     let seq = append_event(&mut tx, board_id, origin, &ops_json).await?;
     tx.commit().await?;
@@ -245,6 +250,7 @@ async fn apply_single(
         state,
         board_id,
         BatchRequest {
+            atomic: false,
             base_seq,
             client_id: NO_CLIENT.to_string(),
             ops: vec![op],
@@ -261,6 +267,7 @@ async fn apply_single(
 /// op (the batch continues); `Err(_)` aborts the whole batch. Every op
 /// validates all referenced rows BEFORE mutating, so a rejected op leaves no
 /// partial writes behind.
+#[allow(clippy::too_many_lines)]
 async fn apply_op(
     tx: &mut SqliteTransaction<'_>,
     board_id: Uuid,
@@ -270,6 +277,9 @@ async fn apply_op(
         BatchOp::Move {
             item_ids, dx, dy, ..
         } => {
+            if !dx.is_finite() || !dy.is_finite() {
+                return Ok(Err("invalid_geometry".to_string()));
+            }
             if !items_exist(tx, board_id, item_ids).await? {
                 return Ok(Err(ITEM_NOT_FOUND.to_string()));
             }
@@ -333,6 +343,48 @@ async fn apply_op(
             }
             Ok(Ok(()))
         }
+        BatchOp::RestoreItem { item, tag_ids, .. } => {
+            restore_item(tx, board_id, item, tag_ids).await
+        }
+        BatchOp::PutNote { note, .. } => put_note(tx, board_id, note).await,
+        BatchOp::DeleteNotes { note_ids, .. } => {
+            for id in note_ids {
+                let exists: Option<i64> =
+                    sqlx::query_scalar("SELECT 1 FROM notes WHERE id = ? AND board_id = ?")
+                        .bind(id)
+                        .bind(board_id)
+                        .fetch_optional(&mut **tx)
+                        .await?;
+                if exists.is_none() {
+                    return Ok(Err("note_not_found".to_string()));
+                }
+            }
+            for id in note_ids {
+                sqlx::query("DELETE FROM notes WHERE id = ? AND board_id = ?")
+                    .bind(id)
+                    .bind(board_id)
+                    .execute(&mut **tx)
+                    .await?;
+            }
+            Ok(Ok(()))
+        }
+        BatchOp::RestoreGroup { group, .. } => restore_group(tx, board_id, group).await,
+        BatchOp::RemoveGroup { group_id, .. } => {
+            if !group_exists(tx, board_id, *group_id).await? {
+                return Ok(Err(GROUP_NOT_FOUND.to_string()));
+            }
+            let occupied: i64 = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM items WHERE group_id = ?) OR EXISTS(SELECT 1 FROM groups WHERE parent_group_id = ?)")
+                .bind(group_id).bind(group_id).fetch_one(&mut **tx).await?;
+            if occupied != 0 {
+                return Ok(Err("group_not_empty".to_string()));
+            }
+            sqlx::query("DELETE FROM groups WHERE id = ? AND board_id = ?")
+                .bind(group_id)
+                .bind(board_id)
+                .execute(&mut **tx)
+                .await?;
+            Ok(Ok(()))
+        }
     }
 }
 
@@ -348,6 +400,27 @@ async fn apply_update(
     let Some(row) = fetch_item_tx(tx, board_id, item_id).await? else {
         return Ok(Err(ITEM_NOT_FOUND.to_string()));
     };
+
+    if !valid_geometry(
+        patch.x.unwrap_or(row.x),
+        patch.y.unwrap_or(row.y),
+        patch.width.unwrap_or(row.width),
+        patch.height.unwrap_or(row.height),
+        patch.rotation.unwrap_or(row.rotation),
+    ) {
+        return Ok(Err("invalid_geometry".to_string()));
+    }
+    // Validate every reference before any write, including geometry and tags.
+    if let Some(group_id) = patch.group_id
+        && !group_exists(tx, board_id, group_id).await?
+    {
+        return Ok(Err(GROUP_NOT_FOUND.to_string()));
+    }
+    for tag_id in &patch.add_tag_ids {
+        if !tag_exists(tx, *tag_id).await? {
+            return Ok(Err(TAG_NOT_FOUND.to_string()));
+        }
+    }
 
     let transform_dirty = patch.x.is_some()
         || patch.y.is_some()
@@ -570,4 +643,130 @@ fn rejection_error(reason: &str) -> AppError {
         TAG_NOT_FOUND => AppError::BadRequest("tag not found".to_string()),
         _ => AppError::NotFound("item"),
     }
+}
+
+fn valid_geometry(x: f64, y: f64, width: f64, height: f64, rotation: f64) -> bool {
+    [x, y, width, height, rotation]
+        .iter()
+        .all(|value| value.is_finite())
+        && width > 0.0
+        && height > 0.0
+}
+
+fn timestamp(millis: i64) -> AppResult<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::from_timestamp_millis(millis)
+        .ok_or_else(|| AppError::BadRequest("invalid timestamp".to_string()))
+}
+
+async fn restore_item(
+    tx: &mut SqliteTransaction<'_>,
+    board_id: Uuid,
+    item: &Item,
+    tag_ids: &[Uuid],
+) -> AppResult<Result<(), String>> {
+    if item.board_id != board_id {
+        return Ok(Err("wrong_board".to_string()));
+    }
+    if !valid_geometry(item.x, item.y, item.width, item.height, item.rotation) {
+        return Ok(Err("invalid_geometry".to_string()));
+    }
+    let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM items WHERE id = ?")
+        .bind(item.id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if exists.is_some() {
+        return Ok(Err("item_already_exists".to_string()));
+    }
+    if let Some(group_id) = item.group_id
+        && !group_exists(tx, board_id, group_id).await?
+    {
+        return Ok(Err(GROUP_NOT_FOUND.to_string()));
+    }
+    if let Some(hash) = &item.blob_hash {
+        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM blobs WHERE hash = ?")
+            .bind(hash)
+            .fetch_optional(&mut **tx)
+            .await?;
+        if exists.is_none() {
+            return Ok(Err("blob_not_found".to_string()));
+        }
+    }
+    for tag in tag_ids {
+        if !tag_exists(tx, *tag).await? {
+            return Ok(Err(TAG_NOT_FOUND.to_string()));
+        }
+    }
+    sqlx::query("INSERT INTO items (id, board_id, type, blob_id, x, y, width, height, rotation, z_index, group_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(item.id).bind(board_id).bind(&item.item_type).bind(&item.blob_hash)
+        .bind(item.x).bind(item.y).bind(item.width).bind(item.height).bind(item.rotation)
+        .bind(item.z_index).bind(item.group_id).bind(timestamp(item.created_at)?).bind(timestamp(item.updated_at)?)
+        .execute(&mut **tx).await?;
+    upsert_metadata(tx, item.id, &item.metadata).await?;
+    for tag in tag_ids {
+        sqlx::query("INSERT OR IGNORE INTO item_tags (item_id, tag_id) VALUES (?, ?)")
+            .bind(item.id)
+            .bind(tag)
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(Ok(()))
+}
+
+async fn put_note(
+    tx: &mut SqliteTransaction<'_>,
+    board_id: Uuid,
+    note: &crate::dto::Note,
+) -> AppResult<Result<(), String>> {
+    if note.board_id != board_id {
+        return Ok(Err("wrong_board".to_string()));
+    }
+    if !valid_geometry(note.x, note.y, note.width, note.height, note.rotation)
+        || !note.opacity.is_finite()
+        || !(0.0..=1.0).contains(&note.opacity)
+    {
+        return Ok(Err("invalid_geometry".to_string()));
+    }
+    let owner: Option<Uuid> = sqlx::query_scalar("SELECT board_id FROM notes WHERE id = ?")
+        .bind(note.id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if owner.is_some_and(|owner| owner != board_id) {
+        return Ok(Err("wrong_board".to_string()));
+    }
+    sqlx::query("INSERT INTO notes (id, board_id, x, y, width, height, rotation, z_index, content_json, bg_color, opacity, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET x = excluded.x, y = excluded.y, width = excluded.width, height = excluded.height, rotation = excluded.rotation, z_index = excluded.z_index, content_json = excluded.content_json, bg_color = excluded.bg_color, opacity = excluded.opacity")
+        .bind(note.id).bind(board_id).bind(note.x).bind(note.y).bind(note.width).bind(note.height)
+        .bind(note.rotation).bind(note.z_index).bind(note.content_json.to_string()).bind(&note.bg_color)
+        .bind(note.opacity).bind(timestamp(note.created_at)?).bind(timestamp(note.updated_at)?)
+        .execute(&mut **tx).await?;
+    Ok(Ok(()))
+}
+
+async fn restore_group(
+    tx: &mut SqliteTransaction<'_>,
+    board_id: Uuid,
+    group: &crate::dto::Group,
+) -> AppResult<Result<(), String>> {
+    if group.board_id != board_id {
+        return Ok(Err("wrong_board".to_string()));
+    }
+    if !group.opacity.is_finite() || !(0.0..=1.0).contains(&group.opacity) {
+        return Ok(Err("invalid_opacity".to_string()));
+    }
+    let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM groups WHERE id = ?")
+        .bind(group.id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if exists.is_some() {
+        return Ok(Err("group_already_exists".to_string()));
+    }
+    if let Some(parent) = group.parent_group_id
+        && !group_exists(tx, board_id, parent).await?
+    {
+        return Ok(Err(GROUP_NOT_FOUND.to_string()));
+    }
+    sqlx::query("INSERT INTO groups (id, board_id, parent_group_id, name, collapsed, bg_color, opacity, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(group.id).bind(board_id).bind(group.parent_group_id).bind(&group.name).bind(group.collapsed)
+        .bind(&group.bg_color).bind(group.opacity).bind(timestamp(group.created_at)?)
+        .execute(&mut **tx).await?;
+    Ok(Ok(()))
 }

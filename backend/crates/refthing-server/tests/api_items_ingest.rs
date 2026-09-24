@@ -43,6 +43,7 @@ async fn spawn_app() -> TestApp {
         host: "127.0.0.1".to_string(),
         port: 0,
         data_dir: data_dir.clone(),
+        static_dir: None,
     };
     let pools = db::connect(&data_dir.join("refthing.db"))
         .await
@@ -288,6 +289,7 @@ async fn batch_of_1k_moves_bumps_seq_once() {
 
     let op_id = Uuid::now_v7();
     let request = BatchRequest {
+        atomic: false,
         base_seq: 0,
         client_id: "c1".to_string(),
         ops: vec![BatchOp::Move {
@@ -365,6 +367,7 @@ async fn batch_mixed_ops_with_partial_rejection() {
 
     let op_ids: Vec<Uuid> = (0..4).map(|_| Uuid::now_v7()).collect();
     let request = BatchRequest {
+        atomic: false,
         base_seq: 0,
         client_id: "c2".to_string(),
         ops: vec![
@@ -442,6 +445,7 @@ async fn batch_mixed_ops_with_partial_rejection() {
 
     // An all-rejected batch bumps no seq and writes no event.
     let request = BatchRequest {
+        atomic: false,
         base_seq: 1,
         client_id: "c2".to_string(),
         ops: vec![BatchOp::Delete {
@@ -474,6 +478,7 @@ async fn batch_with_stale_base_seq_is_409_seq_conflict() {
     let ids = insert_items(&app, board_id, 1).await;
 
     let request = BatchRequest {
+        atomic: false,
         base_seq: 42,
         client_id: "c3".to_string(),
         ops: vec![BatchOp::Move {

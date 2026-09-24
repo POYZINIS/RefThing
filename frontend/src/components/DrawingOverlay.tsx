@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import type { ViewportState } from '@/canvas/BoardCanvas';
+import { screenToWorld } from '@/canvas/coordinates';
 
 type DrawingOverlayProps = {
   enabled: boolean;
@@ -78,9 +79,5 @@ export function DrawingOverlay({
 }
 
 function toWorld(event: React.PointerEvent<SVGSVGElement>, viewport: ViewportState): Point {
-  const rect = event.currentTarget.getBoundingClientRect();
-  return {
-    x: (event.clientX - rect.left - viewport.x) / viewport.zoom,
-    y: (event.clientY - rect.top - viewport.y) / viewport.zoom,
-  };
+  return screenToWorld(event, viewport, event.currentTarget.getBoundingClientRect());
 }

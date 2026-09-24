@@ -39,13 +39,16 @@ pub async fn create(pool: &SqlitePool, name: &str) -> Result<Board, CoreError> {
 }
 
 /// Fetches a board by id; `None` when it does not exist.
-pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<Board>, CoreError> {
+pub async fn get(
+    executor: impl sqlx::SqliteExecutor<'_>,
+    id: Uuid,
+) -> Result<Option<Board>, CoreError> {
     sqlx::query_as!(
         Board,
         "SELECT id AS \"id!: Uuid\", name AS \"name!\", seq AS \"seq!\", created_at AS \"created_at!: DateTime<Utc>\", updated_at AS \"updated_at!: DateTime<Utc>\", viewport_state AS \"viewport_state: serde_json::Value\" FROM boards WHERE id = ?",
         id,
     )
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map_err(|error| CoreError::Db(error.to_string()))
 }

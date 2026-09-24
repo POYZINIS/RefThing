@@ -6,7 +6,6 @@ import {
   type BoardSummary,
   createBoard,
   createGroup,
-  createNote,
   createTag as createTagApi,
   deleteTag as deleteTagApi,
   fetchBoard,
@@ -18,9 +17,11 @@ import {
   updateNote,
   updateTag as updateTagApi,
 } from '@/api/client';
+import { applyBoardOps } from './history';
 
-/** Geometry patch for a note — the subset the interaction shell can change.
- * Every field is optional so a single PATCH can carry any combination. */
+/** Geometry patch for a note — kept for the (unwired) drawing overlay's
+ *  content path. Interactive note geometry flows through `put_note` batch
+ *  ops (see App.tsx commitBoardOps), not REST PATCH. */
 export type NoteGeoPatch = {
   x?: number;
   y?: number;
@@ -41,9 +42,6 @@ type BoardState = {
   createAndOpenBoard: (name: string) => Promise<void>;
   ingest: (files: File[]) => Promise<void>;
   saveViewport: (viewportState: { x: number; y: number; zoom: number }) => Promise<void>;
-  addNote: () => Promise<void>;
-  saveNote: (noteId: string, content: string) => Promise<void>;
-  updateNoteGeo: (noteId: string, geo: NoteGeoPatch) => Promise<void>;
   saveDrawing: (noteId: string, strokes: Array<Array<{ x: number; y: number }>>) => Promise<void>;
   groupItems: (itemIds: string[]) => Promise<void>;
   ungroupItems: (itemIds: string[]) => Promise<void>;
@@ -141,44 +139,6 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     }
   },
 
-  async addNote() {
-    const boardId = get().activeBoardId;
-    if (!boardId) return;
-    await createNote(boardId, {
-      x: 96,
-      y: 96,
-      width: 280,
-      height: 180,
-      content_json: { text: 'New note' },
-    });
-    await get().openBoard(boardId);
-  },
-
-  async saveNote(noteId, content) {
-    const boardId = get().activeBoardId;
-    if (!boardId) return;
-    await updateNote(boardId, noteId, { content_json: { text: content } });
-    await get().openBoard(boardId);
-  },
-
-  async updateNoteGeo(noteId, geo) {
-    const boardId = get().activeBoardId;
-    const snapshot = get().snapshot;
-    if (!boardId || !snapshot) return;
-    // Update locally without a full refetch so the overlay doesn't jerk.
-    set((state) => {
-      const current = state.snapshot;
-      if (!current) return state;
-      return {
-        snapshot: {
-          ...current,
-          notes: current.notes.map((note) => (note.id === noteId ? { ...note, ...geo } : note)),
-        },
-      };
-    });
-    await updateNote(boardId, noteId, geo);
-  },
-
   async saveDrawing(noteId, strokes) {
     const boardId = get().activeBoardId;
     if (!boardId) return;
@@ -221,73 +181,9 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     set((state) => {
       const snapshot = state.snapshot;
       if (!snapshot) return state;
-      const items = new Map(snapshot.items.map((item) => [item.id, item]));
-      let itemTags = snapshot.item_tags;
-      let changed = false;
-      for (const op of ops) {
-        switch (op.kind) {
-          case 'move':
-            for (const itemId of op.item_ids) {
-              const item = items.get(itemId);
-              if (item) {
-                items.set(itemId, { ...item, x: item.x + op.dx, y: item.y + op.dy });
-                changed = true;
-              }
-            }
-            break;
-          case 'update': {
-            const item = items.get(op.item_id);
-            if (!item) break;
-            const { add_tag_ids: addedTags, remove_tag_ids: removedTags, ...fields } = op.fields;
-            items.set(op.item_id, { ...item, ...fields });
-            changed = true;
-            if ((addedTags?.length ?? 0) > 0 || (removedTags?.length ?? 0) > 0) {
-              const nextTags = new Set(itemTags[op.item_id] ?? []);
-              for (const tagId of removedTags ?? []) nextTags.delete(tagId);
-              for (const tagId of addedTags ?? []) nextTags.add(tagId);
-              itemTags = { ...itemTags, [op.item_id]: [...nextTags] };
-            }
-            break;
-          }
-          case 'delete':
-            for (const itemId of op.item_ids) {
-              changed = items.delete(itemId) || changed;
-            }
-            break;
-          case 'set_group':
-            for (const itemId of op.item_ids) {
-              const item = items.get(itemId);
-              if (item) {
-                items.set(itemId, { ...item, group_id: op.group_id });
-                changed = true;
-              }
-            }
-            break;
-          case 'set_z':
-            op.order.forEach((itemId, index) => {
-              const item = items.get(itemId);
-              if (item) {
-                items.set(itemId, { ...item, z_index: index });
-                changed = true;
-              }
-            });
-            break;
-          case 'create':
-            items.set(op.item.id, op.item);
-            changed = true;
-            break;
-        }
-      }
-      if (!changed) {
-        return seq === undefined || seq === snapshot.seq
-          ? state
-          : { snapshot: { ...snapshot, seq } };
-      }
-      // Snapshot items stay in paint order (ascending z_index, stable).
-      const nextItems = [...items.values()].sort((left, right) => left.z_index - right.z_index);
-      return {
-        snapshot: { ...snapshot, items: nextItems, item_tags: itemTags, seq: seq ?? snapshot.seq },
-      };
+      // One indexed implementation for every op kind (including put_note /
+      // restore_item / group ops the interactive commands now emit).
+      return { snapshot: applyBoardOps(snapshot, ops, seq ?? snapshot.seq) };
     });
   },
 

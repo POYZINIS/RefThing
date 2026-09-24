@@ -122,8 +122,9 @@ export type ItemPatch = Partial<
 
 /**
  * Server-side batch op variants (`kind` is the serde tag, snake_case — see
- * docs/api.md). `create` only ever appears in `/changes` event replays;
- * clients never send it.
+ * docs/api.md). Variants with `op_id` are the batch protocol
+ * (`POST .../items/batch` and client→server WS); the rest only ever appear in
+ * `/changes` event replays / WS diffs — clients never send them.
  */
 export type BatchOp =
   | { kind: 'move'; op_id: string; item_ids: string[]; dx: number; dy: number }
@@ -131,9 +132,21 @@ export type BatchOp =
   | { kind: 'delete'; op_id: string; item_ids: string[] }
   | { kind: 'set_group'; op_id: string; item_ids: string[]; group_id: string | null }
   | { kind: 'set_z'; op_id: string; order: string[] }
-  | { kind: 'create'; item: Item };
+  | { kind: 'restore_item'; op_id: string; item: Item; tag_ids: string[] }
+  | { kind: 'put_note'; op_id: string; note: Note }
+  | { kind: 'delete_notes'; op_id: string; note_ids: string[] }
+  | { kind: 'restore_group'; op_id: string; group: Group }
+  | { kind: 'remove_group'; op_id: string; group_id: string }
+  | { kind: 'create'; item: Item }
+  | { kind: 'create_note'; note: Note }
+  | { kind: 'update_note'; note: Note }
+  | { kind: 'delete_note'; id: string }
+  | { kind: 'create_group'; group: Group }
+  | { kind: 'update_group'; group: Group }
+  | { kind: 'delete_group'; id: string };
 
-export type BatchRequestOp = Exclude<BatchOp, { kind: 'create' }>;
+/** Ops a client may send in a batch — exactly the ones carrying `op_id`. */
+export type BatchRequestOp = Extract<BatchOp, { op_id: string }>;
 
 export interface BatchRequest {
   base_seq: number;

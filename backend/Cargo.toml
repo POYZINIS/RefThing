@@ -19,7 +19,7 @@ missing_errors_doc = "allow"
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
-tower-http = { version = "0.6", features = ["cors", "compression-full", "trace", "timeout"] }
+tower-http = { version = "0.6", features = ["cors", "compression-full", "trace", "timeout", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }

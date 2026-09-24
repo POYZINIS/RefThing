@@ -10,6 +10,7 @@ use axum::http::StatusCode;
 use axum::{Router, routing::get};
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
@@ -49,7 +50,12 @@ pub fn build_router(state: AppState) -> Router {
     // Blob bytes: no compression (already-compressed media).
     let blobs = routes::blobs::router();
 
-    Router::new()
+    // Optional SPA fallback: serve the built frontend for any path the API
+    // routes don't claim. Used by the desktop app, which points the webview
+    // at this server directly.
+    let static_dir = state.config.static_dir.clone();
+
+    let app = Router::new()
         .merge(json_api)
         .merge(ingest)
         .merge(realtime)
@@ -58,7 +64,14 @@ pub fn build_router(state: AppState) -> Router {
         // Layers added last run first: CORS is outermost, then tracing.
         // To add auth later, insert one `.layer(auth_layer)` here.
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
+        .layer(CorsLayer::permissive());
+
+    if let Some(static_dir) = static_dir {
+        let index = static_dir.join("index.html");
+        app.fallback_service(ServeDir::new(static_dir).fallback(ServeFile::new(index)))
+    } else {
+        app
+    }
 }
 
 async fn health(

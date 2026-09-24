@@ -46,13 +46,16 @@ pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<Group>, CoreError
 }
 
 /// Lists a board's groups (both roots and nested), ordered by name.
-pub async fn list_by_board(pool: &SqlitePool, board_id: Uuid) -> Result<Vec<Group>, CoreError> {
+pub async fn list_by_board(
+    executor: impl sqlx::SqliteExecutor<'_>,
+    board_id: Uuid,
+) -> Result<Vec<Group>, CoreError> {
     sqlx::query_as!(
         Group,
         "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", parent_group_id AS \"parent_group_id: Uuid\", name AS \"name!\", collapsed AS \"collapsed: bool\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\" FROM groups WHERE board_id = ? ORDER BY name COLLATE NOCASE, id",
         board_id,
     )
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await
     .map_err(|error| CoreError::Db(error.to_string()))
 }

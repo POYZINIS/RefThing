@@ -23,6 +23,7 @@ async fn spawn_app() -> TestApp {
         host: "127.0.0.1".to_string(),
         port: 0,
         data_dir: dir.path().to_path_buf(),
+        static_dir: None,
     };
     let pools = db::connect(&dir.path().join("refthing.db"))
         .await
@@ -332,8 +333,7 @@ async fn duplicates_find_near_identical_phash() {
     assert_eq!(results.status(), 200);
     let results: Value = results.json().await.expect("dupes json");
     let results = results.as_array().expect("array");
-    // Both a and b should appear (a lists b; b lists a — one-directional
-    // pairing means only the earlier item reports the pair).
+    // Both halves of the pair must appear, regardless of row order.
     let ids: Vec<&str> = results
         .iter()
         .filter_map(|r| r["item_id"].as_str())
@@ -343,9 +343,122 @@ async fn duplicates_find_near_identical_phash() {
         "a should be flagged"
     );
     assert!(
-        !ids.contains(&b.id.to_string().as_str()),
-        "b is the later item"
+        ids.contains(&b.id.to_string().as_str()),
+        "b should be flagged"
     );
+    assert_eq!(ids.len(), 2, "the unrelated image must stay excluded");
+    for (item, partner) in [(&a, &b), (&b, &a)] {
+        let result = results
+            .iter()
+            .find(|result| result["item_id"] == item.id.to_string())
+            .expect("duplicate item");
+        assert_eq!(result["snippet"], partner.id.to_string());
+        assert_eq!(result["rank"], 1.0);
+    }
+}
+
+#[tokio::test]
+async fn search_handles_literal_quotes_and_returns_all_board_matches() {
+    let app = spawn_app().await;
+    let board = create_board(&app, "many search matches").await;
+    let other_board = create_board(&app, "other board").await;
+    let board_id = id_of(&board);
+    let pools = connect_pools(&app).await;
+    let hash = "abababababababababababababababababababababababababababababababab";
+    for _ in 0..55 {
+        insert_image(&pools, board_id, hash, "special_photo.png").await;
+    }
+    insert_image(&pools, id_of(&other_board), hash, "special_photo.png").await;
+
+    for query in ["special", "\"special\"", "special\"", "special OR missing"] {
+        let response = client()
+            .get(format!("{}/api/boards/{board_id}/search", app.base))
+            .query(&[("q", query)])
+            .send()
+            .await
+            .expect("search");
+        assert_eq!(response.status(), 200, "literal query {query:?}");
+        let results: Vec<Value> = response.json().await.expect("search results");
+        assert_eq!(results.len(), 55, "all matches for {query:?}");
+    }
+
+    for query in ["\"", "()", "", "missing"] {
+        let response = client()
+            .get(format!("{}/api/boards/{board_id}/search", app.base))
+            .query(&[("q", query)])
+            .send()
+            .await
+            .expect("search punctuation");
+        assert_eq!(response.status(), 200);
+        let results: Vec<Value> = response.json().await.expect("empty search results");
+        assert!(results.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn visual_search_is_board_scoped_and_ignores_invalid_metadata() {
+    let app = spawn_app().await;
+    let board = create_board(&app, "visual search").await;
+    let other_board = create_board(&app, "other board").await;
+    let board_id = id_of(&board);
+    let a = insert_metadata_item(
+        &app,
+        board_id,
+        "1111111111111111111111111111111111111111111111111111111111111111",
+        "a.png",
+        json!({ "phash": "0000000000000000", "dominant_colors": ["#ff1010"] }),
+    )
+    .await;
+    let b = insert_metadata_item(
+        &app,
+        board_id,
+        "2222222222222222222222222222222222222222222222222222222222222222",
+        "b.png",
+        json!({ "phash": "0000000000000001", "dominant_colors": ["bad", "#ff0000"] }),
+    )
+    .await;
+    insert_metadata_item(
+        &app,
+        board_id,
+        "3333333333333333333333333333333333333333333333333333333333333333",
+        "invalid.png",
+        json!({ "phash": "0", "dominant_colors": [null, "#nope"] }),
+    )
+    .await;
+    insert_metadata_item(
+        &app,
+        id_of(&other_board),
+        "4444444444444444444444444444444444444444444444444444444444444444",
+        "other.png",
+        json!({ "phash": "0000000000000000", "dominant_colors": ["#ff0000"] }),
+    )
+    .await;
+
+    let response = client()
+        .get(format!("{}/api/boards/{board_id}/search-colour", app.base))
+        .query(&[("colour", "#ff0000")])
+        .send()
+        .await
+        .expect("colour search");
+    assert_eq!(response.status(), 200);
+    let results: Vec<Value> = response.json().await.expect("colour results");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["item_id"], b.id.to_string());
+    assert_eq!(results[1]["item_id"], a.id.to_string());
+    assert_eq!(results[0]["rank"], 0.0);
+    assert!(results[1]["rank"].as_f64().unwrap() > 0.0);
+
+    let response = client()
+        .get(format!("{}/api/boards/{board_id}/duplicates", app.base))
+        .send()
+        .await
+        .expect("duplicate search");
+    assert_eq!(response.status(), 200);
+    let results: Vec<Value> = response.json().await.expect("duplicate results");
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|result| {
+        result["item_id"] == a.id.to_string() || result["item_id"] == b.id.to_string()
+    }));
 }
 
 // ---------------------------------------------------------------------------

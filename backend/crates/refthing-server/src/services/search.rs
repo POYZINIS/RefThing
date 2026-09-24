@@ -28,10 +28,11 @@ pub async fn search(
         return Ok(Vec::new());
     }
 
-    // Sanitize: split on whitespace, join with " OR ".
+    // Treat every token as literal text, including embedded quotes. The user
+    // does not need to know (or accidentally trigger) FTS5 query syntax.
     let fts_query = q
         .split_whitespace()
-        .map(|token| format!("\"{token}\""))
+        .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" OR ");
 
@@ -42,8 +43,7 @@ pub async fn search(
                 snippet(search_index, 3, '<b>', '</b>', '…', ?) AS snippet
          FROM search_index
          WHERE board_id = ? AND search_index MATCH ?
-         ORDER BY rank ASC
-         LIMIT 50",
+         ORDER BY rank ASC",
     )
     .bind(SNIPPET_LIMIT)
     .bind(board_id)
@@ -97,8 +97,7 @@ pub async fn search_by_colour(
         return Ok(Vec::new());
     };
 
-    // SQLite-only: iterate item_metadata rows on this board, parse the json,
-    // and compute squared distance. We do this in SQL for one round-trip.
+    // Fetch metadata in one round-trip, then rank by nearest palette colour.
     let rows = sqlx::query(
         "SELECT i.id AS item_id, m.json AS json
          FROM items i
@@ -119,25 +118,22 @@ pub async fn search_by_colour(
         let Some(colors) = value.get("dominant_colors").and_then(|v| v.as_array()) else {
             continue;
         };
-        for color in colors {
-            let Some((cr, cg, cb)) = color.as_str().and_then(parse_hex_colour) else {
-                continue;
-            };
-            let dr = cr - r;
-            let dg = cg - g;
-            let db = cb - b;
-            if dr * dr + dg * dg + db * db <= COLOUR_EPSILON_SQ {
-                matches.push(dto::SearchResult {
-                    item_id: row.try_get("item_id").unwrap(),
-                    rank: 0.0,
-                    snippet: format!("colour {colour}"),
-                    kind: "colour".to_string(),
-                });
-                break;
-            }
+        let nearest = colors
+            .iter()
+            .filter_map(|color| color.as_str().and_then(parse_hex_colour))
+            .map(|(cr, cg, cb)| (cr - r).pow(2) + (cg - g).pow(2) + (cb - b).pow(2))
+            .min();
+        if let Some(distance) = nearest.filter(|distance| *distance <= COLOUR_EPSILON_SQ) {
+            matches.push(dto::SearchResult {
+                item_id: row.try_get("item_id").unwrap(),
+                rank: f64::from(u32::try_from(distance).unwrap_or_default()),
+                snippet: format!("colour {colour}"),
+                kind: "colour".to_string(),
+            });
         }
     }
 
+    matches.sort_by(|a, b| a.rank.total_cmp(&b.rank).then(a.item_id.cmp(&b.item_id)));
     Ok(matches)
 }
 
@@ -169,45 +165,51 @@ pub async fn find_duplicates(
     .map_err(|error| CoreError::Db(error.to_string()))?;
 
     // Load all (item_id, phash) pairs.
-    let mut hashes: Vec<(Uuid, String)> = Vec::new();
+    let mut hashes: Vec<(Uuid, u64)> = Vec::new();
     for row in &rows {
         let json_text: String = row.try_get("json").unwrap_or_default();
         let value: serde_json::Value =
             serde_json::from_str(&json_text).unwrap_or(serde_json::Value::Null);
-        if let Some(phash) = value.get("phash").and_then(|v| v.as_str()) {
-            hashes.push((row.try_get("item_id").unwrap(), phash.to_string()));
+        if let Some(phash) = value
+            .get("phash")
+            .and_then(|v| v.as_str())
+            .filter(|hash| hash.len() == 16)
+            .and_then(|hash| u64::from_str_radix(hash, 16).ok())
+        {
+            hashes.push((row.try_get("item_id").unwrap(), phash));
         }
     }
 
     // O(n²) Hamming comparison — acceptable for reference boards (thousands
     // of items, and the hash comparison is a single u64 XOR).
-    let mut groups: Vec<dto::SearchResult> = Vec::new();
+    let mut neighbours: Vec<Vec<(u32, Uuid)>> = vec![Vec::new(); hashes.len()];
     for (i, (left_id, left_hash)) in hashes.iter().enumerate() {
-        let mut matches: Vec<(f64, String)> = Vec::new();
-        for (right_id, right_hash) in hashes.iter().skip(i + 1) {
-            let Some(distance) = refthing_core::pipeline::hamming_distance(left_hash, right_hash)
-            else {
-                continue;
-            };
+        for (j, (right_id, right_hash)) in hashes.iter().enumerate().skip(i + 1) {
+            let distance = (left_hash ^ right_hash).count_ones();
             if distance <= DUPE_THRESHOLD {
-                matches.push((f64::from(distance), right_id.to_string()));
+                neighbours[i].push((distance, *right_id));
+                neighbours[j].push((distance, *left_id));
             }
         }
+    }
+    let mut groups: Vec<dto::SearchResult> = Vec::new();
+    for ((item_id, _), mut matches) in hashes.into_iter().zip(neighbours) {
         if !matches.is_empty() {
-            matches.sort_by(|a, b| a.0.total_cmp(&b.0));
+            matches.sort_unstable();
             let snippet = matches
                 .iter()
-                .map(|(_, id)| id.as_str())
+                .map(|(_, id)| id.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
             groups.push(dto::SearchResult {
-                item_id: *left_id,
-                rank: matches[0].0,
+                item_id,
+                rank: f64::from(matches[0].0),
                 snippet,
                 kind: "duplicate".to_string(),
             });
         }
     }
 
+    groups.sort_by(|a, b| a.rank.total_cmp(&b.rank).then(a.item_id.cmp(&b.item_id)));
     Ok(groups)
 }

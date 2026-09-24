@@ -35,7 +35,10 @@ Linking works through a shim that lives entirely inside
   normally provide.
 - `backend/target/tools/` — a local **zig** copy; `zigcc.bat` /
   `ziglib.bat` stand in for MSVC `cl.exe` / `lib.exe` when compiling C
-  dependencies.
+  dependencies, `zigcxx.bat` stands in for C++ (`zig c++`, exceptions
+  disabled — needed by Tauri's `vswhom-sys`), and `rc.bat` wraps
+  `zig rc` as an `rc.exe` replacement for Tauri's icon/version resource
+  embedding (wired up via the `RC` env var).
 - The root **`.cargo/config.toml`** (gitignored, machine-local) wires it
   up: `rust-lld` as linker, `-Lnative` pointing at the importlibs,
   `stubs.o` + the runtime libs as extra link args, and `CC`/`AR` pointed
@@ -61,6 +64,17 @@ Linking works through a shim that lives entirely inside
    compile a trivial anchor object with
    `zig cc -target x86_64-windows-gnu -c anchor.c -o anchor.o`, then
    `zig lib -Out:backend/target/importlibs/legacy_stdio_definitions.lib anchor.o`.
+5. For the **Tauri desktop build** only: regenerate
+   `backend/target/importlibs/uuid.lib`
+   (`python gen_import_libs.py . rpcrt4` then copy to `uuid.lib`);
+   `cppshim.o` (MSVC C++ runtime stubs — `operator new/delete` (+array
+   forms), `std::nothrow`, `/GS` cookie, CFG dispatch, `_Init_thread_*` —
+   needed to link the prebuilt `WebView2LoaderStatic.lib` without
+   `msvcprt.lib`; build from `cppshim.rs` the same way as `stubs.rs` in
+   step 2); and `ucrt.lib`/`libcmt.lib`/`libvcruntime.lib` placeholder
+   archives (`zig lib -Out:<name>.lib anchor.o` — `ucrt.lib` also packs
+   `ucrtshim.o`, a no-op `atexit`, built from `ucrtshim.rs`), which satisfy
+   the loader's `/DEFAULTLIB` directives.
 
 If `cargo build` suddenly fails with `LNK1181`-style "cannot open
 kernel32.lib" / missing symbol errors after a clean, this section is why.
@@ -101,6 +115,19 @@ automatically when you `cd` into the repo. Node **24+** is required (Node
   ```bash
   cargo install sqlx-cli --no-default-features --features sqlite
   ```
+
+## Tauri (desktop app)
+
+The desktop app (`src-tauri/`, `npm run dev:app` / `npm run build:app`) needs
+two extra pieces:
+
+- **WebView2 Runtime** — preinstalled on Windows 11 and most Windows 10
+  machines (this box has it). The Tauri window is a WebView2 control.
+- **A Windows resource compiler** — `tauri-build` embeds the app icon and
+  version info at compile time via `tauri-winres`, which needs `rc.exe`
+  (Windows SDK). On this box the `RC` env var in `.cargo/config.toml`
+  points at `backend/target/tools/rc.bat` (a `zig rc` wrapper), so no SDK
+  is needed. On a fresh machine with VS Build Tools, `rc.exe` just works.
 
 ## Windows Defender / performance
 

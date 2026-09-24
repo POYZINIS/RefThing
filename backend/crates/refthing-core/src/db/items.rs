@@ -81,13 +81,16 @@ pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<Item>, CoreError>
 
 /// Lists a board's items in paint order (ascending `z_index`, ties broken by
 /// id). This is the hot board-load query and rides `idx_items_board_paint`.
-pub async fn list_by_board(pool: &SqlitePool, board_id: Uuid) -> Result<Vec<Item>, CoreError> {
+pub async fn list_by_board(
+    executor: impl sqlx::SqliteExecutor<'_>,
+    board_id: Uuid,
+) -> Result<Vec<Item>, CoreError> {
     sqlx::query_as!(
         Item,
         "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", type AS \"item_type!\", blob_id, x, y, width, height, rotation, z_index, group_id AS \"group_id: Uuid\", created_at AS \"created_at: DateTime<Utc>\", updated_at AS \"updated_at: DateTime<Utc>\" FROM items WHERE board_id = ? ORDER BY z_index ASC, id ASC",
         board_id,
     )
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await
     .map_err(|error| CoreError::Db(error.to_string()))
 }
