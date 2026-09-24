@@ -807,3 +807,122 @@ button:disabled {
   background: #2a1918;
   font-size: 11px;
 }
+
+/* §5B context menu — the home of every uncommon action. */
+.board-context-menu {
+  position: fixed;
+  z-index: var(--z-menu);
+  display: flex;
+  min-width: 190px;
+  flex-direction: column;
+  padding: 5px;
+  border: 1px solid #333c47;
+  border-radius: 8px;
+  background: #181d23;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 45%);
+}
+
+.board-context-menu button {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 5px;
+  color: #e9edf2;
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+}
+
+.board-context-menu button:hover:not(:disabled),
+.board-context-menu button:focus-visible {
+  outline: 0;
+  color: #101419;
+  background: #d6ff76;
+}
+
+.board-context-menu button:disabled {
+  color: #5d6773;
+}
+
+.board-context-menu kbd {
+  color: inherit;
+  font: inherit;
+  opacity: 0.6;
+}
+
+/* Snapshot manager (versioned rollback, Phase 7). */
+.snapshot-dialog {
+  width: min(460px, calc(100vw - 32px));
+  padding: 22px;
+  border: 1px solid #333c47;
+  border-radius: 10px;
+  color: #e9edf2;
+  background: #15191e;
+  font-size: 13px;
+}
+
+.snapshot-dialog::backdrop {
+  background: rgb(5 7 10 / 60%);
+}
+
+.snapshot-dialog h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+
+.snapshot-dialog p {
+  margin: 0 0 14px;
+  color: #8994a1;
+}
+
+.snapshot-dialog form,
+.snapshot-dialog li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.snapshot-dialog input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid #333c47;
+  border-radius: 6px;
+  color: inherit;
+  background: #0d1014;
+}
+
+.snapshot-dialog ul {
+  display: grid;
+  gap: 6px;
+  margin: 14px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.snapshot-dialog li {
+  justify-content: space-between;
+  padding: 8px 10px;
+  border: 1px solid #272d35;
+  border-radius: 6px;
+}
+
+.snapshot-dialog li small {
+  display: block;
+  color: #8994a1;
+}
+
+.snapshot-dialog button {
+  padding: 7px 11px;
+  border: 1px solid #42505e;
+  border-radius: 6px;
+  color: #e9edf2;
+  background: #1d242c;
+  font-size: 12px;
+}
+
+.snapshot-dialog button:hover:not(:disabled) {
+  border-color: #c4f06c;
+  color: #d6ff76;
+}

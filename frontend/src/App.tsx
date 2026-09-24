@@ -9,22 +9,34 @@ import {
   type Item,
   type ItemPatch,
   type Note,
-  searchBoard,
 } from '@/api/client';
 import { BoardSync } from '@/api/ws';
 import { BoardCanvas, type ViewportState } from '@/canvas/BoardCanvas';
 import { keyboardAction } from '@/canvas/controls';
+import { screenToWorld } from '@/canvas/coordinates';
 import { itemToNode, noteToNode } from '@/canvas/nodes/adapters';
 import { noteText } from '@/canvas/nodes/noteText';
 import type { CanvasNode, NodeChange, NodePatch } from '@/canvas/nodes/types';
+import { BoardContextMenu } from '@/components/BoardContextMenu';
 import BoardViewManager from '@/components/BoardViewManager';
 import { DrawingOverlay } from '@/components/DrawingOverlay';
 import { NoteEditor } from '@/components/NoteEditor';
-import SearchBar, { emptyFilter, type FilterState, filterIsEmpty } from '@/components/SearchBar';
+import SearchBar, { emptyFilter, type FilterState } from '@/components/SearchBar';
 import { SelectionOverlay } from '@/components/SelectionOverlay';
+import { SnapshotManager } from '@/components/SnapshotManager';
 import TagManager from '@/components/TagManager';
 import { useBoardStore } from '@/state/boardStore';
+import {
+  duplicateOps,
+  fitViewport,
+  groupOps,
+  restackOps,
+  topZ,
+  ungroupOps,
+  unionRect,
+} from '@/state/commands';
 import { type HistoryEntry, prepareCommand } from '@/state/history';
+import { useBoardFilter } from '@/state/useBoardFilter';
 
 type HealthState =
   | { kind: 'loading' }
@@ -108,6 +120,20 @@ function BoardApp() {
   const [grayscale, setGrayscale] = useState(false);
   const [drawing, setDrawing] = useState(false);
   const [sampledColor, setSampledColor] = useState<string | null>(null);
+  // §5B context menu: what was right-clicked, and where.
+  const [menu, setMenu] = useState<{
+    kind: 'selection' | 'canvas';
+    client: { x: number; y: number };
+    world: { x: number; y: number };
+  } | null>(null);
+  const [snapshotsOpen, setSnapshotsOpen] = useState(false);
+  // Right-press origin: a right-drag past the click epsilon is not a click,
+  // so it must not open the menu (testing §2B context menu vs move window).
+  const rightPress = useRef<{ x: number; y: number } | null>(null);
+  // Double-click zoom on an image toggles back to the camera it came from.
+  const zoomReturn = useRef<{ nodeId: string; viewport: ViewportState } | null>(null);
+  // Consecutive nudges of the same selection coalesce into one undo entry.
+  const coalesce = useRef<{ key: string; at: number; entry: HistoryEntry } | null>(null);
   const socket = useRef<BoardSync | null>(null);
   const batchQueue = useRef<BatchQueue | null>(null);
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -121,10 +147,14 @@ function BoardApp() {
   const commitItemChanges = useRef<(changes: NodeChange[]) => void>(() => undefined);
   // Kind-routing commit: items go through batch update ops, notes through
   // put_note upserts — one command, one undo entry (history.ts).
-  const commitNodeChanges = useRef<(changes: NodeChange[]) => void>(() => undefined);
+  const commitNodeChanges = useRef<
+    (changes: NodeChange[], label?: string, coalesceKey?: string) => void
+  >(() => undefined);
   // The ONE command pipeline: every board mutation (both kinds) goes through
   // prepareCommand → WS/REST batch + optimistic apply → undo stack.
-  const commitBoardOps = useRef<(ops: BatchRequestOp[], label: string) => void>(() => undefined);
+  const commitBoardOps = useRef<
+    (ops: BatchRequestOp[], label: string, coalesceKey?: string) => void
+  >(() => undefined);
   const undoStack = useRef<HistoryEntry[]>([]);
   const redoStack = useRef<HistoryEntry[]>([]);
   const undoRef = useRef<() => void>(() => undefined);
@@ -143,15 +173,15 @@ function BoardApp() {
   const createAndOpenBoard = useBoardStore((state) => state.createAndOpenBoard);
   const ingest = useBoardStore((state) => state.ingest);
   const saveViewport = useBoardStore((state) => state.saveViewport);
-  const addNote = () => {
+  const addNote = (at: { x: number; y: number }) => {
     if (!activeBoardId || !snapshot) return;
     const maxZ = topZ(snapshot);
     const now = Date.now();
     const note: Note = {
       id: crypto.randomUUID(),
       board_id: activeBoardId,
-      x: 96,
-      y: 96,
+      x: at.x,
+      y: at.y,
       width: 280,
       height: 180,
       rotation: 0,
@@ -163,6 +193,7 @@ function BoardApp() {
       updated_at: now,
     };
     commitBoardOps.current([{ kind: 'put_note', op_id: crypto.randomUUID(), note }], 'Add note');
+    setSelectedNodeIds([note.id]);
   };
   // §4 RULE 4 — text edits commit ONCE on editing exit, as a single undo
   // entry (text and any §4 RULE 6 auto-grow together). No change → no op.
@@ -182,8 +213,6 @@ function BoardApp() {
       'Edit note',
     );
   };
-  const groupItems = useBoardStore((state) => state.groupItems);
-  const ungroupItems = useBoardStore((state) => state.ungroupItems);
   const createTag = useBoardStore((state) => state.createTag);
   const renameTag = useBoardStore((state) => state.renameTag);
   const deleteTag = useBoardStore((state) => state.deleteTag);
@@ -194,15 +223,12 @@ function BoardApp() {
     () => new Set(snapshot?.notes.map((note) => note.id) ?? []),
     [snapshot?.notes],
   );
-  const noteIdsRef = useRef(noteIds);
-  noteIdsRef.current = noteIds;
   const primaryNodeId = selectedNodeIds[0] ?? null;
   const primaryItemId = primaryNodeId && !noteIds.has(primaryNodeId) ? primaryNodeId : null;
   const selectedNoteId =
     selectedNodeIds.length === 1 && primaryNodeId && noteIds.has(primaryNodeId)
       ? primaryNodeId
       : null;
-  const selectedItem = snapshotItems?.find((item) => item.id === primaryItemId) ?? null;
   const selectedItemTags = useMemo(
     () => new Set(primaryItemId ? (snapshot?.item_tags[primaryItemId] ?? []) : []),
     [snapshot?.item_tags, primaryItemId],
@@ -224,76 +250,26 @@ function BoardApp() {
   const noteEditing = selectedNote !== null && noteEditingId === selectedNote.id;
   const editingNote = noteEditing ? selectedNote : null;
   const [filter, setFilter] = useState<FilterState>(emptyFilter);
-
-  // Phase 6: FTS5 server-side search. When the text query is non-empty,
-  // the server decides which items match (searches note content + tags).
-  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [serverHits, setServerHits] = useState<Set<string>>(new Set());
-  useEffect(() => {
-    const text = filter.text.trim();
-    if (text === '' || !activeBoardId) {
-      setServerHits(new Set());
-      return;
-    }
-    if (searchTimer.current) clearTimeout(searchTimer.current);
-    searchTimer.current = setTimeout(() => {
-      searchBoard(activeBoardId, text)
-        .then((results) => {
-          setServerHits(new Set(results.map((r) => r.item_id)));
-        })
-        .catch(() => setServerHits(new Set()));
-    }, 250);
-    return () => {
-      if (searchTimer.current) clearTimeout(searchTimer.current);
-    };
-  }, [filter.text, activeBoardId]);
-
-  // Phase 6: text + tag filtering. The canvas renders the *filtered* list so
-  // non-matching items disappear; tags and an item's original filename
-  // participate in the text match. Note content is skipped for now (FTS5
-  // server-side search is a later Phase 6 item).
-  const renderedItems = useMemo(() => {
-    const items =
-      snapshotItems?.map((item) => {
+  // Phase 6: text (FTS5), tag, colour and duplicate filtering — one tested
+  // hook (state/useBoardFilter.ts). The canvas paints only what matches; the
+  // selection chrome keeps tracking every node (boardNodes is unfiltered).
+  const filtered = useBoardFilter(snapshot, filter);
+  const renderedItems = useMemo(
+    () =>
+      filtered.items.map((item) => {
         const preview = previewPatches[item.id];
         return preview ? { ...item, ...preview } : item;
-      }) ?? [];
-    if (filterIsEmpty(filter)) return items;
-    const text = filter.text.trim().toLowerCase();
-    const itemTagsById = snapshot?.item_tags;
-    const blobsByName = new Map<string, string>();
-    for (const blob of snapshot?.blobs ?? []) {
-      const name = blob.original_filename?.toLowerCase() ?? '';
-      if (name !== '') blobsByName.set(blob.hash, name);
-    }
-    const tagNameById = new Map(
-      snapshot?.tags.map((tag) => [tag.id, tag.name.toLowerCase()]) ?? [],
-    );
-    return items.filter((item) => {
-      if (
-        filter.tagIds.size > 0 &&
-        !(itemTagsById?.[item.id]?.some((tagId) => filter.tagIds.has(tagId)) ?? false)
-      )
-        return false;
-      if (text !== '') {
-        if (serverHits.size > 0) return serverHits.has(item.id);
-        if (item.blob_hash && blobsByName.get(item.blob_hash)?.includes(text)) return true;
-        const names = (itemTagsById?.[item.id] ?? [])
-          .map((tagId) => tagNameById.get(tagId))
-          .filter((name): name is string => name !== undefined);
-        return names.some((name) => name.includes(text));
-      }
-      return true;
-    });
-  }, [
-    snapshotItems,
-    snapshot?.blobs,
-    snapshot?.tags,
-    snapshot?.item_tags,
-    previewPatches,
-    filter,
-    serverHits,
-  ]);
+      }),
+    [filtered.items, previewPatches],
+  );
+  const filteredNoteIds = useMemo(
+    () => new Set(filtered.notes.map((note) => note.id)),
+    [filtered.notes],
+  );
+  const canvasNotes = useMemo(
+    () => renderedNotes.filter((note) => filteredNoteIds.has(note.id)),
+    [renderedNotes, filteredNoteIds],
+  );
 
   useEffect(() => {
     void createSession().then(() => loadBoards());
@@ -370,13 +346,7 @@ function BoardApp() {
         setDragPreview({});
       },
       onHoverChange: (nodeId) => setHoveredNodeId(nodeId),
-      // §4 RULE 2: double-click is the only way into note Editing.
-      onDoubleClick: (nodeId) => {
-        if (nodeId && noteIdsRef.current.has(nodeId)) {
-          setSelectedNodeIds([nodeId]);
-          setNoteEditingId(nodeId);
-        }
-      },
+      onDoubleClick: (nodeId) => doubleClickRef.current(nodeId),
       // The controller mutates canvas-side node objects during a drag; DOM
       // chrome (selection outline, notes) needs the live positions relayed.
       onDragPreview: (changes) => {
@@ -453,8 +423,8 @@ function BoardApp() {
   useEffect(() => {
     // Notes go in as geometry-only nodes (hit-testing, box select); they
     // keep rendering through the DOM NoteOverlay.
-    boardCanvas.current?.update(renderedItems, gifHashes, renderedNotes);
-  }, [renderedItems, gifHashes, renderedNotes]);
+    boardCanvas.current?.update(renderedItems, gifHashes, canvasNotes);
+  }, [renderedItems, gifHashes, canvasNotes]);
 
   commitItemChange.current = (itemId, patch) => {
     commitItemChanges.current([{ id: itemId, kind: 'item', patch }]);
@@ -509,7 +479,7 @@ function BoardApp() {
     batchQueue.current?.submit(ops);
   };
 
-  commitBoardOps.current = (ops, label) => {
+  commitBoardOps.current = (ops, label, coalesceKey) => {
     if (!snapshot) return;
     // prepareCommand computes inverse ops against the CURRENT snapshot and
     // drops no-op ops from the forward set. If a referenced row vanished
@@ -522,10 +492,28 @@ function BoardApp() {
     }
     const forward = entry ? entry.forward : ops;
     sendOps(forward);
-    if (entry && entry.forward.length > 0) {
-      undoStack.current.push(entry);
+    if (!entry || entry.forward.length === 0) return;
+    const now = Date.now();
+    const previous = coalesce.current;
+    if (
+      coalesceKey &&
+      previous?.key === coalesceKey &&
+      now - previous.at < 800 &&
+      undoStack.current.at(-1) === previous.entry
+    ) {
+      // Same command on the same nodes moments later (held arrow key): one
+      // undo entry. Redo lands on the newest absolute positions; undo chains
+      // the inverses newest-first — each records only the fields its own
+      // step changed, so the first inverse alone can't restore a later axis.
+      previous.entry.forward = entry.forward;
+      previous.entry.inverse = [...entry.inverse, ...previous.entry.inverse];
+      previous.at = now;
       redoStack.current = [];
+      return;
     }
+    undoStack.current.push(entry);
+    redoStack.current = [];
+    coalesce.current = coalesceKey ? { key: coalesceKey, at: now, entry } : null;
   };
 
   undoRef.current = () => {
@@ -579,7 +567,7 @@ function BoardApp() {
 
   // One command for a mixed item+note change set (e.g. a group drag ending
   // with notes in the move set): items update in place, notes upsert whole.
-  commitNodeChanges.current = (changes) => {
+  commitNodeChanges.current = (changes, label = 'Transform selection', coalesceKey) => {
     if (!snapshot) return;
     const ops: BatchRequestOp[] = [];
     for (const change of changes) {
@@ -600,7 +588,7 @@ function BoardApp() {
         });
       }
     }
-    commitBoardOps.current(ops, 'Transform selection');
+    commitBoardOps.current(ops, label, coalesceKey);
   };
 
   const toggleTagOnSelection = (tagId: string) => {
@@ -645,16 +633,159 @@ function BoardApp() {
     commitBoardOps.current(ops, 'Delete selection');
   };
 
+  // Every board action, shared by the keyboard map and the context menu so a
+  // shortcut and its menu entry can never drift apart.
+  const selectedItemIds = selectedNodeIds.filter((id) => !noteIds.has(id));
+  const selectionGrouped = snapshot?.items.some(
+    (item) => selectedItemIds.includes(item.id) && item.group_id !== null,
+  );
+  const actions = {
+    escape: () => clearSelectionRef.current(),
+    delete: () => deleteSelectionRef.current(),
+    undo: () => undoRef.current(),
+    redo: () => redoRef.current(),
+    selectAll: () => {
+      // Everything the canvas currently shows (a search filter narrows it).
+      setNoteEditingId(null);
+      setSelectedNodeIds([
+        ...renderedItems.filter((item) => item.blob_hash).map((item) => item.id),
+        ...canvasNotes.map((note) => note.id),
+      ]);
+    },
+    group: () => {
+      if (snapshot) commitBoardOps.current(groupOps(snapshot, selectedNodeIds), 'Group');
+    },
+    ungroup: () => {
+      if (snapshot) commitBoardOps.current(ungroupOps(snapshot, selectedNodeIds), 'Ungroup');
+    },
+    duplicate: () => {
+      if (!snapshot) return;
+      const { ops, ids } = duplicateOps(
+        snapshot,
+        shellNodes.map((node) => node.id),
+      );
+      commitBoardOps.current(ops, 'Duplicate');
+      setSelectedNodeIds(ids);
+    },
+    bringToFront: () => {
+      if (snapshot) {
+        const ids = shellNodes.map((node) => node.id);
+        commitBoardOps.current(restackOps(snapshot, ids, 'front'), 'Bring to front');
+      }
+    },
+    sendToBack: () => {
+      if (snapshot) {
+        const ids = shellNodes.map((node) => node.id);
+        commitBoardOps.current(restackOps(snapshot, ids, 'back'), 'Send to back');
+      }
+    },
+    nudge: (dx: number, dy: number, large: boolean) => {
+      if (shellNodes.length === 0) return;
+      // Screen px, like PureRef: 1px (Shift: 10px) at any zoom.
+      const step = (large ? 10 : 1) / overlayViewport.zoom;
+      const changes: NodeChange[] = shellNodes.map((node) => ({
+        id: node.id,
+        kind: node.kind === 'note' ? 'note' : 'item',
+        patch: { x: node.x + dx * step, y: node.y + dy * step },
+      }));
+      const key = `nudge:${shellNodes
+        .map((node) => node.id)
+        .sort()
+        .join(',')}`;
+      commitNodeChanges.current(changes, 'Nudge', key);
+    },
+    zoomToFit: () => {
+      const canvas = boardCanvas.current;
+      if (!canvas) return;
+      const { width, height } = canvas.size();
+      const bounds = unionRect([
+        ...renderedItems
+          .filter((item) => item.blob_hash)
+          .map((item) => boardNodesById.get(item.id)?.rotatedBounds())
+          .filter((rect) => rect !== undefined),
+        ...canvasNotes.map((note) => noteToNode(note).rotatedBounds()),
+      ]);
+      const target = fitViewport(bounds, width, height);
+      if (target) {
+        zoomReturn.current = null;
+        canvas.flyTo(target);
+      }
+    },
+    addNoteAt: (world: { x: number; y: number }) => addNote(world),
+    pasteImages: async () => {
+      try {
+        const files: File[] = [];
+        for (const entry of await navigator.clipboard.read()) {
+          const type = entry.types.find((candidate) => candidate.startsWith('image/'));
+          if (!type) continue;
+          const blob = await entry.getType(type);
+          files.push(new File([blob], `pasted.${type.split('/')[1] ?? 'png'}`, { type }));
+        }
+        if (files.length > 0) void ingest(files);
+      } catch {
+        // Clipboard permission denied or empty — Ctrl+V still works.
+      }
+    },
+  };
+  const actionsRef = useRef(actions);
+  actionsRef.current = actions;
+
+  // §4 double-click: a note enters Editing; an image zooms in on itself (again
+  // to return); empty canvas zooms to fit everything (plan: MOUSE table).
+  const doubleClickRef = useRef<(nodeId: string | null) => void>(() => undefined);
+  doubleClickRef.current = (nodeId) => {
+    const canvas = boardCanvas.current;
+    if (!canvas) return;
+    if (nodeId === null) {
+      actions.zoomToFit();
+      return;
+    }
+    if (noteIds.has(nodeId)) {
+      setSelectedNodeIds([nodeId]);
+      setNoteEditingId(nodeId);
+      return;
+    }
+    const node = boardNodesById.get(nodeId);
+    if (!node) return;
+    if (zoomReturn.current?.nodeId === nodeId) {
+      canvas.flyTo(zoomReturn.current.viewport);
+      zoomReturn.current = null;
+      return;
+    }
+    const { width, height } = canvas.size();
+    const target = fitViewport(node.rotatedBounds(), width, height, 24);
+    if (!target) return;
+    zoomReturn.current = { nodeId, viewport: canvas.getViewport() };
+    canvas.flyTo(target);
+  };
+
   // Board keyboard map (canvas/controls.ts). Typing targets keep their keys.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+      if (target?.closest('input, textarea, [contenteditable="true"], dialog')) return;
       const action = keyboardAction(event);
-      if (action === 'escape') clearSelectionRef.current();
-      else if (action === 'delete') deleteSelectionRef.current();
-      else if (action === 'undo') undoRef.current();
-      else if (action === 'redo') redoRef.current();
+      if (!action) return;
+      event.preventDefault();
+      const run = actionsRef.current;
+      switch (action) {
+        case 'nudgeLeft':
+          return run.nudge(-1, 0, event.shiftKey);
+        case 'nudgeRight':
+          return run.nudge(1, 0, event.shiftKey);
+        case 'nudgeUp':
+          return run.nudge(0, -1, event.shiftKey);
+        case 'nudgeDown':
+          return run.nudge(0, 1, event.shiftKey);
+        case 'escape':
+        case 'delete':
+        case 'undo':
+        case 'redo':
+        case 'selectAll':
+        case 'group':
+        case 'ungroup':
+          return run[action]();
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -682,6 +813,10 @@ function BoardApp() {
         zIndex,
       })),
       notes: snapshot?.notes.map((note) => ({ id: note.id, text: noteText(note.content_json) })),
+      groups: snapshot?.groups.map((group) => ({
+        id: group.id,
+        members: snapshot.items.filter((item) => item.group_id === group.id).map((i) => i.id),
+      })),
       undoDepth: undoStack.current.length,
       painted: (id: string) => boardCanvas.current?.paintedClientRect(id) ?? null,
     };
@@ -743,26 +878,10 @@ function BoardApp() {
           <button
             className="ghost-button"
             type="button"
-            onClick={addNote}
+            onClick={() => setSnapshotsOpen(true)}
             disabled={!activeBoardId}
           >
-            Add note
-          </button>
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={() => primaryItemId && void groupItems([primaryItemId])}
-            disabled={!primaryItemId}
-          >
-            Group
-          </button>
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={() => primaryItemId && void ungroupItems([primaryItemId])}
-            disabled={!selectedItem?.group_id}
-          >
-            Ungroup
+            Snapshots
           </button>
           <button
             className={`ghost-button ${drawing ? 'active' : ''}`}
@@ -855,6 +974,35 @@ function BoardApp() {
 
       <main
         className="canvas-frame"
+        onPointerDownCapture={(event) => {
+          if (event.button === 2) rightPress.current = { x: event.clientX, y: event.clientY };
+        }}
+        onContextMenu={(event) => {
+          if ((event.target as HTMLElement).closest('input, textarea, .search-filter')) return;
+          event.preventDefault();
+          const press = rightPress.current;
+          rightPress.current = null;
+          // A right-DRAG is not a click (§2B): no menu.
+          if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) >= 3) return;
+          const canvas = boardCanvas.current;
+          if (!canvas) return;
+          const nodeId = canvas.nodeIdAt(event.clientX, event.clientY);
+          const world = screenToWorld(
+            event,
+            overlayViewport,
+            canvasHost.current?.getBoundingClientRect() ?? new DOMRect(),
+          );
+          if (nodeId) {
+            // Right-clicking outside the selection retargets it, like PureRef.
+            if (!selectedNodeIds.includes(nodeId)) {
+              setNoteEditingId(null);
+              setSelectedNodeIds([nodeId]);
+            }
+            setMenu({ kind: 'selection', client: { x: event.clientX, y: event.clientY }, world });
+          } else {
+            setMenu({ kind: 'canvas', client: { x: event.clientX, y: event.clientY }, world });
+          }
+        }}
         onDragOver={(event) => event.preventDefault()}
         onDrop={(event) => {
           event.preventDefault();
@@ -862,7 +1010,19 @@ function BoardApp() {
         }}
       >
         <div id="canvas-host" ref={canvasHost} />
-        {snapshot && <SearchBar tags={snapshot.tags} filter={filter} onChange={setFilter} />}
+        {snapshot && (
+          <SearchBar
+            tags={snapshot.tags}
+            filter={filter}
+            onChange={setFilter}
+            loading={filtered.loading}
+            error={filtered.error}
+            resultCount={
+              filtered.active ? filtered.items.length + filtered.notes.length : undefined
+            }
+            onRetry={filtered.retry}
+          />
+        )}
         <DrawingOverlay enabled={drawing} viewport={overlayViewport} />
         {/* §4 Editing: the one note being edited swaps its canvas sprite for
             a DOM editor laid out with the same pretext metrics. */}
@@ -912,7 +1072,11 @@ function BoardApp() {
             nodes={shellNodes}
             viewport={overlayViewport}
             editing={noteEditing}
-            onDoubleClick={selectedNote ? () => setNoteEditingId(selectedNote.id) : undefined}
+            onDoubleClick={(event) =>
+              doubleClickRef.current(
+                boardCanvas.current?.nodeIdAt(event.clientX, event.clientY) ?? null,
+              )
+            }
             onOutsidePress={(event) => boardCanvas.current?.overlayPointerDown(event)}
             onChromePress={(event) => boardCanvas.current?.chromePointerDown(event)}
             onBodyClick={(event) => {
@@ -939,6 +1103,45 @@ function BoardApp() {
               setPreviewPatches({});
               commitNodeChanges.current(changes);
             }}
+          />
+        )}
+        {menu && (
+          <BoardContextMenu
+            position={menu.client}
+            onClose={() => setMenu(null)}
+            entries={
+              menu.kind === 'selection'
+                ? [
+                    { label: 'Duplicate', action: actions.duplicate },
+                    selectionGrouped
+                      ? { label: 'Ungroup', shortcut: 'Ctrl+Shift+G', action: actions.ungroup }
+                      : {
+                          label: 'Group',
+                          shortcut: 'Ctrl+G',
+                          disabled: selectedItemIds.length < 2,
+                          action: actions.group,
+                        },
+                    { label: 'Bring to Front', action: actions.bringToFront },
+                    { label: 'Send to Back', action: actions.sendToBack },
+                    { label: 'Delete', shortcut: 'Del', action: actions.delete },
+                  ]
+                : [
+                    { label: 'Add Note', action: () => actions.addNoteAt(menu.world) },
+                    {
+                      label: 'Paste',
+                      shortcut: 'Ctrl+V',
+                      action: () => void actions.pasteImages(),
+                    },
+                    { label: 'Zoom to Fit', action: actions.zoomToFit },
+                  ]
+            }
+          />
+        )}
+        {snapshotsOpen && activeBoardId && (
+          <SnapshotManager
+            boardId={activeBoardId}
+            onClose={() => setSnapshotsOpen(false)}
+            onRestored={() => openBoard(activeBoardId)}
           />
         )}
         {!activeBoardId && !loading && (
@@ -981,14 +1184,6 @@ async function sampleColor(): Promise<void> {
   if (!picker) return;
   const result = await new picker().open();
   window.dispatchEvent(new CustomEvent('refthing-color-sampled', { detail: result.sRGBHex }));
-}
-
-/** Highest z across items AND notes — they share one paint order. */
-function topZ(snapshot: { items: { z_index: number }[]; notes: { z_index: number }[] }): number {
-  let max = 0;
-  for (const item of snapshot.items) max = Math.max(max, item.z_index);
-  for (const note of snapshot.notes) max = Math.max(max, note.z_index);
-  return max;
 }
 
 function asViewport(value: unknown): ViewportState {

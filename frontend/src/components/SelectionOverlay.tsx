@@ -52,7 +52,7 @@ type SelectionOverlayProps = {
   onBodyClick?: (event: PointerEvent) => void;
   editing?: boolean;
   /** Forwarded double-click (the shell covers selected nodes). */
-  onDoubleClick?: () => void;
+  onDoubleClick?: (event: React.MouseEvent) => void;
 };
 
 /** §1 MULTI-SELECTED: exactly ONE box. A lone node's box is the node itself

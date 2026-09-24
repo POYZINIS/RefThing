@@ -5,13 +5,11 @@ import {
   type BoardSnapshot,
   type BoardSummary,
   createBoard,
-  createGroup,
   createTag as createTagApi,
   deleteTag as deleteTagApi,
   fetchBoard,
   ingestFiles,
   listBoards,
-  submitBatch,
   type Tag,
   updateBoardViewport,
   updateNote,
@@ -43,8 +41,6 @@ type BoardState = {
   ingest: (files: File[]) => Promise<void>;
   saveViewport: (viewportState: { x: number; y: number; zoom: number }) => Promise<void>;
   saveDrawing: (noteId: string, strokes: Array<Array<{ x: number; y: number }>>) => Promise<void>;
-  groupItems: (itemIds: string[]) => Promise<void>;
-  ungroupItems: (itemIds: string[]) => Promise<void>;
   createTag: (name: string, color?: string | null) => Promise<Tag>;
   renameTag: (tagId: string, name: string) => Promise<Tag>;
   deleteTag: (tagId: string) => Promise<void>;
@@ -143,33 +139,6 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     const boardId = get().activeBoardId;
     if (!boardId) return;
     await updateNote(boardId, noteId, { content_json: { strokes } });
-    await get().openBoard(boardId);
-  },
-
-  async groupItems(itemIds) {
-    const boardId = get().activeBoardId;
-    const snapshot = get().snapshot;
-    if (!boardId || !snapshot || itemIds.length === 0) return;
-    const { group } = await createGroup(boardId, 'Reference group');
-    await submitBatch(boardId, {
-      base_seq: snapshot.seq,
-      client_id: crypto.randomUUID(),
-      ops: [
-        { kind: 'set_group', op_id: crypto.randomUUID(), item_ids: itemIds, group_id: group.id },
-      ],
-    });
-    await get().openBoard(boardId);
-  },
-
-  async ungroupItems(itemIds) {
-    const boardId = get().activeBoardId;
-    const snapshot = get().snapshot;
-    if (!boardId || !snapshot || itemIds.length === 0) return;
-    await submitBatch(boardId, {
-      base_seq: snapshot.seq,
-      client_id: crypto.randomUUID(),
-      ops: [{ kind: 'set_group', op_id: crypto.randomUUID(), item_ids: itemIds, group_id: null }],
-    });
     await get().openBoard(boardId);
   },
 

@@ -195,6 +195,21 @@ export class BoardCanvas {
     this.publishRenderedViewport();
   }
 
+  /** Ease the camera to `viewport` (zoom to fit, double-click zoom) — the
+   *  render loop animates there exactly like a wheel zoom. */
+  flyTo(viewport: ViewportState): void {
+    this.viewport = { ...viewport, zoom: Math.max(0.1, Math.min(4, viewport.zoom)) };
+    this.renderVisible();
+    this.options.onViewportChange?.(this.getViewport(), 'zoom');
+  }
+
+  /** Canvas size in CSS px (0×0 before mount). */
+  size(): { width: number; height: number } {
+    return this.initialized
+      ? { width: this.app.screen.width, height: this.app.screen.height }
+      : { width: 0, height: 0 };
+  }
+
   getViewport(): ViewportState {
     return { ...this.viewport };
   }
