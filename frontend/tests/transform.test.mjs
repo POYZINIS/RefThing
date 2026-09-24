@@ -1,0 +1,436 @@
+/**
+ * Transform-shell math against the testing conventions: sampled canonical
+ * paths (§1), per-sample assertions (§4), every zone × every modifier combo
+ * (§3), failures report the sample index + time (§4 rule 4).
+ */
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import {
+  applyToNode,
+  beginAspectReset,
+  beginMove,
+  beginResize,
+  beginRotate,
+  boxCenter,
+  finishAspectReset,
+  hitZone,
+  stepGesture,
+  toLocal,
+  toWorld,
+  zoneCursor,
+  zonesCollapsed,
+} from '../src/canvas/transform.ts';
+import { at, figureEight, rotationSweep, sineWaveHandle } from './gesture-paths.mjs';
+
+const near = (actual, expected, epsilon = 1e-6) =>
+  Math.abs(actual - expected) <= epsilon * Math.max(1, Math.abs(expected));
+
+const ZONES = [
+  'top-left',
+  'top-right',
+  'bottom-right',
+  'bottom-left',
+  'top',
+  'bottom',
+  'left',
+  'right',
+];
+const MODIFIERS = [
+  { shift: false, alt: false },
+  { shift: true, alt: false },
+  { shift: false, alt: true },
+  { shift: true, alt: true },
+];
+const direction = (zone) => ({
+  x: zone.includes('left') ? -1 : zone.includes('right') ? 1 : 0,
+  y: zone.includes('top') ? -1 : zone.includes('bottom') ? 1 : 0,
+});
+const label = (mods) =>
+  [mods.shift && 'Shift', mods.alt && 'Alt'].filter(Boolean).join('+') || 'none';
+
+// ---------------------------------------------------------------- MOVE --
+
+for (const zoom of [0.25, 1, 4]) {
+  for (const variant of [
+    { name: 'slow', durationMs: 2000, loops: 1 },
+    { name: 'fast', durationMs: 200, loops: 1 },
+    { name: '3-loop', durationMs: 6000, loops: 3 },
+  ]) {
+    test(`move: figure-8 ${variant.name} @ ${zoom * 100}% tracks displacement every sample`, () => {
+      const center = { x: 400, y: 300 };
+      const gesture = beginMove(center);
+      const path = figureEight({
+        centerX: center.x,
+        centerY: center.y,
+        amplitudeX: 240 / zoom,
+        amplitudeY: 160 / zoom,
+        durationMs: variant.durationMs,
+        loops: variant.loops,
+      });
+      for (const sample of path) {
+        const result = stepGesture(gesture, sample, { shift: false, alt: false }, zoom);
+        assert.equal(result.kind, 'translate');
+        assert.ok(near(result.dx, sample.x - center.x), at(sample, `dx ${result.dx}`));
+        assert.ok(near(result.dy, sample.y - center.y), at(sample, `dy ${result.dy}`));
+      }
+    });
+  }
+}
+
+test('move: Shift pressed mid-drag locks to the dominant axis, release frees it', () => {
+  const start = { x: 0, y: 0 };
+  const gesture = beginMove(start);
+  const path = figureEight({
+    centerX: 0,
+    centerY: 0,
+    amplitudeX: 300,
+    amplitudeY: 100,
+    durationMs: 2000,
+  });
+  const shiftFrom = 5;
+  const shiftTo = 60;
+  for (const sample of path) {
+    const shift = sample.index >= shiftFrom && sample.index < shiftTo;
+    const result = stepGesture(gesture, sample, { shift, alt: false }, 1);
+    if (shift) {
+      assert.equal(result.dy, 0, at(sample, 'x-locked drag moved vertically'));
+    } else {
+      assert.ok(near(result.dy, sample.y), at(sample, 'free drag lost the y delta'));
+    }
+  }
+});
+
+// -------------------------------------------------------------- RESIZE --
+
+function resizeCase({ zone, mods, frequency, rotation, freeTransform, zoom }) {
+  const box = { x: 100, y: 50, width: 200, height: 100, rotation };
+  const dir = direction(zone);
+  const corner = dir.x !== 0 && dir.y !== 0;
+  // Grab 2px (screen) inside the zone, not dead-center on the handle line.
+  const grabLocal = {
+    x: dir.x * (box.width / 2) - dir.x * (2 / zoom),
+    y: dir.y * (box.height / 2) - dir.y * (2 / zoom),
+  };
+  const press = toWorld(grabLocal, box);
+  const gesture = beginResize(zone, box, press);
+  // The sine path runs in the box's local frame (its axes are the zone's
+  // axes), then maps to world for rotated boxes.
+  const localPath = sineWaveHandle({
+    startX: grabLocal.x,
+    startY: grabLocal.y,
+    deltaX: dir.x * 120,
+    deltaY: dir.y * 70,
+    zoneKind: corner ? 'corner' : 'edge',
+    amplitude: 25,
+    frequency,
+    durationMs: 1000,
+  });
+  const proportional = freeTransform ? mods.shift : !mods.shift;
+  const anchorLocal = mods.alt
+    ? { x: 0, y: 0 }
+    : { x: (-dir.x * box.width) / 2, y: (-dir.y * box.height) / 2 };
+  const anchorWorld = toWorld(anchorLocal, box);
+  for (const localSample of localPath) {
+    const sample = { ...localSample, ...toWorld(localSample, box) };
+    const result = stepGesture(gesture, sample, mods, zoom, freeTransform);
+    assert.equal(result.kind, 'resize', at(sample, 'not a resize'));
+    const next = result.to;
+    assert.equal(next.rotation, rotation, at(sample, 'resize changed rotation'));
+    // Single-node selection: distributing onto the node == the box result.
+    const patch = applyToNode(result, box);
+    for (const key of ['x', 'y', 'width', 'height']) {
+      assert.ok(
+        near(patch[key], next[key]),
+        at(sample, `node ${key} ${patch[key]} != box ${next[key]}`),
+      );
+    }
+    if (proportional) {
+      const aspect = next.width / next.height;
+      assert.ok(Math.abs(aspect / 2 - 1) < 0.005, at(sample, `aspect drifted to ${aspect}`));
+    } else if (!corner) {
+      // Edge stretch: the perpendicular dimension is bit-for-bit unchanged
+      // despite the along-edge wobble.
+      const perpendicular = dir.x !== 0 ? 'height' : 'width';
+      assert.equal(next[perpendicular], box[perpendicular], at(sample, `${perpendicular} changed`));
+    }
+    // The modifier-determined anchor never moves in world space.
+    const nextAnchorLocal = mods.alt
+      ? { x: 0, y: 0 }
+      : {
+          x: (-dir.x * next.width) / 2,
+          y: (-dir.y * next.height) / 2,
+        };
+    const nextAnchorWorld = toWorld(nextAnchorLocal, next);
+    assert.ok(
+      near(nextAnchorWorld.x, anchorWorld.x, 1e-6) && near(nextAnchorWorld.y, anchorWorld.y, 1e-6),
+      at(sample, `anchor moved to (${nextAnchorWorld.x}, ${nextAnchorWorld.y})`),
+    );
+  }
+  // No first-move jump: the handle stays under the grab point.
+  const first = stepGesture(gesture, press, mods, zoom, freeTransform);
+  assert.ok(near(first.to.width, box.width) && near(first.to.height, box.height), 'grab jump');
+}
+
+for (const kind of [
+  { name: 'image', freeTransform: false },
+  { name: 'note', freeTransform: true },
+]) {
+  for (const rotation of [0, 30]) {
+    for (const zone of ZONES) {
+      for (const mods of MODIFIERS) {
+        for (const frequency of [1, 4]) {
+          test(`resize ${kind.name} ${zone} [${label(mods)}] f=${frequency} rot=${rotation}`, () =>
+            resizeCase({
+              zone,
+              mods,
+              frequency,
+              rotation,
+              freeTransform: kind.freeTransform,
+              zoom: 1,
+            }));
+        }
+      }
+    }
+  }
+}
+
+for (const zoom of [0.25, 4]) {
+  for (const zone of ZONES) {
+    test(`resize image ${zone} @ ${zoom * 100}% keeps its anchor`, () =>
+      resizeCase({
+        zone,
+        mods: MODIFIERS[0],
+        frequency: 4,
+        rotation: 0,
+        freeTransform: false,
+        zoom,
+      }));
+  }
+}
+
+test('resize: Shift toggled mid-gesture switches proportional ↔ stretch live', () => {
+  const box = { x: 0, y: 0, width: 200, height: 100, rotation: 0 };
+  const gesture = beginResize('right', box, { x: 200, y: 50 });
+  const path = sineWaveHandle({
+    startX: 200,
+    startY: 50,
+    deltaX: 100,
+    deltaY: 0,
+    zoneKind: 'edge',
+    amplitude: 20,
+    frequency: 4,
+    durationMs: 1000,
+  });
+  for (const sample of path) {
+    const shift = sample.index % 20 >= 10;
+    const { to } = stepGesture(gesture, sample, { shift, alt: false }, 1, false);
+    if (shift) assert.equal(to.height, 100, at(sample, 'Shift stretch changed height'));
+    else assert.ok(near(to.width / to.height, 2), at(sample, 'proportional lost aspect'));
+  }
+});
+
+test('resize: dragging through the 24px collapse size and back never sticks', () => {
+  const box = { x: 0, y: 0, width: 200, height: 200, rotation: 0 };
+  const gesture = beginResize('right', box, { x: 200, y: 100 });
+  const shrink = sineWaveHandle({
+    startX: 200,
+    startY: 100,
+    deltaX: -190,
+    deltaY: 0,
+    zoneKind: 'edge',
+    amplitude: 10,
+    frequency: 1,
+    durationMs: 500,
+  });
+  const grow = sineWaveHandle({
+    startX: 10,
+    startY: 100,
+    deltaX: 240,
+    deltaY: 0,
+    zoneKind: 'edge',
+    amplitude: 10,
+    frequency: 1,
+    durationMs: 500,
+  }).map((sample) => ({
+    ...sample,
+    index: sample.index + shrink.length,
+    timeMs: sample.timeMs + 500,
+  }));
+  let collapsedSomewhere = false;
+  let last = null;
+  for (const sample of [...shrink, ...grow]) {
+    const { to } = stepGesture(gesture, sample, { shift: true, alt: false }, 1, false);
+    assert.ok(Number.isFinite(to.width) && to.width > 0, at(sample, `bad width ${to.width}`));
+    if (zonesCollapsed(to, 1, 24)) collapsedSomewhere = true;
+    last = to;
+  }
+  assert.ok(collapsedSomewhere, 'path never crossed the collapse size');
+  assert.ok(near(last.width, 250), `ended at ${last.width}`);
+  assert.equal(zonesCollapsed(last, 1, 24), false);
+});
+
+// -------------------------------------------------------------- ROTATE --
+
+const rotateBox = { x: 0, y: 0, width: 200, height: 100, rotation: 0 };
+const pivot = boxCenter(rotateBox);
+
+for (const sweep of [90, 180, 270, 360, 720]) {
+  for (const sign of [1, -1]) {
+    test(`rotate: ${sign > 0 ? '+' : '-'}${sweep}° sweep accumulates monotonically`, () => {
+      const path = rotationSweep({
+        centerX: pivot.x,
+        centerY: pivot.y,
+        radius: 150,
+        segments: [sign * sweep],
+        durationMs: 2000,
+      });
+      const gesture = beginRotate(rotateBox, { x: pivot.x + 150, y: pivot.y });
+      let previous = 0;
+      for (const sample of path) {
+        const result = stepGesture(gesture, sample, { shift: false, alt: false }, 1);
+        assert.ok(
+          near(result.delta, sample.angle, 1e-6),
+          at(sample, `delta ${result.delta} != ${sample.angle}`),
+        );
+        assert.ok(sign * (result.delta - previous) >= 0, at(sample, 'rotation reversed/jumped'));
+        previous = result.delta;
+      }
+      assert.ok(near(previous, sign * sweep, 1e-6));
+    });
+  }
+}
+
+test('rotate: Ctrl+Shift snaps exactly at every 45° crossing of a 360° sweep', () => {
+  // 64 samples over 360° → every 8th sample lands exactly on a 45° multiple.
+  const path = rotationSweep({
+    centerX: pivot.x,
+    centerY: pivot.y,
+    radius: 150,
+    segments: [360],
+    durationMs: 64 * 16,
+  });
+  const gesture = beginRotate(rotateBox, { x: pivot.x + 150, y: pivot.y });
+  let checked = 0;
+  for (const sample of path) {
+    const result = stepGesture(gesture, sample, { shift: true, alt: false }, 1);
+    assert.ok(
+      near(result.delta % 45, 0, 1e-9) || near(Math.abs(result.delta % 45), 45, 1e-9),
+      at(sample, 'off-grid'),
+    );
+    const nearest = Math.round(sample.angle / 45) * 45;
+    if (Math.abs(sample.angle - nearest) < 1e-9) {
+      assert.ok(
+        Math.abs(result.delta - nearest) < 0.1,
+        at(sample, `at ${nearest}° got ${result.delta}`),
+      );
+      checked += 1;
+    }
+  }
+  assert.equal(checked, 8, 'expected an assertion at each of 45…360°');
+});
+
+test('rotate: +180° then -180° in one held gesture tracks the reversal live', () => {
+  const path = rotationSweep({
+    centerX: pivot.x,
+    centerY: pivot.y,
+    radius: 150,
+    segments: [180, -180],
+    durationMs: 2000,
+  });
+  const gesture = beginRotate(rotateBox, { x: pivot.x + 150, y: pivot.y });
+  for (const sample of path) {
+    const result = stepGesture(gesture, sample, { shift: false, alt: false }, 1);
+    assert.ok(
+      near(result.delta, sample.angle, 1e-6),
+      at(sample, `delta ${result.delta} != ${sample.angle}`),
+    );
+  }
+});
+
+test('rotate: a lone node spins in place (pivot = its own center)', () => {
+  const gesture = beginRotate(rotateBox, { x: pivot.x + 150, y: pivot.y });
+  const result = stepGesture(
+    gesture,
+    { x: pivot.x, y: pivot.y + 150 },
+    { shift: false, alt: false },
+    1,
+  );
+  const patch = applyToNode(result, rotateBox);
+  assert.ok(near(patch.x, 0) && near(patch.y, 0) && near(patch.rotation, 90));
+});
+
+// ------------------------------------------------------- ASPECT RESET --
+
+test('aspect reset: Alt+click squares the box keeping area and center', () => {
+  const box = { x: 0, y: 0, width: 200, height: 50, rotation: 0 };
+  const gesture = beginAspectReset(box, { x: 100, y: 25 });
+  const result = finishAspectReset(gesture, { x: 101, y: 25 }, 1);
+  assert.equal(result.kind, 'square');
+  assert.ok(near(result.box.width, 100) && near(result.box.height, 100));
+  assert.ok(near(boxCenter(result.box).x, 100) && near(boxCenter(result.box).y, 25));
+});
+
+test('aspect reset: travel past the 3px click epsilon is a drag, not a reset', () => {
+  const box = { x: 0, y: 0, width: 200, height: 50, rotation: 0 };
+  const gesture = beginAspectReset(box, { x: 100, y: 25 });
+  assert.equal(finishAspectReset(gesture, { x: 104, y: 25 }, 1), null);
+});
+
+// ------------------------------------------------------------ HIT ZONES --
+
+test('hit zones: corner wins over edge, body inside, null outside', () => {
+  const box = { x: 0, y: 0, width: 100, height: 60, rotation: 0 };
+  assert.equal(hitZone({ x: 0, y: 0 }, box, 8, 10), 'top-left');
+  assert.equal(hitZone({ x: 4, y: 3 }, box, 8, 10), 'top-left');
+  assert.equal(hitZone({ x: 50, y: 0 }, box, 8, 10), 'top');
+  assert.equal(hitZone({ x: 100, y: 30 }, box, 8, 10), 'right');
+  assert.equal(hitZone({ x: 50, y: 30 }, box, 8, 10), 'body');
+  assert.equal(hitZone({ x: 200, y: 30 }, box, 8, 10), null);
+});
+
+test('hit zones rotate with the box, and so do the cursors', () => {
+  const box = { x: 0, y: 0, width: 100, height: 60, rotation: 90 };
+  // The local top edge sits to the right of center after a 90° CW turn.
+  assert.equal(hitZone({ x: 50 + 30, y: 30 }, box, 8, 10), 'top');
+  assert.equal(zoneCursor('top', 0), 'ns-resize');
+  assert.equal(zoneCursor('top', 90), 'ew-resize');
+  assert.equal(zoneCursor('top-left', -45), 'ew-resize');
+});
+
+test('zones collapse below 24px on screen', () => {
+  const box = { x: 0, y: 0, width: 100, height: 20, rotation: 0 };
+  assert.equal(zonesCollapsed(box, 1, 24), true);
+  assert.equal(zonesCollapsed(box, 2, 24), false);
+});
+
+// ---------------------------------------------------- MULTI-SELECTION --
+
+test('multi-select rotate turns every member about the shared pivot', () => {
+  const a = { x: 0, y: 0, width: 10, height: 10, rotation: 0 };
+  const selection = { x: 0, y: 0, width: 110, height: 10, rotation: 0 };
+  const gesture = beginRotate(selection, { x: 155, y: 5 });
+  const result = stepGesture(gesture, { x: 55, y: 105 }, { shift: false, alt: false }, 1);
+  const patch = applyToNode(result, a);
+  assert.ok(near(patch.rotation, 90));
+  assert.ok(near(patch.x + 5, 55) && near(patch.y + 5, -45), JSON.stringify(patch));
+});
+
+test('multi-select resize scales member positions and sizes from the box anchor', () => {
+  const a = { x: 0, y: 0, width: 10, height: 10, rotation: 0 };
+  const b = { x: 100, y: 0, width: 10, height: 10, rotation: 0 };
+  const from = { x: 0, y: 0, width: 110, height: 10, rotation: 0 };
+  const to = { x: 0, y: 0, width: 220, height: 20, rotation: 0 };
+  const pa = applyToNode({ kind: 'resize', from, to }, a);
+  const pb = applyToNode({ kind: 'resize', from, to }, b);
+  assert.deepEqual(
+    [pa.x, pa.y, pa.width, pb.x, pb.y, pb.width].map((v) => Math.round(v * 1e6) / 1e6),
+    [0, 0, 20, 200, 0, 20],
+  );
+});
+
+test('local/world frame round-trips for rotated boxes', () => {
+  const box = { x: 10, y: 20, width: 80, height: 40, rotation: 37 };
+  const point = { x: 33, y: -12 };
+  const back = toWorld(toLocal(point, box), box);
+  assert.ok(near(back.x, point.x) && near(back.y, point.y));
+});

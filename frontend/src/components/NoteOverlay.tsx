@@ -71,6 +71,7 @@ export function NoteOverlay({
 
   return (
     <article
+      data-node-id={note.id}
       className={`note-overlay${editing ? ' note-overlay-editing' : ''}${
         selected ? ' note-overlay-selected' : ''
       }`}

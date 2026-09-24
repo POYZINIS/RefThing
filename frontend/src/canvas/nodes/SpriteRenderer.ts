@@ -33,6 +33,12 @@ export class SpriteRenderer implements NodeRenderer {
     this.applyGrayscale(enabled);
   }
 
+  paintedBounds(): { x: number; y: number; width: number; height: number } | null {
+    if (!this.sprite) return null;
+    const bounds = this.sprite.getBounds();
+    return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+  }
+
   destroy(): void {
     this.sprite?.destroy();
     this.sprite = null;

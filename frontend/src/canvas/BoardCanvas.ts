@@ -1,5 +1,6 @@
 import { Application, Container, Graphics } from 'pixi.js';
 import type { Item, Note } from '@/api/client';
+import { screenToWorld } from './coordinates';
 import { NodeInteractionController } from './NodeInteractionController';
 import { itemToNode, noteToNode } from './nodes/adapters';
 import type { GifTextureSource } from './nodes/GifTextureSource';
@@ -13,6 +14,10 @@ export type ViewportState = { x: number; y: number; zoom: number };
 type CanvasOptions = {
   initialViewport?: ViewportState;
   onViewportChange?: (viewport: ViewportState, source?: 'pan' | 'zoom' | 'release') => void;
+  /** The eased camera Pixi actually painted this frame. DOM overlays (notes,
+   *  selection shell, outlines) must position from THIS, not the target
+   *  viewport, or they run ahead of the canvas while easing. */
+  onRenderedViewportChange?: (viewport: ViewportState) => void;
   onSelectionChange?: (nodeId: string | null) => void;
   onSelectionToggle?: (nodeId: string) => void;
   onMultiSelectChange?: (nodeIds: string[]) => void;
@@ -60,6 +65,7 @@ export class BoardCanvas {
   private boxSelectGraphic: Graphics | null = null;
   private viewport: ViewportState;
   private renderedViewport: ViewportState;
+  private publishedViewport: ViewportState | null = null;
   private initialized = false;
   private destroyed = false;
   private grayscale = false;
@@ -174,6 +180,7 @@ export class BoardCanvas {
     this.renderedViewport = { ...this.viewport };
     this.applyViewport();
     this.renderVisible();
+    this.publishRenderedViewport();
   }
 
   getViewport(): ViewportState {
@@ -199,22 +206,41 @@ export class BoardCanvas {
    */
   notePointerDown(nodeId: string, event: PointerEvent): void {
     if (event.button === 2) return;
+    this.capturePress(event);
+    // §0.4 MIDDLE-CLICK PAN: middle button always pans, even over items.
+    if (event.button === 1) {
+      this.startPan();
+      return;
+    }
+    this.controller.pressNodeById(nodeId, event);
+  }
+
+  /**
+   * A non-left press on DOM chrome layered over the canvas (the selection
+   * shell). Middle-drag pans exactly as it would on bare canvas; the right
+   * button is left to the contextmenu event.
+   */
+  chromePointerDown(event: PointerEvent): void {
+    if (event.button !== 1) return;
+    this.capturePress(event);
+    this.startPan();
+  }
+
+  /** Capture on the canvas so the gesture keeps receiving moves after the
+   *  pressed DOM element goes inert or the pointer leaves it. */
+  private capturePress(event: PointerEvent): void {
     this.handledPress = event;
     this.lastPointer = { x: event.clientX, y: event.clientY };
-    // Capture on the canvas so the drag keeps receiving moves after the
-    // note goes inert (selection shell appears) or the pointer leaves it.
     try {
       this.app.canvas.setPointerCapture(event.pointerId);
     } catch {
       // Drag still works via explicit pointermove/up on the canvas.
     }
-    // §0.4 MIDDLE-CLICK PAN: middle button always pans, even over items.
-    if (event.button === 1) {
-      this.controller.clearHover();
-      this.panning = true;
-      return;
-    }
-    this.controller.pressNodeById(nodeId, event);
+  }
+
+  private startPan(): void {
+    this.controller.clearHover();
+    this.panning = true;
   }
 
   /**
@@ -239,6 +265,23 @@ export class BoardCanvas {
     if (!emptyArea) return;
     this.handledPress = event;
     this.controller.press(event);
+  }
+
+  /** Where Pixi actually painted a node, in client px (AABB), or null when
+   *  it isn't mounted. Dev/test hook: lets browser tests assert DOM chrome
+   *  against the real render, not against the same math that placed it. */
+  paintedClientRect(
+    nodeId: string,
+  ): { x: number; y: number; width: number; height: number } | null {
+    const bounds = this.renderers.get(nodeId)?.paintedBounds();
+    if (!bounds || !this.initialized) return null;
+    const rect = this.app.canvas.getBoundingClientRect();
+    return { ...bounds, x: bounds.x + rect.left, y: bounds.y + rect.top };
+  }
+
+  /** Id of the topmost node under a client point, or null. */
+  nodeIdAt(clientX: number, clientY: number): string | null {
+    return this.controller.nodeAt(clientX, clientY)?.id ?? null;
   }
 
   destroy(): void {
@@ -347,24 +390,26 @@ export class BoardCanvas {
       this.renderedViewport = { ...this.viewport };
     this.applyViewport();
     this.renderVisible();
+    this.publishRenderedViewport();
   };
+
+  private publishRenderedViewport(): void {
+    const next = this.renderedViewport;
+    const last = this.publishedViewport;
+    if (last && last.x === next.x && last.y === next.y && last.zoom === next.zoom) return;
+    this.publishedViewport = { ...next };
+    this.options.onRenderedViewportChange?.({ ...next });
+  }
 
   private readonly onPointerDown = (event: PointerEvent): void => {
     // Ignore right-click (context menu reserved for §14).
     if (event.button === 2) return;
 
-    this.handledPress = event;
-    this.lastPointer = { x: event.clientX, y: event.clientY };
-    try {
-      this.app.canvas.setPointerCapture(event.pointerId);
-    } catch {
-      // Drag still works via explicit pointermove/up on the canvas.
-    }
+    this.capturePress(event);
 
     // §0.4 MIDDLE-CLICK PAN: middle button always pans, even over items.
     if (event.button === 1) {
-      this.controller.clearHover();
-      this.panning = true;
+      this.startPan();
       return;
     }
 
@@ -424,11 +469,11 @@ export class BoardCanvas {
   }
 
   private worldPoint(clientX: number, clientY: number): { x: number; y: number } {
-    const rect = this.app.canvas.getBoundingClientRect();
-    return {
-      x: (clientX - rect.left - this.renderedViewport.x) / this.renderedViewport.zoom,
-      y: (clientY - rect.top - this.renderedViewport.y) / this.renderedViewport.zoom,
-    };
+    return screenToWorld(
+      { clientX, clientY },
+      this.renderedViewport,
+      this.app.canvas.getBoundingClientRect(),
+    );
   }
 
   private readonly onWheel = (event: WheelEvent): void => {

@@ -16,5 +16,14 @@ export const ACTIVE_EDGE_OUTLINE_PX = 2.5;
 /** Minimum on-screen item size (either dimension) before the 8 transform
  * zones collapse to move/rotate-only (§2 minimum size collapse). */
 export const MIN_SCREEN_SIZE_PX = 24;
-/** 1:1 aspect reset target (§3 RESET ASPECT RATIO). */
+/** Selection/hover accent color. */
 export const ACCENT = '#d6ff76';
+/** §5 custom rotate cursor: a circular arrow, hotspot at its center. */
+const ROTATE_CURSOR_SVG =
+  "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'>" +
+  "<g fill='none' stroke-linecap='round' stroke-linejoin='round'>" +
+  "<path d='M19 12a7 7 0 1 1-2.05-4.95' stroke='black' stroke-width='4'/>" +
+  "<path d='M19 4v4h-4' stroke='black' stroke-width='4'/>" +
+  "<path d='M19 12a7 7 0 1 1-2.05-4.95' stroke='white' stroke-width='2'/>" +
+  "<path d='M19 4v4h-4' stroke='white' stroke-width='2'/></g></svg>";
+export const ROTATE_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(ROTATE_CURSOR_SVG)}") 12 12, crosshair`;

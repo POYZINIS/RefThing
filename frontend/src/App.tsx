@@ -14,12 +14,7 @@ import { BoardSync } from '@/api/ws';
 import { BoardCanvas, type ViewportState } from '@/canvas/BoardCanvas';
 import { keyboardAction } from '@/canvas/controls';
 import { itemToNode, noteToNode } from '@/canvas/nodes/adapters';
-import {
-  type BoardNode,
-  type NodeChange,
-  type NodePatch,
-  nodeChangeKind,
-} from '@/canvas/nodes/types';
+import type { BoardNode, NodeChange, NodePatch } from '@/canvas/nodes/types';
 import BoardViewManager from '@/components/BoardViewManager';
 import { DrawingOverlay } from '@/components/DrawingOverlay';
 import { NoteOverlay } from '@/components/NoteOverlay';
@@ -97,12 +92,17 @@ function BoardApp() {
   // The note currently in text-edit mode (§4 RULE 2 — double-click only).
   const [noteEditingId, setNoteEditingId] = useState<string | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
-  const [previewPatch, setPreviewPatch] = useState<ItemPatch>({});
-  // Live multi-select preview: nodeId → patch (used with onPreviewItems).
-  const [previewPatches, setPreviewPatches] = useState<Record<string, ItemPatch>>({});
-  // Live preview for a selected note's transform (resize/rotate/move).
-  const [previewNote, setPreviewNote] = useState<ItemPatch>({});
+  // Live transform-shell preview (nodeId → patch). Feeds the canvas too: the
+  // shell never mutates canvas nodes itself.
+  const [previewPatches, setPreviewPatches] = useState<Record<string, NodePatch>>({});
+  // Live canvas-controller drag positions. The canvas already paints these
+  // (it mutates its nodes in place), so they feed DOM chrome only.
+  const [dragPreview, setDragPreview] = useState<Record<string, NodePatch>>({});
+  // Target camera (saves, view manager) vs the eased camera Pixi painted this
+  // frame — every DOM overlay positions from the latter so it never runs
+  // ahead of the canvas.
   const [viewport, setViewport] = useState<ViewportState>({ x: 0, y: 0, zoom: 1 });
+  const [overlayViewport, setOverlayViewport] = useState<ViewportState>({ x: 0, y: 0, zoom: 1 });
   const [grayscale, setGrayscale] = useState(false);
   const [drawing, setDrawing] = useState(false);
   const [sampledColor, setSampledColor] = useState<string | null>(null);
@@ -202,15 +202,14 @@ function BoardApp() {
     () => new Set(primaryItemId ? (snapshot?.item_tags[primaryItemId] ?? []) : []),
     [snapshot?.item_tags, primaryItemId],
   );
-  // Notes keep a live preview while the transform shell drags them.
+  // Notes keep a live preview while either the shell or the controller drags.
   const renderedNotes = useMemo(
     () =>
       snapshot?.notes.map((note) => {
-        const preview =
-          previewPatches[note.id] ?? (note.id === selectedNoteId ? previewNote : undefined);
-        return preview && Object.keys(preview).length > 0 ? { ...note, ...preview } : note;
+        const preview = previewPatches[note.id] ?? dragPreview[note.id];
+        return preview ? { ...note, ...preview } : note;
       }) ?? [],
-    [snapshot?.notes, selectedNoteId, previewNote, previewPatches],
+    [snapshot?.notes, previewPatches, dragPreview],
   );
   // The selected note reads from the LIVE (previewed) list so the transform
   // shell and the note body always match what the user is dragging.
@@ -250,11 +249,7 @@ function BoardApp() {
   const renderedItems = useMemo(() => {
     const items =
       snapshotItems?.map((item) => {
-        // Multi-select previews live in previewPatches (ALL items, primary
-        // included — the primary must not stay frozen while its siblings
-        // move). Single-select falls back to previewPatch on the primary.
-        const preview =
-          previewPatches[item.id] ?? (item.id === primaryItemId ? previewPatch : undefined);
+        const preview = previewPatches[item.id];
         return preview ? { ...item, ...preview } : item;
       }) ?? [];
     if (filterIsEmpty(filter)) return items;
@@ -289,8 +284,6 @@ function BoardApp() {
     snapshot?.blobs,
     snapshot?.tags,
     snapshot?.item_tags,
-    primaryItemId,
-    previewPatch,
     previewPatches,
     filter,
     serverHits,
@@ -335,12 +328,12 @@ function BoardApp() {
           void saveViewport(viewport);
         }, 250);
       },
+      onRenderedViewportChange: setOverlayViewport,
       onSelectionChange: (nodeId) => {
         setSelectedNodeIds(nodeId ? [nodeId] : []);
         setNoteEditingId(null);
-        setPreviewPatch({});
         setPreviewPatches({});
-        setPreviewNote({});
+        setDragPreview({});
         if (nodeId) bringNodeToFrontRef.current(nodeId);
       },
       onSelectionToggle: (nodeId) => {
@@ -354,31 +347,24 @@ function BoardApp() {
       onMultiSelectChange: (ids) => {
         setSelectedNodeIds(ids);
         setNoteEditingId(null);
-        setPreviewPatch({});
         setPreviewPatches({});
-        setPreviewNote({});
+        setDragPreview({});
       },
       onClearSelection: () => {
         setSelectedNodeIds([]);
         setNoteEditingId(null);
-        setPreviewPatch({});
         setPreviewPatches({});
-        setPreviewNote({});
+        setDragPreview({});
       },
       onHoverChange: (nodeId) => setHoveredNodeId(nodeId),
-      // The controller mutates canvas-side node objects during a drag;
-      // DOM-rendered notes need their live positions relayed for preview.
+      // The controller mutates canvas-side node objects during a drag; DOM
+      // chrome (selection outline, notes) needs the live positions relayed.
       onDragPreview: (changes) => {
-        for (const change of changes) {
-          if (change.kind === 'note') {
-            setPreviewNote((previous) => ({ ...previous, ...change.patch }));
-          }
-        }
+        setDragPreview(Object.fromEntries(changes.map((change) => [change.id, change.patch])));
       },
       onNodesChange: (changes) => {
         commitNodeChanges.current(changes);
-        // Drop the drag preview once the note's committed position lands.
-        if (changes.some((change) => change.kind === 'note')) setPreviewNote({});
+        setDragPreview({});
       },
       snapToGrid: false,
     });
@@ -458,13 +444,12 @@ function BoardApp() {
         (item): item is Item & { blob_hash: string } => item.type === 'image' && !!item.blob_hash,
       )
       .map((item) => {
-        const preview =
-          previewPatches[item.id] ?? (item.id === primaryItemId ? previewPatch : undefined);
+        const preview = previewPatches[item.id] ?? dragPreview[item.id];
         const merged = preview ? { ...item, ...preview } : item;
         return itemToNode(merged, gifHashes.has(item.blob_hash));
       });
     return [...itemNodes, ...renderedNotes.map(noteToNode)];
-  }, [snapshotItems, renderedNotes, previewPatch, previewPatches, primaryItemId, gifHashes]);
+  }, [snapshotItems, renderedNotes, previewPatches, dragPreview, gifHashes]);
   const boardNodesById = useMemo(
     () => new Map(boardNodes.map((node) => [node.id, node])),
     [boardNodes],
@@ -476,8 +461,9 @@ function BoardApp() {
         .filter((node): node is BoardNode => !!node),
     [selectedNodeIds, boardNodesById],
   );
-  // Group-aware shell drags: moving a grouped node moves its mates too.
-  const moveNodes = useMemo(() => {
+  // §6 RULE 1: a grouped node selects its group as one unit — the shell
+  // frames and transforms the selection plus every group-mate.
+  const shellNodes = useMemo(() => {
     const groupIds = new Set(
       selectedNodes.map((node) => node.groupId).filter((id): id is string => id !== null),
     );
@@ -615,9 +601,8 @@ function BoardApp() {
   clearSelectionRef.current = () => {
     setSelectedNodeIds([]);
     setNoteEditingId(null);
-    setPreviewPatch({});
     setPreviewPatches({});
-    setPreviewNote({});
+    setDragPreview({});
   };
   const deleteSelectionRef = useRef<() => void>(() => undefined);
   deleteSelectionRef.current = () => {
@@ -650,6 +635,32 @@ function BoardApp() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
+
+  // Dev-only test hook for the browser gesture suite (frontend/e2e). Exposes
+  // the live model next to what Pixi actually painted, so tests assert the
+  // DOM chrome against the real render. Stripped from production builds.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as { __refthing?: unknown }).__refthing = {
+      boardId: activeBoardId,
+      selection: selectedNodeIds,
+      editing: noteEditingId,
+      viewport: overlayViewport,
+      targetViewport: viewport,
+      nodes: boardNodes.map(({ id, kind, x, y, width, height, rotation, zIndex }) => ({
+        id,
+        kind,
+        x,
+        y,
+        width,
+        height,
+        rotation,
+        zIndex,
+      })),
+      undoDepth: undoStack.current.length,
+      painted: (id: string) => boardCanvas.current?.paintedClientRect(id) ?? null,
+    };
+  });
 
   // Undo history is per-board: switching boards drops both stacks. The dep
   // is the point — the body only touches refs.
@@ -827,7 +838,7 @@ function BoardApp() {
       >
         <div id="canvas-host" ref={canvasHost} />
         {snapshot && <SearchBar tags={snapshot.tags} filter={filter} onChange={setFilter} />}
-        <DrawingOverlay enabled={drawing} viewport={viewport} />
+        <DrawingOverlay enabled={drawing} viewport={overlayViewport} />
         {/* Notes render with their live transform preview; z_index pulls
             front notes above back ones. A selected note is inert here — the
             SelectionOverlay shell covers it and owns the pointer (matching
@@ -836,16 +847,15 @@ function BoardApp() {
           <NoteOverlay
             key={note.id}
             note={note}
-            viewport={viewport}
+            viewport={overlayViewport}
             selected={selectedNodeIds.includes(note.id)}
             editing={noteEditingId === note.id}
             onPress={(event) => boardCanvas.current?.notePointerDown(note.id, event.nativeEvent)}
             onSelect={() => {
               setSelectedNodeIds([note.id]);
               setNoteEditingId(null);
-              setPreviewPatch({});
               setPreviewPatches({});
-              setPreviewNote({});
+              setDragPreview({});
               bringNodeToFrontRef.current(note.id);
             }}
             onHover={(hovering) => setHoveredNodeId(hovering ? note.id : null)}
@@ -868,10 +878,10 @@ function BoardApp() {
                 className="hover-outline"
                 style={{
                   position: 'absolute',
-                  left: viewport.x + bounds.left * viewport.zoom - 0.5,
-                  top: viewport.y + bounds.top * viewport.zoom - 0.5,
-                  width: (bounds.right - bounds.left) * viewport.zoom,
-                  height: (bounds.bottom - bounds.top) * viewport.zoom,
+                  left: overlayViewport.x + bounds.left * overlayViewport.zoom - 0.5,
+                  top: overlayViewport.y + bounds.top * overlayViewport.zoom - 0.5,
+                  width: (bounds.right - bounds.left) * overlayViewport.zoom,
+                  height: (bounds.bottom - bounds.top) * overlayViewport.zoom,
                 }}
               />
             );
@@ -879,34 +889,35 @@ function BoardApp() {
         {/* §0.7 / §1 MULTI-SELECTED — ONE kind-agnostic shell around the
             whole selection (items and notes). Notes get the exact same 8
             zones (§4 RULE 5); double-click on a lone note enters editing. */}
-        {selectedNodes.length > 0 && (
+        {shellNodes.length > 0 && (
           <SelectionOverlay
-            nodes={selectedNodes}
-            moveNodes={moveNodes}
-            viewport={viewport}
+            nodes={shellNodes}
+            viewport={overlayViewport}
             editing={noteEditing}
             onDoubleClick={selectedNote ? () => setNoteEditingId(selectedNote.id) : undefined}
             onOutsidePress={(event) => boardCanvas.current?.overlayPointerDown(event)}
-            onPreview={(patch) => {
-              if (selectedNote) setPreviewNote((prev) => ({ ...prev, ...patch }));
-              else setPreviewPatch(patch);
-            }}
-            onCommit={(patch) => {
-              const primary = selectedNodes[0];
-              if (selectedNote) setPreviewNote({});
-              else setPreviewPatch({});
-              if (primary) {
-                commitNodeChanges.current([
-                  { id: primary.id, kind: nodeChangeKind(primary), patch },
-                ]);
+            onChromePress={(event) => boardCanvas.current?.chromePointerDown(event)}
+            onBodyClick={(event) => {
+              // A click (no drag) inside the box behaves like a click on
+              // bare canvas: Shift toggles the node under the pointer, a
+              // plain click narrows a multi-selection to it.
+              const nodeId = boardCanvas.current?.nodeIdAt(event.clientX, event.clientY);
+              if (!nodeId) return;
+              if (event.shiftKey) {
+                setSelectedNodeIds((previous) =>
+                  previous.includes(nodeId)
+                    ? previous.filter((id) => id !== nodeId)
+                    : [...previous, nodeId],
+                );
+              } else if (selectedNodeIds.length > 1) {
+                setSelectedNodeIds([nodeId]);
+                bringNodeToFrontRef.current(nodeId);
               }
             }}
-            onPreviewItems={(changes) => {
-              const map: Record<string, NodePatch> = {};
-              for (const { id, patch } of changes) map[id] = patch;
-              setPreviewPatches(map);
-            }}
-            onCommitItems={(changes) => {
+            onPreview={(changes) =>
+              setPreviewPatches(Object.fromEntries(changes.map(({ id, patch }) => [id, patch])))
+            }
+            onCommit={(changes) => {
               setPreviewPatches({});
               commitNodeChanges.current(changes);
             }}

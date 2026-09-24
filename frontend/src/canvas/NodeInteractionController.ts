@@ -10,8 +10,9 @@ export type InteractionCallbacks = {
   onClearSelection?: () => void;
   onHoverChange?: (nodeId: string | null) => void;
   onBoxSelect?: (worldRect: { x1: number; y1: number; x2: number; y2: number }) => void;
-  /** Live positions while a drag moves DOM-rendered nodes (notes); sprite
-   *  nodes paint from the canvas-side mutation directly. */
+  /** Live positions of every node a drag moves. Sprites already paint from
+   *  the canvas-side mutation; this feeds DOM chrome (selection outline,
+   *  notes) so it tracks the drag from the very first sample. */
   onDragPreview?: (changes: NodeChange[]) => void;
   /** Drag committed on release; positions already reflect the mutation. */
   onNodesChange?: (changes: NodeChange[]) => void;
@@ -116,8 +117,7 @@ export class NodeInteractionController {
         candidate.x += deltaX;
         candidate.y += deltaY;
       }
-      const preview = moving.filter((candidate) => candidate.kind === 'note').map(toChange);
-      if (preview.length > 0) this.callbacks.onDragPreview?.(preview);
+      this.callbacks.onDragPreview?.(moving.map(toChange));
       return;
     }
     // §1 HOVERED: report the node under the cursor (or null) while idle so
@@ -143,6 +143,12 @@ export class NodeInteractionController {
     this.boxCurrent = null;
     this.host.drawBoxSelect(null, null);
     this.updateHover(null);
+  }
+
+  /** Topmost node under a client point (the selection shell asks this for
+   *  clicks that land on its body). */
+  nodeAt(clientX: number, clientY: number): BoardNode | null {
+    return this.hitTest(this.host.worldPoint(clientX, clientY));
   }
 
   clearHover(): void {
