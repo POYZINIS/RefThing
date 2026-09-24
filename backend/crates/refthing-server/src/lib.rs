@@ -43,6 +43,9 @@ pub async fn run() -> anyhow::Result<()> {
     tokio::fs::create_dir_all(&config.data_dir).await?;
 
     let pools = refthing_core::db::connect(&config.data_dir.join("refthing.db")).await?;
+    // Background WAL checkpoint: keeps the WAL file bounded regardless of
+    // write activity (Phase 7 reliability).
+    let _checkpoint_handle = refthing_core::db::spawn_checkpoint_task(pools.clone());
     // BlobStore appends its own blobs/ + tmp/ subdirs, so pass the data dir
     // itself to land at data/blobs/<ab>/<cd>/<hash> per docs/data-model.md.
     let blob_store = Arc::new(BlobStore::new(config.data_dir.clone()));

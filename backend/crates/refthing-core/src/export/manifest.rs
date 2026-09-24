@@ -73,6 +73,12 @@ pub struct ManifestNote {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    /// Defaults keep archives exported before the notes-transform migration
+    /// importable (`rotation` 0 / `z_index` 0 = old behavior).
+    #[serde(default)]
+    pub rotation: f64,
+    #[serde(default)]
+    pub z_index: i64,
     pub content_json: serde_json::Value,
     pub bg_color: Option<String>,
     pub opacity: f64,

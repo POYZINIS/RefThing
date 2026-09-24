@@ -24,5 +24,8 @@ pub mod groups;
 pub mod ingest;
 pub mod items;
 pub mod notes;
+pub mod search;
+pub mod snapshots;
 pub mod tags;
+pub mod views;
 pub mod ws;

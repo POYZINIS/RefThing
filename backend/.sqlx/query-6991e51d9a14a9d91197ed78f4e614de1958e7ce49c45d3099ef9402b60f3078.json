@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO notes (id, board_id, x, y, width, height, content_json) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", x, y, width, height, content_json AS \"content_json: serde_json::Value\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", updated_at AS \"updated_at: DateTime<Utc>\"",
+  "query": "INSERT INTO notes (id, board_id, x, y, width, height, rotation, z_index, content_json) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?) RETURNING id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", x, y, width, height, rotation, z_index, content_json AS \"content_json: serde_json::Value\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", updated_at AS \"updated_at: DateTime<Utc>\"",
   "describe": {
     "columns": [
       {
@@ -34,28 +34,38 @@
         "type_info": "Float"
       },
       {
-        "name": "content_json: serde_json::Value",
+        "name": "rotation",
         "ordinal": 6,
+        "type_info": "Float"
+      },
+      {
+        "name": "z_index",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "content_json: serde_json::Value",
+        "ordinal": 8,
         "type_info": "Text"
       },
       {
         "name": "bg_color",
-        "ordinal": 7,
-        "type_info": "Text"
-      },
-      {
-        "name": "opacity!",
-        "ordinal": 8,
-        "type_info": "Float"
-      },
-      {
-        "name": "created_at: DateTime<Utc>",
         "ordinal": 9,
         "type_info": "Text"
       },
       {
-        "name": "updated_at: DateTime<Utc>",
+        "name": "opacity!",
         "ordinal": 10,
+        "type_info": "Float"
+      },
+      {
+        "name": "created_at: DateTime<Utc>",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at: DateTime<Utc>",
+        "ordinal": 12,
         "type_info": "Text"
       }
     ],
@@ -70,11 +80,13 @@
       false,
       false,
       false,
+      false,
+      false,
       true,
       false,
       false,
       false
     ]
   },
-  "hash": "0573aa8eba3f4c53b787bd9fec10d2024f17866b8205798e9626a728148ba036"
+  "hash": "6991e51d9a14a9d91197ed78f4e614de1958e7ce49c45d3099ef9402b60f3078"
 }

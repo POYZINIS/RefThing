@@ -15,7 +15,9 @@ use std::path::Path;
 use anyhow::Context as _;
 use async_trait::async_trait;
 use refthing_core::db::blobs;
-use refthing_core::pipeline::{DerivativeRecord, PipelineError, generate_pyramid};
+use refthing_core::pipeline::{
+    DerivativeRecord, ImageMetadata, PipelineError, extract_image_metadata, generate_pyramid,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::SqliteTransaction;
@@ -62,18 +64,25 @@ impl JobHandler for PyramidJob {
         let original = ctx.blob_store.path(&payload.blob_hash);
         let blob_hash = payload.blob_hash.clone();
         let deriv_root = ctx.deriv_root.clone();
+        let meta_path = original.clone();
         let result = ctx
             .resize_pool
             .run(move || {
                 let full_dims = probe_dimensions(&original)?;
                 let records = generate_pyramid(&original, &blob_hash, &deriv_root)?;
-                Ok::<_, PipelineError>((full_dims, records))
+                let metadata = extract_image_metadata(&meta_path).ok();
+                Ok::<_, PipelineError>((full_dims, records, metadata))
             })
             .await;
 
         match result {
-            Ok((full_dims, records)) => {
+            Ok((full_dims, records, metadata)) => {
                 let levels = commit_ready(ctx, &payload, full_dims, &records).await?;
+                // Persist dominant_colors + phash into item_metadata so the
+                // frontend can filter by colour and detect near-duplicates.
+                if let Some(meta) = metadata {
+                    commit_metadata(ctx, &payload.item_id, &meta).await;
+                }
                 broadcast_ready(ctx, &payload, &levels).await;
                 Ok(())
             }
@@ -129,6 +138,23 @@ async fn mark_pending(ctx: &JobContext, hash: &str) -> anyhow::Result<()> {
         .await?;
     }
     Ok(())
+}
+
+/// Merges `dominant_colors` + phash into `item_metadata.json` for the item,
+/// preserving any existing fields.  Silently ignored on DB errors (best-effort).
+async fn commit_metadata(ctx: &JobContext, item_id: &uuid::Uuid, meta: &ImageMetadata) {
+    let _ = sqlx::query(
+        "INSERT INTO item_metadata (item_id, json) VALUES (?, ?)
+         ON CONFLICT(item_id) DO UPDATE SET json = json_set(
+             json,
+             '$.dominant_colors', json_extract(excluded.json, '$.dominant_colors'),
+             '$.phash', json_extract(excluded.json, '$.phash')
+         )",
+    )
+    .bind(item_id)
+    .bind(serde_json::to_string(meta).unwrap_or_default())
+    .execute(&ctx.pools.write)
+    .await;
 }
 
 /// One write-pool transaction: `ready` rows for every generated level, plus

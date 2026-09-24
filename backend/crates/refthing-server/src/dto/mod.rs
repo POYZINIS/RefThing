@@ -76,6 +76,8 @@ pub struct Note {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    pub rotation: f64,
+    pub z_index: i64,
     pub content_json: serde_json::Value,
     pub bg_color: Option<String>,
     pub opacity: f64,
@@ -88,6 +90,33 @@ pub struct Tag {
     pub id: Uuid,
     pub name: String,
     pub color: Option<String>,
+}
+
+/// Saved view on a board (Phase 6). `viewport` mirrors the board's
+/// `viewport_state` wire shape `{x, y, zoom}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BoardView {
+    pub id: Uuid,
+    pub board_id: Uuid,
+    pub name: String,
+    pub viewport: serde_json::Value,
+    /// Epoch milliseconds.
+    pub created_at: i64,
+    /// Epoch milliseconds.
+    pub updated_at: i64,
+}
+
+/// Single search result item (Phase 6 FTS5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchResult {
+    /// Item ID within the board.
+    pub item_id: Uuid,
+    /// Rank: lower is better (FTS5 bm25 score, negated for ascending sort).
+    pub rank: f64,
+    /// Snippet of matching text (HTML-escaped; `<b>` marks).
+    pub snippet: String,
+    /// Matched content kind: `filename` | `note` | `tag`.
+    pub kind: String,
 }
 
 /// One renderable scale of a blob. Only `full` (the original) exists until
@@ -229,6 +258,8 @@ mod tests {
             y: 20.0,
             width: 200.0,
             height: 100.0,
+            rotation: 15.0,
+            z_index: 4,
             content_json: json!({"text": "hello"}),
             bg_color: None,
             opacity: 1.0,

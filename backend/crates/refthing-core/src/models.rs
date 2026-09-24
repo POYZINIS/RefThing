@@ -53,9 +53,23 @@ pub struct Note {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    pub rotation: f64,
+    pub z_index: i64,
     pub content_json: serde_json::Value,
     pub bg_color: Option<String>,
     pub opacity: f64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A named viewport bookmark on a board (Phase 6 saved views). `viewport`
+/// mirrors the board's own `viewport_state` wire shape `{x, y, zoom}`.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct BoardView {
+    pub id: Uuid,
+    pub board_id: Uuid,
+    pub name: String,
+    pub viewport: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

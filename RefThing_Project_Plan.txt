@@ -1,19 +1,28 @@
 ========================================================================
-REFTHING — PROJECT PLAN
-A high-performance, web-based reference board (PureRef reimagined)
+REFTHING — PROJECT PLAN (v2)
+A high-performance, web-based reference board (PureRef clone)
 ========================================================================
 
 OVERVIEW
 --------------------------------------------------------------------
 RefThing is a browser-based reference board built to handle massive
-boards (thousands of images) at 60fps, with better organization,
-crash-safety, and multi-device support than PureRef, while remaining
-cleanly extensible to new content types (3D models, video, audio,
-web embeds, and beyond).
+boards (thousands of items) at 60fps, with better organization,
+crash-safety, and clean extensibility to new content types (3D
+models, video, audio, web embeds), while staying a faithful clone of
+PureRef's actual interaction model — not a reinterpretation of it.
 
 Core architectural principle: React owns the UI chrome. It does NOT
 render the canvas itself. The canvas is a separate WebGL rendering
 layer with its own scene graph, mounted once and updated imperatively.
+
+Core interaction principle: PureRef's defining trait is near-zero UI.
+Every common action is a mouse gesture (with a modifier key) that
+becomes obvious after one use. Anything uncommon lives in the
+right-click context menu. RefThing keeps this exactly — no visible
+toolbars for actions PureRef handles with a gesture, no free-form
+transform handles, no invented interaction concepts. Bindings are
+config data, not hardcoded logic, mirroring PureRef's own philosophy
+that nearly every action is a rebindable shortcut.
 
 
 ========================================================================
@@ -21,7 +30,7 @@ LIBRARY / TECH STACK
 ========================================================================
 
 --- BACKEND (Rust) ---
-- axum                 Web framework (routing, WebSocket upgrade, middleware)
+- axum                 Web framework (routing, middleware)
 - tokio                Async runtime (multi-threaded scheduler)
 - rayon                Data-parallel CPU work (bulk image processing)
 - sqlx                 Async SQLite driver (compile-time checked queries)
@@ -30,14 +39,13 @@ LIBRARY / TECH STACK
 - image                Core image decode/encode (JPEG/PNG/WebP/etc.)
 - fast_image_resize    SIMD-accelerated thumbnail/pyramid generation
 - symphonia            Audio decode (waveform extraction for mp3 posters)
-- ffmpeg (shelled out) or ffmpeg-next   Video frame extraction, transcoding
+- ffmpeg (shelled out) or ffmpeg-next   Video frame extraction
 - img_hash              Perceptual hashing (near-duplicate detection)
 - tracing / tracing-subscriber   Structured logging & diagnostics
 - tower / tower-http   Middleware (CORS, compression, timeouts)
 - serde / serde_json   Serialization
 - jsonwebtoken (or session-based auth crate)   Auth
-- apalis (or custom Tokio task queue)   Background job queue (thumbnails, posters)
-- yrs (optional, later)   Rust port of Yjs — CRDT for real collaboration
+- apalis (or custom Tokio task queue)   Background job queue
 
 --- BACKEND SIDECAR (Node.js, optional/deferred) ---
 - three.js             Headless 3D model poster/snapshot rendering
@@ -61,6 +69,7 @@ LIBRARY / TECH STACK
 - Web Audio API (native)   Audio mini-player playback
 - Web Workers            Off-main-thread decode/resize/search/spatial index
 - OffscreenCanvas         (Phase 9+) move WebGL render loop off main thread
+- TOML parser (e.g. @iarna/toml or smol-toml)   Loads the control-scheme config
 
 --- DEV / TOOLING ---
 - Synthetic board generator (custom internal tool) for load testing
@@ -68,204 +77,340 @@ LIBRARY / TECH STACK
 
 
 ========================================================================
+CONTROL SCHEME & INTERACTION PHILOSOPHY
+========================================================================
+This is a direct clone of PureRef's real interaction model, confirmed
+against the official handbook — not a custom design. No drag
+threshold exists for item movement; click-and-drag on an item moves
+it immediately. No free-form transform handles — every scale/rotate/
+flip anchor point is determined by which modifier key is held, not by
+which handle the user drags. The transform gizmo only appears on
+selection; there is no persistent toolbar.
+
+MOUSE (no drag threshold on item movement)
+--------------------------------------------------------------------
+Left click                       Select item
+Left click + drag, on item       Move item(s) — immediate, no threshold
+Left click + drag, empty canvas  Box/rubber-band select
+Shift + left click               Add/remove from multi-selection
+Middle mouse + drag              Pan the canvas
+Right click, no drag             Context menu
+Right click + drag                Move the window
+Double-click, locked group        Enter group, select child under cursor
+Double-click, selected image      Zoom in on it (double-click again to return)
+Double-click, empty canvas        Zoom to fit everything
+Scroll wheel                      Zoom, centered on cursor
+
+The ONE real threshold in the whole scheme: right-click specifically
+distinguishes "open context menu" from "start moving the window" via
+a configurable pixel distance (PureRef exposes this in Settings as
+"Move window threshold"). This is scoped to that one button only —
+not a general interaction-state-machine concept applied everywhere.
+
+MODIFIER KEYS (anchor points are action-specified, not free-transform)
+--------------------------------------------------------------------
+Ctrl/Cmd + drag on image          Rotate
+Ctrl+Shift + drag                 Rotate, snapped to nearest 45 degrees
+Alt + drag a corner handle        Scale from center (item stays put)
+Shift+Alt + drag (multi-select)   Rotate/scale each item around its own center
+Alt+Shift + drag                  Flip along the drag axis
+Shift + drag                      Constrain movement to a straight line
+Shift+Space + drag                Snap-move to nearest edges of other items
+Z + drag                          Alternate zoom gesture
+
+NOTE TEXT EDITING (resolved — no threshold, no state machine)
+--------------------------------------------------------------------
+Reuses PureRef's own double-click convention (already used to enter
+a locked group and to zoom a selected image) instead of inventing a
+new interaction concept:
+- Single click / click-drag on a note -> select / move it. Identical
+  code path to an image — no special casing.
+- Double-click on a note -> enter text edit mode. Native browser
+  dblclick event handles the disambiguation; no custom timing logic
+  needed.
+- While editing: pointer events go to the pretext editor; click
+  elsewhere or Escape commits the edit and exits back to normal
+  selected/movable state.
+
+ITEM DRAG FIX (bug, not a control-scheme question)
+--------------------------------------------------------------------
+Root cause of "items change position instead of moving with the
+drag": likely absolute position assignment (item.x = pointerWorldX)
+instead of delta-based movement, and/or a missing or duplicated
+screen-to-world conversion when panned/zoomed. Fix:
+  on pointerdown: dragStartWorld = screenToWorld(pointer); itemStartPos = item.position (snapshot only)
+  on pointermove: delta = screenToWorld(pointer) - dragStartWorld; item.position = itemStartPos + delta
+Never assign item.position directly to the converted pointer position.
+Ensure exactly ONE screenToWorld()/worldToScreen() utility is used by
+the renderer, the DOM overlay, and the drag math — no duplicated
+transform logic that can drift out of sync.
+
+CONTROL SCHEME AS CONFIG (not hardcoded)
+--------------------------------------------------------------------
+Store bindings as data, matching PureRef's own approach (nearly every
+action is a rebindable shortcut). Example shape:
+
+  [actions.select]
+  button = "left"
+
+  [actions.move_item]
+  button = "left"
+  drag = true
+  target = "item"
+
+  [actions.box_select]
+  button = "left"
+  drag = true
+  target = "empty"
+
+  [actions.multi_select_add]
+  button = "left"
+  modifiers = ["shift"]
+
+  [actions.pan]
+  button = "middle"
+  drag = true
+
+  [actions.move_window]
+  button = "right"
+  drag = true
+
+  [actions.context_menu]
+  button = "right"
+  drag = false
+
+  [actions.rotate]
+  button = "left"
+  modifiers = ["ctrl"]
+  drag = true
+  target = "item"
+
+  [actions.rotate_snap]
+  button = "left"
+  modifiers = ["ctrl", "shift"]
+  drag = true
+  target = "item"
+
+  [actions.scale_from_center]
+  button = "left"
+  modifiers = ["alt"]
+  drag = true
+  target = "handle"
+
+  [actions.flip]
+  button = "left"
+  modifiers = ["alt", "shift"]
+  drag = true
+  target = "item"
+
+  [actions.constrain_to_line]
+  button = "left"
+  modifiers = ["shift"]
+  drag = true
+  target = "item"
+
+  [actions.enter_note_edit]
+  button = "left"
+  double_click = true
+  target = "note"
+
+  [actions.zoom]
+  input = "scroll"
+
+  [actions.zoom_to_fit]
+  button = "left"
+  double_click = true
+  target = "empty"
+
+The dispatcher matches incoming pointer/keyboard events against this
+table and fires the matching action. No hidden state machine beyond
+what's explicit here. New item types (video, 3D, audio) declare which
+of these default actions they respond to without touching input-
+handling code — this is also the extension point for type-specific
+gestures later (e.g. scrub a video timeline) without special-casing
+core dispatch.
+
+KEYBOARD (remaining Phase 4 items)
+--------------------------------------------------------------------
+Delete / Backspace        Delete selected item(s)
+Ctrl/Cmd + G               Group selection
+Ctrl/Cmd + Shift + G        Ungroup
+Ctrl/Cmd + A                Select all
+Ctrl/Cmd + Z                 Undo
+Ctrl/Cmd + Shift + Z (or Ctrl+Y)   Redo
+Arrow keys                 Nudge selected item(s) by 1px (Shift = larger step)
+Escape                     Exit editing -> selected; selected -> deselect
+
+UNDO/REDO CONVENTIONS
+--------------------------------------------------------------------
+- One undo command per completed gesture (finished drag, finished
+  resize, delete, group/ungroup, tag change) — never per-frame during
+  a drag.
+- Coalesce a full drag (pointerdown -> pointerup) into a single
+  command with before/after position.
+- Coalesce note text edits into one command per editing session
+  (since focus entered until it left), not per keystroke.
+- Multi-item operations (e.g. deleting 5 selected items) are a single
+  undo command, not 5 separate ones.
+
+
+========================================================================
 PHASE-BY-PHASE PLAN
 ========================================================================
 
-PHASE 0 — LOCK THE STACK
+PHASE 0 — LOCK THE STACK                                    [COMPLETE]
 --------------------------------------------------------------------
 1. Finalize the library table above.
-2. Set up repo structure: /backend (Rust/Axum), /frontend (React/Vite),
+2. Repo structure: /backend (Rust/Axum), /frontend (React/Vite),
    /sidecar (Node, stubbed), /docs (architecture + onboarding docs).
-3. Establish CI: cargo check/test/clippy, frontend lint/build.
+3. CI: cargo check/test/clippy, frontend lint/build.
 
-PHASE 1 — DATA MODEL & STORAGE
+PHASE 1 — DATA MODEL & STORAGE                       [COMPLETE 4/4]
 --------------------------------------------------------------------
-Goal: fix PureRef's single-file corruption problem and enable real
-organization (tags/search) from day one.
+1. Generic item schema (items + item_metadata JSON, not hardcoded
+   to "images").
+2. SQLite WAL mode.
+3. Content-addressed blob storage.
+4. Export/import: portable board archive (zip of blobs + manifest).
 
-1. Generic item schema (NOT hardcoded to "images"):
-   - boards(id, name, created_at, updated_at, viewport_state)
-   - items(id, board_id, type, x, y, width, height, rotation,
-           z_index, group_id, created_at)
-   - item_metadata(item_id, json_blob)   -- flexible per-type payload
-   - groups(id, board_id, parent_group_id, name, collapsed)
-   - notes(id, board_id, x, y, width, height, content_json,
-           bg_color, opacity)
-   - tags(id, name, color) + item_tags(item_id, tag_id)
-   - blobs(hash, original_filename, mime_type, byte_size,
-           width, height, created_at)
-2. Enable SQLite WAL mode — crash mid-write can't corrupt the whole DB.
-3. Content-addressed blob storage: hash on ingest, store once,
-   reference everywhere (automatic dedup).
-4. Build export/import: snapshot a board to a portable archive
-   (zip of blobs + manifest) for backup/sharing.
-
-PHASE 2 — RUST API SURFACE
+PHASE 2 — RUST API SURFACE                            [COMPLETE 6/6]
 --------------------------------------------------------------------
-1. Scaffold Axum app: routing, tracing, CORS, error handling.
-2. Auth (session or JWT) to support multi-device sync.
+1. Axum app scaffold: routing, tracing, CORS, error handling.
+2. Auth (session or JWT).
 3. CRUD endpoints for boards/items/groups/notes/tags.
-4. Batch endpoints for moving/updating many items at once
-   (never one HTTP call per item at scale).
-5. Ingestion endpoint: upload -> hash -> store blob -> enqueue
-   poster/thumbnail job -> return immediately (don't block on processing).
-6. WebSocket endpoint: broadcast live board diffs to connected clients.
+4. Batch endpoints for moving/updating many items at once.
+5. Ingestion endpoint: upload -> hash -> store -> enqueue poster job
+   -> return immediately.
+6. (WebSocket board-diff broadcast removed — see Phase 8 note below.)
 
-PHASE 3 — THUMBNAIL / IMAGE PYRAMID PIPELINE
+PHASE 3 — THUMBNAIL / IMAGE PYRAMID PIPELINE           [COMPLETE 4/4]
 --------------------------------------------------------------------
-Goal: the actual key to "thousands of images, still smooth."
+1. Size pyramid per image via fast_image_resize.
+2. Background worker pool (Tokio + Rayon for CPU-bound resize work).
+3. Cache-friendly serving path: /blob/{hash}/{size}, immutable headers.
+4. Frontend picks pyramid level based on on-screen size.
 
-1. Generate a size pyramid per image (e.g. 64px / 256px / 1024px / full)
-   using fast_image_resize.
-2. Run generation in a background worker pool (Tokio tasks + Rayon for
-   the actual CPU-bound resize work — spawn_blocking or Rayon, never
-   raw .await on CPU work).
-3. Serve via cache-friendly path scheme: /blob/{hash}/{size}
-   with immutable cache headers.
-4. Frontend picks pyramid level based on on-screen size (map-tile style).
-
-PHASE 4 — CANVAS RENDERING ENGINE (frontend, non-React)
+PHASE 4 — CANVAS RENDERING ENGINE                    [PARTIAL 6/8]
 --------------------------------------------------------------------
-1. Mount a single PixiJS Application into a React-managed <canvas> ref.
-   React never re-renders into it.
-2. Build a spatial index (quadtree / grid buckets) over item positions.
-3. Viewport culling: only create/update sprites for items intersecting
-   the visible rect (+ buffer margin).
-4. Zoom-dependent texture swapping (pyramid level swap per sprite).
-5. Pan/zoom with easing inside the render loop (rAF), not React state.
-6. Selection/drag/resize/rotate handles as a DOM/SVG overlay layer,
-   synced to canvas coordinates.
+Done:
+1. PixiJS Application mounted into a React-managed canvas ref.
+2. Spatial index (quadtree/grid) over item positions.
+3. Viewport culling to visible rect + buffer.
+4. Zoom-dependent texture swapping (pyramid level per sprite).
+5. Pan/zoom with easing in the render loop (rAF), not React state.
+6. Selection/handle overlay synced to canvas coordinates.
+Remaining:
+7. Keyboard shortcuts (delete, group, nudge, etc. — see table above).
+8. Undo/redo command stack (see conventions above).
+Known bugs to fix as part of remaining work:
+- Item drag delta math (see "ITEM DRAG FIX" above).
+- Note click-vs-edit handling (see "NOTE TEXT EDITING" above).
 
-PHASE 5 — CORE PUREREF FEATURE PARITY
+PHASE 5 — CORE PUREREF FEATURE PARITY                [PARTIAL 5/8]
 --------------------------------------------------------------------
-1. Drag-and-drop / paste / browser-drag ingestion.
-2. Grouping/ungrouping, move-as-unit, group bg color/opacity.
-3. Grayscale toggle — GPU shader uniform, not CPU.
-4. Color sampler (GPU texture / offscreen canvas readback).
-5. Freehand drawing/annotation layer (vector stroke data as note-like
-   records).
-6. Notes via @chenglou/pretext, rendered as DOM overlays in canvas-space.
-7. Animated GIF playback in canvas (frame texture updates, throttled).
-8. Snap-to-grid, alignment guides.
+Done: drag-and-drop/paste/browser-drag ingestion, grouping/ungrouping
++ move-as-unit, grayscale toggle (GPU shader), color sampler,
+grayscale + GIF playback in canvas.
+Remaining:
+- Group background color/opacity picker UI.
+- Pretext notes wired up correctly (blocked on the note editing fix
+  above — implementation, not design, is what's left).
+- Smart alignment guides (snap-to-edge while dragging).
 
-PHASE 6 — ORGANIZATION FEATURES BEYOND PUREREF
+PHASE 6 — ORGANIZATION FEATURES BEYOND PUREREF        [PARTIAL 3/5]
 --------------------------------------------------------------------
-1. Tagging system + filter/search bar in React chrome.
-2. Saved views/collections: named viewport bookmarks or sub-boards.
-3. Full-text search via SQLite FTS5 (filename, tags, note content).
-4. Color-based search: index dominant colors at ingest (k-means on
-   downsampled thumbnail); "find similar color" queries.
-5. Duplicate detection: exact via existing hash, near-dupes via
-   perceptual hashing (img_hash crate).
+Done: tagging system + filter/search bar, SQLite FTS5 full-text
+search, duplicate detection backend (perceptual hashing).
+Remaining:
+- Wire color-search endpoint into the UI (backend exists).
+- Wire duplicate-detection endpoint into the UI (backend exists).
 
-PHASE 7 — RELIABILITY (fixes PureRef's failure mode directly)
+PHASE 7 — RELIABILITY                                [COMPLETE 4/4]
 --------------------------------------------------------------------
 1. WAL-mode SQLite + periodic checkpointing.
-2. Debounced client-side autosave (no single giant save-on-close).
-3. Versioned snapshots — keep N recent board states for rollback.
-4. Health-check endpoint verifying blob integrity against stored hashes.
+2. Debounced client-side autosave.
+3. Versioned snapshots for rollback.
+4. Health-check endpoint verifying blob integrity against hashes.
 
-PHASE 8 — MULTI-DEVICE / LIGHTWEIGHT COLLABORATION
+PHASE 8 — MULTI-DEVICE / COLLABORATION           [REMOVED FROM SCOPE]
 --------------------------------------------------------------------
-1. WebSocket broadcast of board ops (move/add/delete/tag) to all
-   connected clients on that board.
-2. Presence indicators (optional, later — live cursors, who's viewing).
-3. Conflict resolution: last-write-wins per field for v1;
-   CRDT (yrs, Rust Yjs port) as the upgrade path for real concurrent
-   editing.
+Cut entirely. Not pursuing real-time multi-device sync, presence
+indicators, or CRDT conflict resolution. Consequences of the cut:
+- No yrs (CRDT) dependency needed.
+- WebSocket board-diff broadcast removed from Phase 2 — not building
+  a sync layer for now.
+- Undo/redo stays a plain linear local command stack (no need to
+  reconcile against concurrent remote edits).
 
-PHASE 9 — PERFORMANCE VALIDATION & OFF-MAIN-THREAD WORK
+PHASE 9 — PERFORMANCE VALIDATION & OFF-MAIN-THREAD   [PARTIAL 3/6]
 --------------------------------------------------------------------
-1. Synthetic board generator (seed 5k / 20k / 50k items) as a dev tool.
-2. Profile frame time under pan/zoom at each scale; target 60fps.
-3. Load-test ingestion pipeline (bulk upload of thousands of files).
-4. Move image decode/resize and search/filter computation into
-   Web Workers.
-5. Move the PixiJS render loop into OffscreenCanvas inside a worker
-   for boards with very high item counts. Requires setting
-   Cross-Origin-Opener-Policy / Cross-Origin-Embedder-Policy headers
-   on the Axum server if using SharedArrayBuffer for zero-copy transfer.
-6. Add dev-only FPS/latency HUD to catch regressions.
+Done: (mark actual completed items here as they're finished)
+Remaining:
+- Synthetic board generator (5k/20k/50k items) for profiling.
+- Load-test the ingestion pipeline (bulk upload of thousands of files).
+- Move image decode/resize into Web Workers.
+- Move the PixiJS render loop into OffscreenCanvas in a worker
+  (requires Cross-Origin-Opener-Policy / Cross-Origin-Embedder-Policy
+  headers on the Axum server if using SharedArrayBuffer).
+- Dev-only FPS/latency HUD.
 
-PHASE 10 — POLISH
+PHASE 10 — POLISH                                          [NOT STARTED]
 --------------------------------------------------------------------
-1. anime.js-driven UI transitions (panels, toolbar, hover states).
-2. Tailwind design system pass — consistent spacing/typography tokens.
-3. Keyboard shortcuts matching PureRef muscle memory, plus new ones
-   for tags/search.
-4. Best-effort .pur importer for PureRef 1.x files (2.x format is
-   closed/unreverse-engineered — treat as stretch goal, not v1).
+1. anime.js-driven UI chrome transitions.
+2. Tailwind design system pass.
+3. Keyboard shortcuts matching PureRef muscle memory.
+4. Best-effort .pur importer for PureRef 1.x (2.x format is closed —
+   stretch goal, not v1).
 
-PHASE 11 — EXTENSIBILITY: MULTI-FORMAT ITEM TYPES
+PHASE 11 — EXTENSIBILITY: MULTI-FORMAT ITEM TYPES          [NOT STARTED]
 --------------------------------------------------------------------
-Goal: support 3D viewports, video, audio (mp3 mini-player), gifs,
-web embeds, and arbitrary file formats — cleanly, without touching
-core engine code per new type.
+Goal: 3D viewports, video, audio (mp3 mini-player), gifs, web embeds,
+and arbitrary file formats — without touching core engine code per
+new type.
 
-Rendering model (critical for scale):
-- POSTER mode (always on): every item has a cheap static WebGL sprite,
-  regardless of type. This is what the culling/rendering pipeline
-  from Phase 4 always deals with — keeps thousands of items smooth.
-- LIVE mode (on-demand): the real interactive component — <video>,
-  model-viewer/three.js, audio mini-player — mounted as a DOM overlay
-  ONLY for items currently large/focused enough on screen. Cap
-  concurrent live instances (~6-10) and evict least-recently-focused
-  when the cap is hit.
+Rendering model:
+- POSTER mode (always on): every item has a cheap static WebGL sprite.
+  This is what the Phase 4 culling pipeline always deals with.
+- LIVE mode (on-demand): the real interactive component (<video>,
+  model-viewer/three.js, audio mini-player) mounted as a DOM overlay
+  only for items large/focused enough on screen. Cap concurrent live
+  instances (~6-10), evict least-recently-focused past the cap.
 
-Data model change:
-- Generalize to items + item_metadata(JSON) as already defined in
-  Phase 1 — new item types need no schema migration, just a new
-  JSON payload shape. Only promote a field to a real column if you
-  need to query/sort/filter on it at scale.
+Data model: generalize to items + item_metadata(JSON) as already
+defined in Phase 1 — new types need no schema migration.
 
-Backend pattern — ItemTypeHandler trait:
-  - accepted_mime_types()
-  - extract_metadata(blob) -> ItemMetadata
-  - generate_poster(blob) -> PosterAsset
-  Each new type = one handler implementation + registration. Nothing
-  else in ingestion changes.
+Backend pattern — ItemTypeHandler trait: accepted_mime_types(),
+extract_metadata(), generate_poster(). One handler per type.
 
-Frontend pattern — ItemRenderer registry:
-  - Poster: always-mounted WebGL sprite (required)
-  - Live: optional DOM-overlay component, mounted per activation policy
+Frontend pattern — ItemRenderer registry: Poster (required, always-
+mounted sprite) + Live (optional, on-demand DOM overlay).
 
-Type-by-type implementation notes:
-  - Image:        existing pyramid pipeline (Phase 3)
-  - Video:        ffmpeg frame extraction -> poster; <video> for live
-  - GIF:          decode first frame -> poster; small GIFs can just
-                   play directly as an animated WebGL sprite
-  - 3D model:      offscreen render snapshot (via Node/three.js sidecar)
-                   -> poster; model-viewer or three.js for live,
-                   with orbit controls only while live
-  - Audio (mp3):   waveform image (via symphonia) -> poster;
-                   mini-player (Web Audio API + custom transport UI)
-                   for live
-  - Web embed:     oEmbed/OpenGraph fetch, or headless-browser
-                   screenshot (Node/puppeteer sidecar) -> poster;
-                   sandboxed iframe for live
-  - Generic/unknown file: file-type icon + filename as poster fallback;
-                   always downloadable even without a live renderer
+Type notes:
+- Image:      existing pyramid pipeline (Phase 3).
+- Video:      ffmpeg frame extraction -> poster; <video> for live.
+- GIF:        decode first frame -> poster; small GIFs can just play
+              as an animated WebGL sprite directly.
+- 3D model:   offscreen render snapshot (Node/three.js sidecar) ->
+              poster; model-viewer/three.js for live, orbit controls
+              only while live.
+- Audio:      waveform image (symphonia) -> poster; mini-player
+              (Web Audio API + custom transport UI) for live.
+- Web embed:  oEmbed/OpenGraph fetch or headless-browser screenshot
+              (Node/puppeteer sidecar) -> poster; sandboxed iframe
+              for live.
+- Generic/unknown file: file-type icon + filename fallback poster;
+              always downloadable even without a live renderer.
 
-Node.js sidecar (optional, deferred):
-  - Used ONLY for jobs where the JS ecosystem is genuinely better
-    suited: 3D poster snapshots (three.js) and web-embed screenshots
-    (puppeteer/playwright). Called internally by the Rust backend
-    over HTTP/gRPC — Rust remains the source of truth for data,
-    storage, and API surface.
-  - Not a general performance upgrade — Node's threading model is the
-    same shape as the browser's (single main thread + worker_threads/
-    libuv pool). Only reach for it for tooling advantages, not raw
-    concurrency.
-  - Stub these jobs early (return a generic file icon) and only stand
-    up the sidecar once 3D/embeds are an active feature, not before.
+Node sidecar: only for 3D poster snapshots and web-embed screenshots
+— tooling advantage, not a concurrency upgrade. Stub these jobs
+early (generic file icon) and only stand up the sidecar once these
+types are actively being built.
 
-Feature-flagging for experimental types:
-  - Gate new/rough item types behind a simple flag system (JSON config
-    or env-driven list) from day one, so a half-finished renderer
-    (e.g. 3D viewports) can ship to a subset of users without
-    destabilizing the main board experience.
+Feature-flagging: gate new/rough item types behind a simple flag
+system so a half-finished renderer doesn't destabilize the main
+board experience.
 
-Onboarding checklist for a new item type (document this in /docs):
+Onboarding checklist for a new item type (document in /docs):
   1. Add a backend ItemTypeHandler impl + register it.
   2. Add a frontend ItemRenderer (poster required, live optional)
      + register it.
@@ -276,12 +421,14 @@ Onboarding checklist for a new item type (document this in /docs):
 ========================================================================
 SEQUENCING NOTE
 ========================================================================
-Build Phases 1-4 (storage, ingestion, canvas engine) before most of
-Phase 5+ feature work. Everything downstream is much easier once the
-rendering approach is proven at scale. If the canvas engine can't hit
-target framerates at thousands of items, that reshapes every phase
-after it — validate early with the Phase 9 synthetic board generator,
-even in a rough form, as soon as Phase 4 has a working prototype.
+Phases 1-4 (storage, ingestion, canvas engine) should be solid before
+most of Phase 5+ feature work — this held true and is why the current
+status shows those phases complete/near-complete while UI polish
+(5-6), performance hardening (9), and extensibility (11) are still
+open. Fix the two known Phase 4 bugs (item drag delta math, note
+edit-vs-move) before building further on top of the canvas engine —
+both are foundational interaction correctness issues that every
+future item type (Phase 11) will inherit if left unresolved.
 
 ========================================================================
 END OF PLAN

@@ -7,13 +7,28 @@ import {
   createBoard,
   createGroup,
   createNote,
+  createTag as createTagApi,
+  deleteTag as deleteTagApi,
   fetchBoard,
   ingestFiles,
   listBoards,
   submitBatch,
+  type Tag,
   updateBoardViewport,
   updateNote,
+  updateTag as updateTagApi,
 } from '@/api/client';
+
+/** Geometry patch for a note — the subset the interaction shell can change.
+ * Every field is optional so a single PATCH can carry any combination. */
+export type NoteGeoPatch = {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  rotation?: number;
+  z_index?: number;
+};
 
 type BoardState = {
   boards: BoardSummary[];
@@ -28,9 +43,14 @@ type BoardState = {
   saveViewport: (viewportState: { x: number; y: number; zoom: number }) => Promise<void>;
   addNote: () => Promise<void>;
   saveNote: (noteId: string, content: string) => Promise<void>;
+  updateNoteGeo: (noteId: string, geo: NoteGeoPatch) => Promise<void>;
   saveDrawing: (noteId: string, strokes: Array<Array<{ x: number; y: number }>>) => Promise<void>;
   groupItems: (itemIds: string[]) => Promise<void>;
   ungroupItems: (itemIds: string[]) => Promise<void>;
+  createTag: (name: string, color?: string | null) => Promise<Tag>;
+  renameTag: (tagId: string, name: string) => Promise<Tag>;
+  deleteTag: (tagId: string) => Promise<void>;
+  addTagLocal: (tag: Tag) => void;
   applySnapshot: (snapshot: BoardSnapshot) => void;
   applyOps: (ops: BatchOp[], seq?: number) => void;
   applyChanges: (seq: number, events: BoardEvent[]) => void;
@@ -139,6 +159,24 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     if (!boardId) return;
     await updateNote(boardId, noteId, { content_json: { text: content } });
     await get().openBoard(boardId);
+  },
+
+  async updateNoteGeo(noteId, geo) {
+    const boardId = get().activeBoardId;
+    const snapshot = get().snapshot;
+    if (!boardId || !snapshot) return;
+    // Update locally without a full refetch so the overlay doesn't jerk.
+    set((state) => {
+      const current = state.snapshot;
+      if (!current) return state;
+      return {
+        snapshot: {
+          ...current,
+          notes: current.notes.map((note) => (note.id === noteId ? { ...note, ...geo } : note)),
+        },
+      };
+    });
+    await updateNote(boardId, noteId, geo);
   },
 
   async saveDrawing(noteId, strokes) {
@@ -283,6 +321,48 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         return { ...blob, levels };
       });
       return touched ? { snapshot: { ...snapshot, blobs } } : state;
+    });
+  },
+
+  createTag(name, color) {
+    return createTagApi(name, color).then((tag) => {
+      get().addTagLocal(tag);
+      return tag;
+    });
+  },
+
+  renameTag(tagId, name) {
+    return updateTagApi(tagId, { name }).then((tag) => {
+      get().addTagLocal(tag);
+      return tag;
+    });
+  },
+
+  deleteTag(tagId) {
+    return deleteTagApi(tagId).then(() => {
+      set((state) => {
+        const snapshot = state.snapshot;
+        if (!snapshot) return state;
+        const tags = snapshot.tags.filter((tag) => tag.id !== tagId);
+        const item_tags = Object.fromEntries(
+          Object.entries(snapshot.item_tags)
+            .map(([itemId, tagIds]) => [itemId, tagIds.filter((id) => id !== tagId)])
+            .filter(([, tagIds]) => (tagIds as string[]).length > 0),
+        );
+        return { snapshot: { ...snapshot, tags, item_tags } };
+      });
+    });
+  },
+
+  addTagLocal(tag) {
+    set((state) => {
+      const snapshot = state.snapshot;
+      if (!snapshot) return state;
+      const exists = snapshot.tags.some((candidate) => candidate.id === tag.id);
+      const tags = exists
+        ? snapshot.tags.map((candidate) => (candidate.id === tag.id ? tag : candidate))
+        : [...snapshot.tags, tag];
+      return { snapshot: { ...snapshot, tags } };
     });
   },
 }));

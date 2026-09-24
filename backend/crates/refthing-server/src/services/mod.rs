@@ -10,7 +10,10 @@
 pub mod board_service;
 pub mod ingest_service;
 pub mod item_service;
+pub mod search;
+pub mod snapshots;
 pub mod tag_service;
+pub mod views;
 
 use chrono::{DateTime, Utc};
 use refthing_core::models;
@@ -89,6 +92,8 @@ pub fn note_dto(note: models::Note) -> dto::Note {
         y: note.y,
         width: note.width,
         height: note.height,
+        rotation: note.rotation,
+        z_index: note.z_index,
         content_json: note.content_json,
         bg_color: note.bg_color,
         opacity: note.opacity,

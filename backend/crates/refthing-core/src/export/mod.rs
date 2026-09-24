@@ -238,6 +238,8 @@ fn build_manifest(snapshot: &BoardSnapshot) -> Manifest {
             y: note.y,
             width: note.width,
             height: note.height,
+            rotation: note.rotation,
+            z_index: note.z_index,
             content_json: note.content_json.clone(),
             bg_color: note.bg_color.clone(),
             opacity: note.opacity,
@@ -671,8 +673,8 @@ async fn insert_notes(
 ) -> Result<(), ExportError> {
     for note in notes {
         sqlx::query(
-            "INSERT INTO notes (id, board_id, x, y, width, height, content_json, bg_color, opacity) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO notes (id, board_id, x, y, width, height, rotation, z_index, content_json, bg_color, opacity) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::now_v7())
         .bind(board_id)
@@ -680,6 +682,8 @@ async fn insert_notes(
         .bind(note.y)
         .bind(note.width)
         .bind(note.height)
+        .bind(note.rotation)
+        .bind(note.z_index)
         .bind(&note.content_json)
         .bind(&note.bg_color)
         .bind(note.opacity)
@@ -913,8 +917,8 @@ mod tests {
             .expect("insert metadata b");
 
         sqlx::query(
-            "INSERT INTO notes (id, board_id, x, y, width, height, content_json, bg_color, opacity) \
-             VALUES (?, ?, 5.0, 6.0, 150.0, 80.0, ?, '#ffff00', 0.5)",
+            "INSERT INTO notes (id, board_id, x, y, width, height, rotation, z_index, content_json, bg_color, opacity) \
+             VALUES (?, ?, 5.0, 6.0, 150.0, 80.0, 12.5, 3, ?, '#ffff00', 0.5)",
         )
         .bind(Uuid::now_v7())
         .bind(board_id)

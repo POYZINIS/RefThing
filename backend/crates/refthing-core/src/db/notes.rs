@@ -24,8 +24,8 @@ pub async fn create(
     let id = Uuid::now_v7();
     sqlx::query_as!(
         Note,
-        "INSERT INTO notes (id, board_id, x, y, width, height, content_json) \
-             VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", x, y, width, height, content_json AS \"content_json: serde_json::Value\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", updated_at AS \"updated_at: DateTime<Utc>\"",
+        "INSERT INTO notes (id, board_id, x, y, width, height, rotation, z_index, content_json) \
+             VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?) RETURNING id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", x, y, width, height, rotation, z_index, content_json AS \"content_json: serde_json::Value\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", updated_at AS \"updated_at: DateTime<Utc>\"",
         id,
         board_id,
         x,
@@ -43,7 +43,7 @@ pub async fn create(
 pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<Note>, CoreError> {
     sqlx::query_as!(
         Note,
-        "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", x, y, width, height, content_json AS \"content_json: serde_json::Value\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", updated_at AS \"updated_at: DateTime<Utc>\" FROM notes WHERE id = ?",
+        "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", x, y, width, height, rotation, z_index, content_json AS \"content_json: serde_json::Value\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", updated_at AS \"updated_at: DateTime<Utc>\" FROM notes WHERE id = ?",
         id,
     )
     .fetch_optional(pool)
@@ -55,7 +55,7 @@ pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<Note>, CoreError>
 pub async fn list_by_board(pool: &SqlitePool, board_id: Uuid) -> Result<Vec<Note>, CoreError> {
     sqlx::query_as!(
         Note,
-        "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", x, y, width, height, content_json AS \"content_json: serde_json::Value\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", updated_at AS \"updated_at: DateTime<Utc>\" FROM notes WHERE board_id = ? ORDER BY created_at, id",
+        "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", x, y, width, height, rotation, z_index, content_json AS \"content_json: serde_json::Value\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", updated_at AS \"updated_at: DateTime<Utc>\" FROM notes WHERE board_id = ? ORDER BY z_index ASC, id",
         board_id,
     )
     .fetch_all(pool)
@@ -64,6 +64,7 @@ pub async fn list_by_board(pool: &SqlitePool, board_id: Uuid) -> Result<Vec<Note
 }
 
 /// Replaces a note's geometry. Returns `false` when no note has `id`.
+#[allow(clippy::too_many_arguments)]
 pub async fn update_geometry(
     pool: &SqlitePool,
     id: Uuid,
@@ -71,13 +72,17 @@ pub async fn update_geometry(
     y: f64,
     width: f64,
     height: f64,
+    rotation: f64,
+    z_index: i64,
 ) -> Result<bool, CoreError> {
     let result = sqlx::query!(
-        "UPDATE notes SET x = ?, y = ?, width = ?, height = ? WHERE id = ?",
+        "UPDATE notes SET x = ?, y = ?, width = ?, height = ?, rotation = ?, z_index = ? WHERE id = ?",
         x,
         y,
         width,
         height,
+        rotation,
+        z_index,
         id,
     )
     .execute(pool)
@@ -190,7 +195,7 @@ mod tests {
             .expect("create");
 
         assert!(
-            update_geometry(&pools.write, note.id, 5.0, 6.0, 20.0, 30.0)
+            update_geometry(&pools.write, note.id, 5.0, 6.0, 20.0, 30.0, 45.0, 7)
                 .await
                 .expect("update geometry")
         );
@@ -201,7 +206,7 @@ mod tests {
                 .expect("update content")
         );
         assert!(
-            !update_geometry(&pools.write, Uuid::now_v7(), 0.0, 0.0, 1.0, 1.0)
+            !update_geometry(&pools.write, Uuid::now_v7(), 0.0, 0.0, 1.0, 1.0, 0.0, 0)
                 .await
                 .expect("update missing")
         );
@@ -212,6 +217,8 @@ mod tests {
             .expect("exists");
         assert_f64_eq(fetched.x, 5.0);
         assert_f64_eq(fetched.height, 30.0);
+        assert_f64_eq(fetched.rotation, 45.0);
+        assert_eq!(fetched.z_index, 7);
         assert_eq!(fetched.content_json, new_content);
         assert!(fetched.updated_at >= note.updated_at);
     }

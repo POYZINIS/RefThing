@@ -1,0 +1,369 @@
+========================================================================
+REFTHING — INTERACTION CONVENTIONS
+A strict behavioral style guide. Not a suggestion document — every
+rule here is the specification. Deviating from it requires updating
+this file first, not the other way around.
+========================================================================
+
+PURPOSE
+--------------------------------------------------------------------
+This document defines exactly how the app behaves, pixel by pixel and
+state by state, for every interaction a user has with an item on the
+board. It exists so that "how should this feel" is never re-decided
+ad hoc while building a new feature or a new item type. If a new
+item type (video, 3D, audio, embed) needs interaction behavior not
+covered here, the behavior gets added HERE first, then implemented —
+never invented inline in a component.
+
+
+========================================================================
+SECTION 0 — GUIDING PRINCIPLES (non-negotiable)
+========================================================================
+1. Zero persistent per-item UI. An idle, unselected item shows no
+   chrome of any kind — no outline, no handles, no icons.
+2. Affordances reveal on hover or selection, never before. Nothing is
+   drawn "just in case the user needs it."
+3. Transform anchor points are always determined by which modifier
+   key is held, never by which handle the user grabbed. There is no
+   free-transform mode anywhere in the app.
+4. If an action is common, it is a mouse gesture. If it is rare, it
+   lives ONLY in the right-click context menu. There is no third
+   category — no toolbar buttons that duplicate a gesture, no
+   tooltips explaining a gesture inline.
+5. One visual convention per state. Two different indicators must
+   never compete to communicate the same thing at the same time.
+6. All hit-zone sizes are defined in screen-space pixels and stay
+   constant regardless of zoom level. Precision must not degrade as
+   boards scale to thousands of items at low zoom.
+7. These rules apply uniformly to every item type (image, note,
+   video, 3D model, audio, embed). Only the content rendered inside
+   an item differs by type (per the poster/live model) — the
+   selection/transform shell around it never does.
+
+
+========================================================================
+SECTION 1 — SELECTION & HOVER STATES (definitive state list)
+========================================================================
+Exactly these states exist. Nothing else.
+
+IDLE (unselected, not hovered)
+  Visual: nothing. No outline, no handles.
+  Cursor: default arrow.
+
+HOVERED (unselected, cursor over item body)
+  Visual: a single 1px outline at 40% opacity in the accent color.
+          This is the ONLY chrome allowed on an unselected item, and
+          it must disappear the instant the cursor leaves the item.
+  Cursor: grab (open hand / four-way move icon).
+
+SELECTED, cursor over body (not near an edge/corner)
+  Visual: solid 1.5px outline, full opacity, accent color. No handles
+          are drawn anywhere on the outline at this point.
+  Cursor: grab.
+
+SELECTED, cursor inside an edge hit-zone
+  Visual: outline unchanged EXCEPT the specific edge segment under the
+          cursor thickens to 2.5px for that segment only. No other
+          edge or corner shows any indicator.
+  Cursor: ns-resize (top/bottom edge) or ew-resize (left/right edge).
+
+SELECTED, cursor inside a corner hit-zone
+  Visual: a single 8x8px square handle appears at that corner only.
+          No other corner or edge shows a handle.
+  Cursor: nwse-resize (top-left/bottom-right) or nesw-resize
+          (top-right/bottom-left).
+
+DRAGGING (item move in progress)
+  Visual: solid outline persists, no handles, position updates live.
+  Cursor: grabbing (closed hand), locked for the duration of the drag
+          regardless of what's momentarily under the cursor.
+
+RESIZING (a handle was grabbed and drag has started)
+  Visual: outline updates live to the new bounds; only the handle
+          that was grabbed remains visible, full opacity.
+  Cursor: locked to that handle's resize cursor for the whole gesture,
+          even if the pointer temporarily crosses into another zone.
+
+ROTATING (Ctrl/Cmd held + drag, started anywhere on the item body)
+  Visual: outline rotates live around the determined pivot. No
+          handles are shown — rotation is not handle-based in this
+          app (see Section 3).
+  Cursor: rotate icon (custom cursor asset), locked for the gesture.
+
+EDITING (notes only — entered via double-click, see Section 4)
+  Visual: outline switches from solid to dashed for the duration of
+          editing. No handles can appear in this state under any
+          circumstance.
+  Cursor: text I-beam over the content area.
+
+MULTI-SELECTED (2+ items selected)
+  Visual: exactly ONE combined bounding box is drawn around the full
+          extent of the selection. Individual per-item outlines are
+          hidden. This is a hard rule: never render N outlines for N
+          selected items.
+  Handles: the same hover-reveal rule from above applies to the
+           combined box's 8 zones, not to each item individually.
+  Cursor: same rules as single selection, evaluated against the
+          combined box.
+
+
+========================================================================
+SECTION 2 — RIGID CONSTANTS
+========================================================================
+These are the canonical values. They may be tuned, but there must be
+exactly one source of truth for each (a shared constants module),
+never a value re-typed per component.
+
+  Edge hit-zone width ................... 8px   (screen space)
+  Corner hit-zone size ................... 10x10px (screen space)
+  Corner handle visual size .............. 8x8px
+  Hover outline opacity .................. 40%
+  Hover outline weight .................... 1px
+  Selected outline weight ................ 1.5px
+  Active edge-hover outline weight ....... 2.5px
+  Minimum on-screen item size before
+    collapsing to move-only (see below) .. 24x24px
+  Double-click timing ..................... browser default; do not
+                                             implement custom timing
+                                             logic for this.
+
+RULE — zone priority: where a corner hit-zone and an edge hit-zone
+would overlap, the corner zone always wins. There is no ambiguous
+state where both could apply.
+
+RULE — minimum size collapse: if an item's on-screen bounding box is
+smaller than the minimum size constant in either dimension, all 8
+transform zones are disabled for that item. Only move and rotate
+(Ctrl+drag) remain available. This exists specifically to prevent
+mis-hits on small thumbnails when zoomed out over a large board —
+do not remove this rule to "simplify" small-item interaction; it is
+the simplification.
+
+
+========================================================================
+SECTION 3 — THE 8 TRANSFORM ZONES (precise behavior per zone)
+========================================================================
+There are exactly 8 zones on a selected item's bounding box: 4
+corners (TL, TR, BL, BR) and 4 edge midpoints (Top, Bottom, Left,
+Right). A zone is only ever visible/interactive when BOTH of these
+are true: the item is selected, AND the cursor is currently inside
+that specific zone's hit area. No zone is ever shown pre-emptively.
+
+CORNER ZONES (default: scale from the opposite corner)
+  No modifier    -> scale from the opposite corner, free aspect off
+                    by default (aspect ratio is locked unless Shift
+                    is held — see below). This is corner-only
+                    behavior; it is still not "free transform" since
+                    the anchor is fixed to the opposite corner.
+  + Shift        -> unlock aspect ratio (allow non-proportional scale)
+  + Alt          -> scale from the item's center instead of the
+                    opposite corner; item does not move.
+  + Shift + Alt  -> scale from center, aspect ratio unlocked.
+
+EDGE ZONES (default: proportional scale, anchored to the opposite edge)
+  No modifier    -> scale proportionally (aspect ratio locked) even
+                    though the drag is on a single edge — dragging the
+                    bottom edge, for example, changes height directly
+                    from the cursor and recalculates width to match
+                    the same aspect ratio, anchored to the opposite
+                    edge. This matches the corner-zone default of
+                    aspect-locked scaling; edges are not a shortcut
+                    for stretching by default.
+  + Shift        -> stretch that single axis only (width for left/
+                    right edges, height for top/bottom edges),
+                    unlocking aspect ratio — the perpendicular axis
+                    does not change. This is the ONLY way to stretch
+                    a single axis from an edge; it does not happen by
+                    default.
+  + Alt          -> proportional scale from the item's center instead
+                    of the opposite edge; item does not move.
+  + Shift + Alt  -> stretch that single axis only, from the center
+                    instead of the opposite edge.
+  There is no diagonal drag behavior from an edge zone regardless of
+  modifiers — the drag axis (vertical for top/bottom, horizontal for
+  left/right) always determines which dimension the cursor directly
+  controls; the other dimension either follows proportionally (no
+  Shift) or stays fixed (with Shift).
+
+ROTATION (not a hover zone — a modifier over the whole item body)
+  Ctrl/Cmd + drag, starting anywhere on the item's body (not
+  restricted to a corner or edge) -> rotate around the item's center.
+  Ctrl/Cmd + Shift + drag         -> rotate, snapped to 45-degree
+                                     increments.
+  There is no visible rotate handle. This is intentional: rotation is
+  discovered the same way every other modifier is — by holding Ctrl
+  while already dragging — not by hunting for a handle.
+
+FLIP
+  Alt + Shift + drag, anywhere on the item body -> flip along the
+  drag axis. Also not handle-based.
+
+CONSTRAIN TO AXIS (move only, not resize)
+  Shift + drag on the item body (no other modifier) -> constrain
+  movement to a straight horizontal or vertical line, locked in on
+  whichever axis has the larger initial delta.
+
+RESET ASPECT RATIO (a click, not a drag — and not on a handle)
+  Alt + left click directly on the item's body (NOT on a corner or
+  edge handle) -> reset the item to a 1:1 aspect ratio while keeping
+  its current size fixed (the item's area/footprint does not change;
+  only the ratio of width to height snaps to square). This fires
+  immediately on click-up and never enters the Resizing state from
+  Section 1. Because the trigger point is the item body rather than a
+  handle, it must not interfere with, or be shadowed by, any of the
+  corner/edge hit-zone logic in this section — a click that lands
+  inside a handle's hit-zone is still resize territory and does not
+  trigger this action, even with Alt held.
+
+
+========================================================================
+SECTION 4 — NOTES / TEXT BOXES (move vs. edit, formalized)
+========================================================================
+RULE 1 — Single click, or click-and-drag, anywhere on a note (selected
+or not) always means select/move. This is identical to an image's
+behavior with zero special-casing based on where inside the note the
+click landed. There is no "click the border to move, click the
+middle to edit" distinction — the whole box is a normal draggable
+item for single-click purposes.
+
+RULE 2 — Double-click is the ONLY way to enter text editing. This
+mirrors the double-click convention already used elsewhere in the app
+(entering a locked group, zooming a selected image) rather than
+inventing a second interaction concept. There is no "click again
+while already selected" alternate entry path — double-click is the
+single, unambiguous trigger.
+
+RULE 3 — While in the Editing state (Section 1), the 8 transform
+zones are not just visually hidden, they are non-interactive. A click
+near what would normally be a corner/edge zone during editing is
+treated as a text-cursor placement, never as a resize attempt.
+
+RULE 4 — Exiting Editing happens on any of: click outside the note,
+Escape, or selecting a different item. On exit, the accumulated text
+edits since Editing began commit as a single undo entry (see the
+undo/redo conventions in the main project plan — never one undo
+entry per keystroke).
+
+RULE 5 — Resizing a note while NOT editing uses the exact same 8
+zones and modifier rules as an image. Text reflows to the new width;
+there is no separate "note resize mode."
+
+RULE 6 — Sizing/overflow: a note auto-grows vertically to fit its
+content up to a defined max height, then becomes internally
+scrollable. Width is fixed by the box and is only changed through the
+standard edge/corner zones (Rule 5), never by typing.
+
+RULE 7 — ALL text rendering in the app — note content, any future
+label or annotation surface — goes through the @chenglou/pretext
+rendering library, with no exceptions. Do not introduce a second text
+rendering path (e.g. a plain contenteditable div, or a different
+library) for any new text surface added later; extend pretext's usage
+instead. This keeps editing behavior (Rules 1-6 above) guaranteed
+consistent across every place text appears, including new item types
+added under Phase 11 of the project plan.
+
+
+========================================================================
+SECTION 5 — CURSOR REFERENCE TABLE (must match exactly)
+========================================================================
+  Idle / empty canvas .......................... default arrow
+  Hover over unselected item body ............... grab
+  Selected item, hover over body ................ grab
+  Dragging (item move in progress) .............. grabbing
+  Hover over top/bottom edge zone ............... ns-resize
+  Hover over left/right edge zone ............... ew-resize
+  Hover over top-left / bottom-right corner ..... nwse-resize
+  Hover over top-right / bottom-left corner ..... nesw-resize
+  Ctrl/Cmd held over a selected item's body ..... custom rotate icon
+  Editing a note (over the content area) ........ text (I-beam)
+  Panning (middle-mouse drag active) ............ grabbing
+  Dragging a file over the canvas (ingestion) ... copy
+  Right-click, no drag .......................... default arrow
+                                                    (context menu owns
+                                                    the visual, not
+                                                    the cursor)
+
+
+========================================================================
+SECTION 5B — CONTEXT MENU CONTENTS
+========================================================================
+Per Section 0, Rule 4: anything uncommon enough not to warrant its
+own gesture lives here, and ONLY here. This also includes actions
+that duplicate something reachable another way but are common enough
+to deserve a direct menu entry rather than forcing the user to recall
+a modifier combo — Duplicate is the canonical example: it does not
+get its own gesture, it lives in the menu.
+
+Minimum required entries (selection non-empty):
+  - Duplicate
+  - Group (multi-select) / Ungroup (a group)
+  - Lock / Unlock (groups — see Section 6, Rule 3)
+  - Delete
+  - Bring to Front / Send to Back
+  - Add Tag...
+  - Crop (images)
+  - Adjust Opacity
+
+Minimum required entries (right-click on empty canvas):
+  - Add Note
+  - Paste
+  - Zoom to Fit
+
+RULE — no entry in this menu may duplicate a gesture already defined
+in Sections 1-4 (e.g. there is no "Rotate" menu item, since Ctrl+drag
+already covers it). An item belongs in this menu specifically because
+it lacks a gesture, or because it's common enough to want a direct
+shortcut in addition to an existing gesture (Duplicate is the one
+explicit exception, called out above) — new entries should be
+justified against one of these two reasons before being added.
+
+
+========================================================================
+SECTION 6 — GROUPS
+========================================================================
+RULE 1 — Selecting a group selects it as a single unit. Exactly one
+bounding box is drawn around the group's full extent; the 8 transform
+zones apply to the group as a whole. Scaling a group scales every
+child proportionally from the same anchor the modifier keys
+determine (Section 3) — children never scale independently during a
+group-level transform.
+
+RULE 2 — Double-click on a group drills in and selects one child
+item under the cursor. Escape, or clicking empty canvas, exits back
+to group-level selection.
+
+RULE 3 — Locked groups cannot be moved, resized, or rotated at the
+group level, full stop — not even via modifier-key gestures. The
+ONLY interaction a locked group permits at its own level is
+double-click to drill into a child (drilling in does not unlock or
+alter the group itself). This is a hard rule, not a default that can
+be toggled per-gesture.
+
+
+========================================================================
+SECTION 7 — EXPLICITLY FORBIDDEN (guardrails against scope creep)
+========================================================================
+The following are not "not yet built" — they are intentionally
+excluded and should not be added without first revising this document
+and getting explicit sign-off that the underlying philosophy has
+changed:
+
+  - Permanently visible handle boxes on a selected item. Handles are
+    hover-reveal only, one at a time (Section 1).
+  - Free-drag, arbitrary-anchor resizing of any kind. The anchor is
+    always modifier-determined (Section 3).
+  - Toolbar buttons that duplicate any gesture already defined here.
+  - Tooltips on hover for common actions. If something needs an
+    inline explanation to be discoverable, it belongs in the
+    right-click context menu instead, where a text label is expected.
+  - Per-item-type differences in hit-zone sizing, cursor behavior, or
+    the 8-zone system. Only the LIVE-mode content (Phase 11 of the
+    project plan) may differ by item type — the interaction shell
+    around every item is identical regardless of whether it's an
+    image, note, video, 3D model, audio clip, or embed.
+  - Custom double-click timing logic. Use the platform's native
+    dblclick event; do not hand-roll timing thresholds.
+
+========================================================================
+END OF CONVENTIONS
+========================================================================

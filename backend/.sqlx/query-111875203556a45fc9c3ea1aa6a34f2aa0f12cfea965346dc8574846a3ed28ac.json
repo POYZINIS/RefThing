@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE notes SET x = ?, y = ?, width = ?, height = ?, rotation = ?, z_index = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "111875203556a45fc9c3ea1aa6a34f2aa0f12cfea965346dc8574846a3ed28ac"
+}

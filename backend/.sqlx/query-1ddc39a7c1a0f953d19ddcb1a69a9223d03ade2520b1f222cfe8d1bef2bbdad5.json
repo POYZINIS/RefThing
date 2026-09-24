@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", x, y, width, height, content_json AS \"content_json: serde_json::Value\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", updated_at AS \"updated_at: DateTime<Utc>\" FROM notes WHERE id = ?",
+  "query": "SELECT id AS \"id!: Uuid\", board_id AS \"board_id: Uuid\", x, y, width, height, rotation, z_index, content_json AS \"content_json: serde_json::Value\", bg_color, opacity AS \"opacity!\", created_at AS \"created_at: DateTime<Utc>\", updated_at AS \"updated_at: DateTime<Utc>\" FROM notes WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -34,28 +34,38 @@
         "type_info": "Float"
       },
       {
-        "name": "content_json: serde_json::Value",
+        "name": "rotation",
         "ordinal": 6,
+        "type_info": "Float"
+      },
+      {
+        "name": "z_index",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "content_json: serde_json::Value",
+        "ordinal": 8,
         "type_info": "Text"
       },
       {
         "name": "bg_color",
-        "ordinal": 7,
-        "type_info": "Text"
-      },
-      {
-        "name": "opacity!",
-        "ordinal": 8,
-        "type_info": "Float"
-      },
-      {
-        "name": "created_at: DateTime<Utc>",
         "ordinal": 9,
         "type_info": "Text"
       },
       {
-        "name": "updated_at: DateTime<Utc>",
+        "name": "opacity!",
         "ordinal": 10,
+        "type_info": "Float"
+      },
+      {
+        "name": "created_at: DateTime<Utc>",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at: DateTime<Utc>",
+        "ordinal": 12,
         "type_info": "Text"
       }
     ],
@@ -70,11 +80,13 @@
       false,
       false,
       false,
+      false,
+      false,
       true,
       false,
       false,
       false
     ]
   },
-  "hash": "edf63453247ee8029435ee68f3cfcd605e72a6b1c74cd9ed63dc447dbc36fa48"
+  "hash": "1ddc39a7c1a0f953d19ddcb1a69a9223d03ade2520b1f222cfe8d1bef2bbdad5"
 }

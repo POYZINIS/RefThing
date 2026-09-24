@@ -6,11 +6,15 @@
 //! rayon pool bridged to tokio via oneshot channels.
 
 mod generate;
+mod palette;
 mod pool;
 
 use std::path::PathBuf;
 
 pub use generate::generate_pyramid;
+pub use palette::{
+    ImageMetadata, dominant_colors, extract_image_metadata, hamming_distance, phash,
+};
 pub use pool::ResizePool;
 
 /// Decompression-bomb guard: decoded images above this pixel count are

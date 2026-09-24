@@ -243,6 +243,10 @@ pub struct NewNote {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    #[serde(default)]
+    pub rotation: f64,
+    #[serde(default)]
+    pub z_index: i64,
     #[serde(default = "empty_content")]
     pub content_json: Value,
     pub bg_color: Option<String>,
@@ -261,6 +265,8 @@ pub struct NotePatch {
     pub y: Option<f64>,
     pub width: Option<f64>,
     pub height: Option<f64>,
+    pub rotation: Option<f64>,
+    pub z_index: Option<i64>,
     pub content_json: Option<Value>,
     #[serde(deserialize_with = "services::double_option")]
     pub bg_color: Option<Option<String>>,
@@ -274,6 +280,8 @@ impl NotePatch {
             && self.y.is_none()
             && self.width.is_none()
             && self.height.is_none()
+            && self.rotation.is_none()
+            && self.z_index.is_none()
             && self.content_json.is_none()
             && self.bg_color.is_none()
             && self.opacity.is_none()
@@ -468,8 +476,8 @@ pub async fn create_note(
 
     let id = Uuid::now_v7();
     let note = sqlx::query_as::<_, models::Note>(
-        "INSERT INTO notes (id, board_id, x, y, width, height, content_json, bg_color, opacity) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 1.0)) RETURNING *",
+        "INSERT INTO notes (id, board_id, x, y, width, height, rotation, z_index, content_json, bg_color, opacity) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 1.0)) RETURNING *",
     )
     .bind(id)
     .bind(board_id)
@@ -477,6 +485,8 @@ pub async fn create_note(
     .bind(new.y)
     .bind(new.width)
     .bind(new.height)
+    .bind(new.rotation)
+    .bind(new.z_index)
     .bind(&new.content_json)
     .bind(new.bg_color.as_deref())
     .bind(new.opacity)
@@ -501,6 +511,7 @@ pub async fn update_note(
         "UPDATE notes SET \
              x = COALESCE(?, x), y = COALESCE(?, y), \
              width = COALESCE(?, width), height = COALESCE(?, height), \
+             rotation = COALESCE(?, rotation), z_index = COALESCE(?, z_index), \
              content_json = COALESCE(?, content_json), opacity = COALESCE(?, opacity) \
          WHERE id = ? AND board_id = ?",
     )
@@ -508,6 +519,8 @@ pub async fn update_note(
     .bind(patch.y)
     .bind(patch.width)
     .bind(patch.height)
+    .bind(patch.rotation)
+    .bind(patch.z_index)
     .bind(patch.content_json.clone())
     .bind(patch.opacity)
     .bind(note_id)

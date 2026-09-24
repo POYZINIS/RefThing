@@ -69,7 +69,7 @@ pub fn generate_pyramid(
 /// Decodes `path` to 8-bit RGBA with EXIF orientation applied. Animated
 /// formats (GIF) contribute their first frame only. Color profiles are
 /// ignored (v1; documented minor color-shift risk on wide-gamut sources).
-fn decode_normalized(path: &Path) -> Result<RgbaImage, PipelineError> {
+pub(crate) fn decode_normalized(path: &Path) -> Result<RgbaImage, PipelineError> {
     let mut reader = ImageReader::open(path)?.with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(MAX_PIXELS.saturating_mul(4)); // worst case RGBA8

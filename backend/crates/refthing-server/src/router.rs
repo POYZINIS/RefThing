@@ -30,6 +30,9 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::groups::router())
         .merge(routes::notes::router())
         .merge(routes::tags::router())
+        .merge(routes::views::router())
+        .merge(routes::search::router())
+        .merge(routes::snapshots::router())
         .layer(CompressionLayer::new())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -69,10 +72,47 @@ async fn health(
         sqlx::query_as("SELECT COUNT(*) FROM jobs WHERE status = 'failed'")
             .fetch_one(&state.pools.read)
             .await?;
+
+    // Blob integrity check: sample up to 16 random blobs and verify each
+    // on-disk file's SHA-256 matches the stored hash. Full scan is too slow
+    // for a health endpoint; 16 gives reasonable coverage with <50ms latency.
+    let total_blobs: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM blobs")
+        .fetch_one(&state.pools.read)
+        .await?;
+    let sampled: Vec<(String,)> =
+        sqlx::query_as("SELECT hash FROM blobs ORDER BY RANDOM() LIMIT 16")
+            .fetch_all(&state.pools.read)
+            .await?;
+
+    let mut verified = 0u64;
+    let mut corrupted = 0u64;
+    let mut missing = 0u64;
+    for (hash,) in &sampled {
+        use sha2::{Digest, Sha256};
+        match tokio::fs::read(state.blob_store.path(hash)).await {
+            Ok(bytes) => {
+                let actual = format!("{:x}", Sha256::digest(&bytes));
+                if &actual == hash {
+                    verified += 1;
+                } else {
+                    corrupted += 1;
+                }
+            }
+            Err(_) => missing += 1,
+        }
+    }
+
     Ok(axum::Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
         "pending_jobs": pending_jobs,
         "failed_jobs": failed_jobs,
+        "blob_integrity": {
+            "total_blobs": total_blobs.0,
+            "sampled": sampled.len(),
+            "verified": verified,
+            "corrupted": corrupted,
+            "missing": missing,
+        },
     })))
 }

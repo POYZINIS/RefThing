@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 refthing-core = { path = "../refthing-core" }
+sha2.workspace = true
 tokio.workspace = true
 # `ws` feature: axum gates `extract::ws` (WebSocketUpgrade/Message) behind it;
 # the /api/boards/{id}/ws endpoint cannot exist without it. `multipart` is for

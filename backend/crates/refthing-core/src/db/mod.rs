@@ -11,6 +11,7 @@ pub mod groups;
 pub mod items;
 pub mod notes;
 pub mod tags;
+pub mod views;
 
 use std::path::Path;
 use std::time::Duration;
@@ -22,11 +23,36 @@ use crate::error::CoreError;
 
 const MAX_READ_CONNECTIONS: u32 = 8;
 
+/// How often the WAL checkpoint background task runs.
+const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Read/write connection pools enforcing SQLite's single-writer discipline.
 #[derive(Debug, Clone)]
 pub struct Pools {
     pub read: SqlitePool,
     pub write: SqlitePool,
+}
+
+/// Spawns a background task that periodically runs `PRAGMA wal_checkpoint`,
+/// keeping the WAL file bounded. `wal_autocheckpoint` already fires at
+/// 1000 pages, but an ongoing stream of small writes may keep the WAL from
+/// ever hitting the threshold on a quiet board — this guarantees a bounded
+/// WAL regardless of write pattern.
+///
+/// The loop is a passive checkpoint (`WAL_CHECKPOINT_PASSIVE`), which never
+/// blocks readers/writers and simply flushes committed frames when it can.
+/// The task aborts when the write pool is closed (server shutdown).
+#[must_use]
+pub fn spawn_checkpoint_task(pools: Pools) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(CHECKPOINT_INTERVAL);
+        loop {
+            interval.tick().await;
+            let _ = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+                .execute(&pools.write)
+                .await;
+        }
+    })
 }
 
 /// Opens (creating if needed) the database at `path`, applies all embedded

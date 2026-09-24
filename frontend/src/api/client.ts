@@ -43,6 +43,8 @@ export interface Note {
   y: number;
   width: number;
   height: number;
+  rotation: number;
+  z_index: number;
   content_json: unknown;
   bg_color: string | null;
   opacity: number;
@@ -72,13 +74,28 @@ export interface BlobInfo {
   levels: Record<string, { width: number; height: number }>;
 }
 
+export interface Tag {
+  id: string;
+  name: string;
+  color: string | null;
+}
+
+export interface BoardView {
+  id: string;
+  board_id: string;
+  name: string;
+  viewport: unknown;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface BoardSnapshot {
   board: Board;
   seq: number;
   items: Item[];
   groups: Group[];
   notes: Note[];
-  tags: unknown[];
+  tags: Tag[];
   item_tags: Record<string, string[]>;
   blobs: BlobInfo[];
 }
@@ -148,6 +165,9 @@ async function request<T>(input: RequestInfo | URL, init?: RequestInit): Promise
     }
     throw new Error(message);
   }
+  if (response.status === 204) {
+    return undefined as T;
+  }
   return (await response.json()) as T;
 }
 
@@ -161,6 +181,84 @@ export function createSession(): Promise<{ user_id: string; token: string }> {
 
 export function listBoards(): Promise<BoardSummary[]> {
   return request<BoardSummary[]>('/api/boards');
+}
+
+/** List all tags (global, not board-scoped). */
+export function listTags(): Promise<Tag[]> {
+  return request<Tag[]>('/api/tags');
+}
+
+export function createTag(name: string, color?: string | null): Promise<Tag> {
+  return request<Tag>('/api/tags', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, color: color ?? null }),
+  });
+}
+
+export function updateTag(
+  tagId: string,
+  patch: { name?: string; color?: string | null },
+): Promise<Tag> {
+  return request<Tag>(`/api/tags/${tagId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deleteTag(tagId: string): Promise<void> {
+  return request<void>(`/api/tags/${tagId}`, { method: 'DELETE' });
+}
+
+/** List saved views for a board (Phase 6). */
+export function listViews(boardId: string): Promise<BoardView[]> {
+  return request<BoardView[]>(`/api/boards/${boardId}/views`);
+}
+
+export function createView(boardId: string, name: string, viewport: unknown): Promise<BoardView> {
+  return request<BoardView>(`/api/boards/${boardId}/views`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, viewport }),
+  });
+}
+
+export function renameView(boardId: string, viewId: string, name: string): Promise<BoardView> {
+  return request<BoardView>(`/api/boards/${boardId}/views/${viewId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteView(boardId: string, viewId: string): Promise<void> {
+  return request<void>(`/api/boards/${boardId}/views/${viewId}`, { method: 'DELETE' });
+}
+
+/** A single FTS5 full-text search result (Phase 6). */
+export interface SearchResult {
+  item_id: string;
+  rank: number;
+  snippet: string;
+  kind: 'filename' | 'note' | 'tag' | 'colour' | 'duplicate';
+}
+
+/** Full-text search a board (Phase 6 FTS5). */
+export function searchBoard(boardId: string, query: string): Promise<SearchResult[]> {
+  return request<SearchResult[]>(`/api/boards/${boardId}/search?q=${encodeURIComponent(query)}`);
+}
+
+/** Colour search — find items with matching dominant colour (Phase 6). */
+export function searchColour(boardId: string, hex: string): Promise<SearchResult[]> {
+  return request<SearchResult[]>(
+    `/api/boards/${boardId}/search-colour?colour=${encodeURIComponent(hex)}`,
+  );
+}
+
+/** Find perceptual-hash duplicates on a board (Phase 6). */
+export function findDuplicates(boardId: string): Promise<SearchResult[]> {
+  return request<SearchResult[]>(`/api/boards/${boardId}/duplicates`);
 }
 
 export function createBoard(name: string): Promise<Board> {
@@ -197,7 +295,15 @@ export function createGroup(boardId: string, name: string): Promise<{ group: Gro
 export function updateNote(
   boardId: string,
   noteId: string,
-  patch: { content_json?: unknown; x?: number; y?: number; width?: number; height?: number },
+  patch: {
+    content_json?: unknown;
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    rotation?: number;
+    z_index?: number;
+  },
 ): Promise<{ note: Note }> {
   return request<{ note: Note }>(`/api/boards/${boardId}/notes/${noteId}`, {
     method: 'PATCH',

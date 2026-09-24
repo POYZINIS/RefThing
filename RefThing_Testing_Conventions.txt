@@ -1,0 +1,368 @@
+========================================================================
+REFTHING — CANVAS TESTING CONVENTIONS
+Rules for how automated/bot testing must exercise canvas interactions.
+Like the interaction conventions, this is a specification, not a
+suggestion: a test suite that only does point-A-to-point-B jumps is
+not considered compliant, even if it passes.
+========================================================================
+
+PURPOSE
+--------------------------------------------------------------------
+A bot that grabs an item and moves it in a single straight jump only
+ever exercises two coordinates: start and end. It will never catch a
+bug in continuous delta accumulation, screen-to-world conversion
+drift, threshold/zone math, or angle wraparound — all of which only
+show up mid-gesture, across many intermediate frames. This document
+defines the canonical motion patterns every test must use instead,
+so "the bot tested dragging" means something specific and repeatable.
+
+
+========================================================================
+SECTION 0 — GUIDING PRINCIPLES
+========================================================================
+1. Every gesture test is a SAMPLED PATH, not a jump. A test drives a
+   pointer/camera through a parametric function sampled at a fixed
+   interval, dispatching one synthetic pointermove per sample — the
+   same way a real user's input arrives, not as a single teleport.
+2. A straight-line, two-point test is never sufficient BY ITSELF for
+   any gesture type. It may exist as a baseline sanity check, but the
+   patterns in Section 1 are mandatory in addition to it.
+3. Assertions run per-sample where relevant, not only on the final
+   frame. A bug that appears for one frame in the middle of a gesture
+   and self-corrects by the end must still fail the test.
+4. This suite applies uniformly across every item type (image, note,
+   video, 3D model, audio, embed), per Section 0 Rule 7 of the
+   interaction conventions — the transform shell is identical
+   regardless of content, so the same tests must be run against all
+   of them, not just images.
+5. Every one of the 8 transform zones (Section 3 of the interaction
+   conventions) is tested individually — never only "one corner and
+   assume the rest behave the same."
+
+
+========================================================================
+SECTION 1 — CANONICAL MOTION PRIMITIVES (parametric, exact formulas)
+========================================================================
+These are the reference implementations. Different test files must
+use the SAME formulas, not independently-invented "figure 8"s, so
+results are comparable across the suite.
+
+FIGURE-8 PATH (used for: item drag, camera pan)
+  x(t) = centerX + amplitudeX * sin(t)
+  y(t) = centerY + amplitudeY * sin(t) * cos(t)      [== sin(2t)/2 form]
+  t sweeps 0 -> 2*PI for one full loop.
+  Required variants:
+    - 1 loop  at "slow" speed  (~2000ms total duration)
+    - 1 loop  at "fast" speed  (~200ms total duration)
+    - 3 consecutive loops, no pause between them (tests sustained
+      continuous dragging, not just a single gesture)
+  Applies to:
+    - ITEM DRAG: pointer follows the figure-8 while holding the item;
+      assert the item's position tracks the path's displacement
+      exactly (see Section 4).
+    - CAMERA PAN: middle-mouse (or pan gesture) follows the figure-8;
+      assert the viewport/camera offset tracks it, and that item
+      screen-positions remain visually consistent with the camera
+      transform at every sampled frame (catches transform-utility
+      drift between the renderer and the input layer).
+
+SINE-WAVE HANDLE PATH (used for: resize, all 8 zones)
+  Let "primary axis" be the axis a given zone is defined to control
+  per Section 3 of the interaction conventions (both axes for a
+  corner; a single axis for an edge). Let "off axis" be the other one.
+
+  primaryAxisValue(t)   = lerp(startDelta, endDelta, t / T)
+  offAxisOscillation(t) = oscillationAmplitude
+                           * sin(2 * PI * oscillationFrequency * t)
+
+  CORNER ZONES: apply the oscillation as a perpendicular wobble
+  around the straight-line diagonal path toward the target corner
+  delta — both x and y ramp linearly toward the target, with the
+  wobble superimposed on the axis perpendicular to that diagonal.
+  This stresses whether corner-scale math stays correct under noisy,
+  non-linear cursor input, not just a clean diagonal drag.
+
+  EDGE ZONES: apply the oscillation ALONG the edge (the axis the zone
+  is defined to ignore), while the controlling axis ramps linearly.
+  This is the deliberate stress test for interaction-conventions
+  Section 3's rule that edge zones "never affect the perpendicular
+  axis" — a passing test must show ZERO effect on that dimension
+  even though the input path is actively wobbling across it.
+
+  Required variants, run against EVERY zone and EVERY modifier
+  combination defined for that zone in the interaction conventions
+  (no modifier, Shift, Alt, Shift+Alt):
+    - oscillationFrequency: 1 full oscillation over the gesture, and
+      4 full oscillations over the gesture (tests both a lazy wobble
+      and a rapid one)
+    - a variant that drags the item below the minimum-size threshold
+      (24x24px on-screen) partway through, then back above it —
+      asserts the zone correctly disables/re-enables per interaction
+      conventions Section 2, without getting stuck in the collapsed
+      move-only state
+
+ROTATION SWEEP (used for: Ctrl/Cmd + drag rotate)
+  angle(t) = startAngle + (t / T) * totalSweep
+  Required totalSweep values, each run in both directions (CW/CCW):
+    +90deg, +180deg, +270deg, +360deg (one full revolution),
+    +720deg (two full revolutions, tests angle accumulation doesn't
+    reset or wrap incorrectly at the 360 boundary)
+  Required snap variant: Ctrl+Shift held throughout a +360deg sweep,
+  with an explicit sample and assertion AT each 45-degree increment
+  (0, 45, 90, ... 360) confirming the rendered angle snaps exactly to
+  that increment at the moment the sweep crosses it, not just
+  somewhere nearby.
+  Required reversal variant: sweep +180deg, then immediately reverse
+  and sweep -180deg within the same held gesture (mid-drag direction
+  change) — tests that angle tracking responds live rather than
+  reading direction only once at gesture start.
+
+
+========================================================================
+SECTION 2 — EVENT SAMPLING & DISPATCH RULES
+========================================================================
+1. Default sample interval: 16ms (60 samples/sec), matching real
+   browser pointermove frequency.
+2. Minimum sample count floor: regardless of gesture duration, dispatch
+   at least 30 samples. A 200ms "fast" gesture at 16ms intervals only
+   yields ~12 samples — pad up to the floor by increasing frequency
+   for short-duration tests rather than skipping resolution.
+3. Each sample dispatches a real synthetic pointermove (or the
+   framework's equivalent) with the sample's coordinates — never a
+   batch of positions applied as one state update. The test must
+   exercise the same event-handling code path production input does.
+4. Modifier key state (Shift/Alt/Ctrl) is sampled and re-applied
+   per-frame during a gesture, not only read once at gesture start —
+   tests must include at least one variant per gesture type where a
+   modifier is pressed or released mid-gesture, to confirm behavior
+   updates live. If the current implementation only reads modifiers
+   at gesture start, that is a finding to report against the
+   interaction conventions, not a reason to weaken this rule.
+
+
+========================================================================
+SECTION 2B — MOUSE INPUT SPECIFICATION (exact events, buttons, codes)
+========================================================================
+Tests must be built on PointerEvent (pointerdown / pointermove /
+pointerup / pointercancel), not the legacy MouseEvent family, since
+Pointer Events are what the actual app listens for and carry the
+`button`/`buttons` fields tests need to set precisely. Every gesture
+in Section 3 maps to one of the following canonical event sequences —
+use these, don't approximate them.
+
+BUTTON CODES (on pointerdown/pointerup, the `button` field)
+  0 = left / primary button
+  1 = middle / auxiliary button
+  2 = right / secondary button
+
+BUTTONS BITMASK (on pointermove, the `buttons` field — must be set
+correctly on every move sample, not just down/up, since production
+code may check it mid-gesture)
+  1 = left button currently held
+  2 = right button currently held
+  4 = middle button currently held
+  Combine with bitwise OR if a test intentionally checks multi-button
+  behavior (not required by default, but must not be accidentally 0
+  during a held drag — this is a common synthetic-event mistake that
+  produces false passes because the handler silently no-ops).
+
+MODIFIER FIELDS (booleans on every dispatched event, not just the
+first one of a gesture)
+  event.shiftKey — Shift
+  event.altKey   — Alt / Option
+  event.ctrlKey  — Ctrl (Windows/Linux primary modifier)
+  event.metaKey  — Cmd (Mac primary modifier)
+  Wherever this document or the interaction conventions say
+  "Ctrl/Cmd," the test harness must run the platform-appropriate one
+  (ctrlKey on Windows/Linux targets, metaKey on Mac targets) — never
+  both set simultaneously, since a real user only ever presses one.
+
+POINTER IDENTITY
+  Use a single consistent pointerId for every event within one
+  gesture (e.g. 1 for the first concurrent pointer under test). This
+  matters because setPointerCapture/releasePointerCapture logic in
+  the app keys off pointerId — a test that varies it mid-gesture is
+  not exercising the real capture path.
+
+CANONICAL EVENT SEQUENCES PER GESTURE
+  Item drag (MOVE)
+    pointerdown  { button: 0, buttons: 1, target: item, no modifiers }
+    pointermove* { buttons: 1, coordinates per Section 1 path }
+    pointerup    { button: 0, buttons: 0 }
+
+  Box select (drag on empty canvas)
+    pointerdown  { button: 0, buttons: 1, target: empty canvas }
+    pointermove* { buttons: 1 }
+    pointerup    { button: 0, buttons: 0 }
+
+  Pan
+    pointerdown  { button: 1, buttons: 4, target: canvas }
+    pointermove* { buttons: 4, coordinates per Section 1 figure-8 }
+    pointerup    { button: 1, buttons: 0 }
+
+  Context menu (no drag)
+    pointerdown  { button: 2, buttons: 2, target: item or canvas }
+    pointerup    { button: 2, buttons: 0 } — total movement between
+                   down and up must stay under 3px, else the test is
+                   exercising "move window" instead (see below), not
+                   the context menu
+    contextmenu  dispatched natively following the above; assert the
+                   app's menu opens rather than the browser's default
+
+  Move window (right-click drag)
+    pointerdown  { button: 2, buttons: 2 }
+    pointermove* { buttons: 2, movement past the 3px threshold }
+    pointerup    { button: 2, buttons: 0 }
+    NOTE: this gesture manipulates the OS-level application window,
+    which is only meaningful if RefThing ships wrapped in a native
+    shell (e.g. Electron/Tauri) with a custom frameless title bar. In
+    a plain browser tab there is no window to move via DOM events.
+    Flag this test as platform-conditional rather than assuming it
+    applies — confirm which deployment target is in scope before
+    writing an assertion for it, since a browser-tab build should
+    likely reassign or omit this gesture rather than silently no-op.
+
+  Resize (corner/edge zones)
+    pointerdown  { button: 0, buttons: 1, target: handle hit-zone
+                   coordinates, modifiers per the variant under test }
+    pointermove* { buttons: 1, modifiers held constant OR toggled
+                   mid-gesture per Section 2 Rule 4, coordinates per
+                   Section 1 sine-wave path }
+    pointerup    { button: 0, buttons: 0 }
+
+  Rotate
+    pointerdown  { button: 0, buttons: 1, ctrlKey (or metaKey): true,
+                   target: item body, NOT a handle }
+    pointermove* { buttons: 1, ctrlKey/metaKey: true throughout,
+                   shiftKey: true for the snap variant,
+                   coordinates per Section 1 rotation sweep }
+    pointerup    { button: 0, buttons: 0 }
+
+  Flip
+    pointerdown  { button: 0, buttons: 1, altKey: true, shiftKey:
+                   true, target: item body }
+    pointermove* { buttons: 1, altKey + shiftKey: true throughout }
+    pointerup    { button: 0, buttons: 0 }
+
+  Reset aspect ratio (Alt + click, not a drag)
+    Dispatch as a native `click` event with altKey: true, target:
+    item body, explicitly OUTSIDE any handle hit-zone. Total movement
+    between the underlying pointerdown and pointerup must stay under
+    a 3px epsilon to register as a click rather than a drag — do not
+    hand-roll a separate timing/threshold system for this; rely on
+    the same near-zero-movement definition already used for the
+    context-menu-vs-move-window distinction above, so there is one
+    consistent "what counts as a click" rule across the whole app,
+    not a different one per gesture.
+
+  Double-click (note edit entry, zoom, drill into group)
+    Dispatch as a native `dblclick` event, button: 0, no modifiers,
+    per the existing rule against hand-rolled timing logic.
+
+  pointerType
+    Set pointerType: 'mouse' explicitly on every event in this
+    document's tests. Touch and pen input equivalence is out of scope
+    here and would need its own conventions pass if/when the app
+    supports those input types.
+
+
+========================================================================
+SECTION 3 — REQUIRED TEST MATRIX
+========================================================================
+For EVERY item type, the following must all be present in the suite:
+
+  MOVE
+    - straight-line baseline (sanity check only, not sufficient alone)
+    - figure-8, slow / fast / 3-loop (Section 1)
+    - rapid direction reversal mid-drag
+    - drag that crosses the visible viewport boundary
+    - drag performed at 25%, 100%, and 400% zoom levels (catches
+      screen-to-world conversion bugs that only appear off 100%)
+
+  PAN
+    - figure-8 pan, slow / fast (Section 1)
+    - pan to the extreme edge of the board's practical bounds
+    - pan, release, then immediately pan again in the opposite
+      direction (no pause between gestures)
+
+  RESIZE (all 8 zones, all modifier combinations per zone)
+    - sine-wave handle path, both oscillation frequencies (Section 1)
+    - minimum-size collapse boundary crossing (Section 1)
+    - resize performed at 25%, 100%, and 400% zoom levels
+    - Alt+click reset-to-1:1 on the item body, confirmed it does NOT
+      fire when the click lands inside a handle's hit-zone instead
+      (per interaction conventions' explicit carve-out)
+
+  ROTATE
+    - +90, +180, +270, +360, +720 degree sweeps, both directions
+    - Ctrl+Shift 45-degree snap sweep with per-increment assertions
+    - mid-gesture direction reversal
+
+  FLIP
+    - Alt+Shift+drag along both the horizontal and vertical axis
+
+  NOTES SPECIFICALLY
+    - double-click entry into Editing from every prior state (Idle,
+      Hovered, Selected)
+    - confirm the 8 zones are non-interactive (not just invisible)
+      while Editing, by attempting a resize-path drag on a would-be
+      handle location during Editing and asserting no resize occurs
+    - exit Editing via each of the three defined paths (click
+      outside, Escape, selecting a different item) and confirm a
+      single coalesced undo entry per session, not one per keystroke
+
+  GROUPS
+    - group-level resize/rotate scales all children proportionally
+      from the same anchor as a single-item transform would
+    - locked group: confirm move/resize/rotate are all rejected at
+      the group level, while double-click-to-drill-in still works
+
+
+========================================================================
+SECTION 4 — ASSERTIONS (pass/fail criteria)
+========================================================================
+1. MOVE/PAN: assert the final position matches the path's total
+   displacement. ADDITIONALLY assert that no intermediate sampled
+   frame ever places the item/camera outside the path's expected
+   envelope — this is what catches a mid-gesture "teleport" bug that
+   a final-position-only check would miss entirely.
+2. RESIZE: assert the correct axis/anchor behavior holds at EVERY
+   sampled frame, not just the last one. For default (no-modifier)
+   edge/corner behavior, assert aspect ratio stays within a tight
+   tolerance (e.g. 0.5%) across all samples. For an edge zone under
+   the along-edge sine wobble, assert the ignored dimension's value
+   is bit-for-bit unchanged across every sample.
+3. ROTATE: assert monotonic angle accumulation across multi-revolution
+   sweeps (no discontinuous jump at the 360-degree boundary). Assert
+   snap increments land within a small epsilon (e.g. 0.1 degree) of
+   the exact 45-degree multiple at the sampled crossing frame.
+4. Any assertion failure must report the failing sample index and
+   timestamp within the gesture, not just "test failed" — since the
+   entire point of sampled testing is to localize mid-gesture bugs.
+
+
+========================================================================
+SECTION 5 — EXPLICITLY FORBIDDEN (guardrails against weak coverage)
+========================================================================
+  - A gesture type is never considered "tested" by a straight-line or
+    single-jump case alone. Section 1's curved/multi-sample patterns
+    are mandatory in addition, not optional extras.
+  - No test may apply a full state change in one synthetic event when
+    the corresponding real interaction would naturally span multiple
+    frames (i.e. no faking a drag with a single pointerdown+pointerup
+    pair and no pointermove samples in between).
+  - No skipping the modifier-combination matrix for resize "because
+    it's the same math as the corner case" — edges and corners have
+    different anchor rules per the interaction conventions and must
+    be verified independently, per zone.
+  - No asserting only the final frame of a gesture when Section 4
+    calls for per-sample assertions.
+  - No writing a new ad hoc motion pattern for a specific test when
+    an existing Section 1 primitive already covers the need — reuse
+    the canonical formulas so results stay comparable across the
+    suite; extend this document first if a genuinely new pattern is
+    needed.
+
+========================================================================
+END OF TESTING CONVENTIONS
+========================================================================
