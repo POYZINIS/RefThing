@@ -23,6 +23,7 @@ import {
 } from '@/canvas/nodes/adapters';
 import { noteText } from '@/canvas/nodes/noteText';
 import type { CanvasNode, NodeChange, NodePatch } from '@/canvas/nodes/types';
+import { CameraBound, renderedCamera } from '@/canvas/renderedCamera';
 import { BoardContextMenu } from '@/components/BoardContextMenu';
 import BoardViewManager from '@/components/BoardViewManager';
 import { DrawingOverlay } from '@/components/DrawingOverlay';
@@ -126,11 +127,9 @@ function BoardApp() {
   // Live canvas-controller drag positions. The canvas already paints these
   // (it mutates its nodes in place), so they feed DOM chrome only.
   const [dragPreview, setDragPreview] = useState<Record<string, NodePatch>>({});
-  // Target camera (saves, view manager) vs the eased camera Pixi painted this
-  // frame — every DOM overlay positions from the latter so it never runs
-  // ahead of the canvas.
+  // Target camera (saves, view manager). DOM overlays never read this: they
+  // follow the camera Pixi painted (canvas/renderedCamera.ts).
   const [viewport, setViewport] = useState<ViewportState>({ x: 0, y: 0, zoom: 1 });
-  const [overlayViewport, setOverlayViewport] = useState<ViewportState>({ x: 0, y: 0, zoom: 1 });
   const [grayscale, setGrayscale] = useState(false);
   const [drawing, setDrawing] = useState(false);
   const [sampledColor, setSampledColor] = useState<string | null>(null);
@@ -151,11 +150,6 @@ function BoardApp() {
   const socket = useRef<BoardSync | null>(null);
   const batchQueue = useRef<BatchQueue | null>(null);
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Set by the canvas pan handler via onViewportChange so we know the
-  // viewport is being driven by user panning.  The snapshot sync effect
-  // must NOT overwrite it, or DOM overlays (notes) will snap back on
-  // every WebSocket heartbeat during a pan.
-  const panViewportRef = useRef(false);
   const clientId = useRef(crypto.randomUUID());
   const commitItemChange = useRef<(itemId: string, patch: ItemPatch) => void>(() => undefined);
   const commitItemChanges = useRef<(changes: NodeChange[]) => void>(() => undefined);
@@ -318,10 +312,10 @@ function BoardApp() {
     if (!canvasHost.current) return;
     const canvas = new BoardCanvas({
       onViewportChange: (viewport, source) => {
-        setViewport(viewport);
-        // Flag snapshot sync to skip during pan — the canvas is driving
-        // the viewport and we must not overwrite it mid-gesture.
-        if (source === 'pan') panViewportRef.current = true;
+        // The target camera is only read by saves and the view manager, so a
+        // pan updates it once on release instead of re-rendering per move
+        // (overlays follow the rendered camera, not this).
+        if (source !== 'pan') setViewport(viewport);
         if (viewportSaveTimer.current) clearTimeout(viewportSaveTimer.current);
         viewportSaveTimer.current = setTimeout(() => {
           void saveViewport(viewport);
@@ -331,7 +325,7 @@ function BoardApp() {
       // with this camera, so the DOM chrome must commit before the same paint
       // — a normally-scheduled update lands a frame late and the outline
       // trails the canvas while easing.
-      onRenderedViewportChange: (rendered) => flushSync(() => setOverlayViewport(rendered)),
+      onRenderedViewportChange: (rendered) => flushSync(() => renderedCamera.set(rendered)),
       onSelectionChange: (nodeId) => {
         // Selecting outside the drilled group leaves it.
         if (!nodeId || groupOfRef.current(nodeId) !== drillRef.current) setDrillGroupId(null);
@@ -413,17 +407,19 @@ function BoardApp() {
     return () => window.removeEventListener('paste', onPaste);
   }, [ingest]);
 
+  // Restore a board's saved camera ONCE, when it opens. The saved value only
+  // flows the other way afterwards: every debounced save echoes back into
+  // snapshot.board, and re-applying that echo snapped the eased camera (and
+  // jumped it backwards if the user kept panning during the round trip).
+  const cameraRestoredFor = useRef<string | null>(null);
+  const openedBoard = snapshot?.board;
   useEffect(() => {
-    boardCanvas.current?.setViewport(asViewport(snapshot?.board.viewport_state));
-    // Keep the React viewport in sync so DOM overlays (notes) position
-    // correctly from the very first paint after a board opens.
-    // Skip when the viewport is being driven by panning — the pan handler
-    // already calls setViewport and we must not clobber it.
-    if (snapshot?.board.viewport_state && !panViewportRef.current) {
-      setViewport(asViewport(snapshot.board.viewport_state));
-    }
-    panViewportRef.current = false;
-  }, [snapshot?.board.viewport_state]);
+    if (!openedBoard || cameraRestoredFor.current === openedBoard.id) return;
+    cameraRestoredFor.current = openedBoard.id;
+    const saved = asViewport(openedBoard.viewport_state);
+    boardCanvas.current?.setViewport(saved);
+    setViewport(saved);
+  }, [openedBoard]);
 
   // Phase 5: animated GIF playback. The pyramid pipeline only makes a
   // first-frame poster, so the canvas animates GIF blobs from the original
@@ -460,23 +456,47 @@ function BoardApp() {
   // Unified node view of the board for selection chrome, hover outlines, and
   // group-mate lookup. Unfiltered — the shell tracks selected nodes even
   // when a search filter hides them — with live preview patches merged.
-  const boardNodes = useMemo(() => {
-    const itemNodes = (snapshotItems ?? [])
-      .filter(
-        (item): item is Item & { blob_hash: string } => item.type === 'image' && !!item.blob_hash,
-      )
-      .map((item) => {
-        const preview = previewPatches[item.id] ?? dragPreview[item.id];
-        const merged = itemWithPatch(item, preview);
-        const locked = item.group_id !== null && lockedGroupIds.has(item.group_id);
-        return itemToNode(merged, gifHashes.has(item.blob_hash), locked);
-      });
-    return [...itemNodes, ...renderedNotes.map(noteToNode)];
-  }, [snapshotItems, renderedNotes, previewPatches, dragPreview, gifHashes, lockedGroupIds]);
-  const boardNodesById = useMemo(
-    () => new Map(boardNodes.map((node) => [node.id, node])),
-    [boardNodes],
+  // Item nodes are built once per snapshot; a live preview (drag, resize)
+  // rebuilds only the previewed nodes — rebuilding all 20k per pointermove
+  // dropped frames on big boards.
+  const baseItemNodes = useMemo(
+    () =>
+      new Map(
+        (snapshotItems ?? [])
+          .filter(
+            (item): item is Item & { blob_hash: string } =>
+              item.type === 'image' && !!item.blob_hash,
+          )
+          .map((item) => [
+            item.id,
+            {
+              item,
+              node: itemToNode(
+                item,
+                gifHashes.has(item.blob_hash),
+                item.group_id !== null && lockedGroupIds.has(item.group_id),
+              ),
+            },
+          ]),
+      ),
+    [snapshotItems, gifHashes, lockedGroupIds],
   );
+  const boardNodesById = useMemo(() => {
+    const byId = new Map<string, CanvasNode>();
+    for (const [id, { node }] of baseItemNodes) byId.set(id, node);
+    for (const id of new Set([...Object.keys(previewPatches), ...Object.keys(dragPreview)])) {
+      const base = baseItemNodes.get(id);
+      if (!base) continue;
+      const preview = previewPatches[id] ?? dragPreview[id];
+      byId.set(
+        id,
+        itemToNode(itemWithPatch(base.item, preview), base.node.kind === 'gif', base.node.locked),
+      );
+    }
+    for (const note of renderedNotes) byId.set(note.id, noteToNode(note));
+    return byId;
+  }, [baseItemNodes, previewPatches, dragPreview, renderedNotes]);
+  const boardNodes = useMemo(() => [...boardNodesById.values()], [boardNodesById]);
   const selectedNodes = useMemo(
     () =>
       selectedNodeIds
@@ -721,7 +741,7 @@ function BoardApp() {
     nudge: (dx: number, dy: number, large: boolean) => {
       if (shellNodes.length === 0) return;
       // Screen px, like PureRef: 1px (Shift: 10px) at any zoom.
-      const step = (large ? 10 : 1) / overlayViewport.zoom;
+      const step = (large ? 10 : 1) / renderedCamera.get().zoom;
       const changes: NodeChange[] = shellNodes.map((node) => ({
         id: node.id,
         kind: node.kind === 'note' ? 'note' : 'item',
@@ -863,7 +883,9 @@ function BoardApp() {
       selection: selectedNodeIds,
       editing: noteEditingId,
       drillGroupId,
-      viewport: overlayViewport,
+      get viewport() {
+        return renderedCamera.get();
+      },
       targetViewport: viewport,
       nodes: boardNodes.map(({ id, kind, x, y, width, height, rotation, zIndex }) => ({
         id,
@@ -1054,7 +1076,7 @@ function BoardApp() {
           const nodeId = canvas.nodeIdAt(event.clientX, event.clientY);
           const world = screenToWorld(
             event,
-            overlayViewport,
+            renderedCamera.get(),
             canvasHost.current?.getBoundingClientRect() ?? new DOMRect(),
           );
           if (nodeId) {
@@ -1088,89 +1110,99 @@ function BoardApp() {
             onRetry={filtered.retry}
           />
         )}
-        <DrawingOverlay enabled={drawing} viewport={overlayViewport} />
-        {/* §4 Editing: the one note being edited swaps its canvas sprite for
-            a DOM editor laid out with the same pretext metrics. */}
-        {editingNote && (
-          <NoteEditor
-            key={editingNote.id}
-            note={editingNote}
-            viewport={overlayViewport}
-            onGrow={(height) =>
-              setPreviewPatches((previous) => ({ ...previous, [editingNote.id]: { height } }))
-            }
-            onCommit={(text, height) => {
-              setPreviewPatches({});
-              saveNote(editingNote.id, text, height);
-            }}
-            onExit={() => setNoteEditingId(null)}
-          />
-        )}
-        {/* §1 HOVERED — 1px 40% outline on an unselected node (any kind).
-            Replaced by the selection outline the moment that node is
-            selected. rotatedBounds() keeps the outline tight on rotated
-            nodes. */}
-        {hoveredNodeId &&
-          !selectedNodeIds.includes(hoveredNodeId) &&
-          (() => {
-            const node = boardNodesById.get(hoveredNodeId);
-            if (!node) return null;
-            const bounds = node.rotatedBounds();
-            return (
-              <div
-                className="hover-outline"
-                style={{
-                  position: 'absolute',
-                  left: overlayViewport.x + bounds.left * overlayViewport.zoom - 0.5,
-                  top: overlayViewport.y + bounds.top * overlayViewport.zoom - 0.5,
-                  width: (bounds.right - bounds.left) * overlayViewport.zoom,
-                  height: (bounds.bottom - bounds.top) * overlayViewport.zoom,
-                }}
-              />
-            );
-          })()}
-        {/* §0.7 / §1 MULTI-SELECTED — ONE kind-agnostic shell around the
-            whole selection (items and notes). Notes get the exact same 8
-            zones (§4 RULE 5); double-click on a lone note enters editing. */}
-        {shellNodes.length > 0 && (
-          <SelectionOverlay
-            nodes={shellNodes}
-            viewport={overlayViewport}
-            editing={noteEditing}
-            locked={shellLocked}
-            onDoubleClick={(event) =>
-              doubleClickRef.current(
-                boardCanvas.current?.nodeIdAt(event.clientX, event.clientY) ?? null,
-              )
-            }
-            onOutsidePress={(event) => boardCanvas.current?.overlayPointerDown(event)}
-            onChromePress={(event) => boardCanvas.current?.chromePointerDown(event)}
-            onBodyClick={(event) => {
-              // A click (no drag) inside the box behaves like a click on
-              // bare canvas: Shift toggles the node under the pointer, a
-              // plain click narrows a multi-selection to it.
-              const nodeId = boardCanvas.current?.nodeIdAt(event.clientX, event.clientY);
-              if (!nodeId) return;
-              if (event.shiftKey) {
-                setSelectedNodeIds((previous) =>
-                  previous.includes(nodeId)
-                    ? previous.filter((id) => id !== nodeId)
-                    : [...previous, nodeId],
-                );
-              } else if (selectedNodeIds.length > 1) {
-                setSelectedNodeIds([nodeId]);
-                bringNodeToFrontRef.current(nodeId);
-              }
-            }}
-            onPreview={(changes) =>
-              setPreviewPatches(Object.fromEntries(changes.map(({ id, patch }) => [id, patch])))
-            }
-            onCommit={(changes) => {
-              setPreviewPatches({});
-              commitNodeChanges.current(changes);
-            }}
-          />
-        )}
+        {/* Everything positioned on the canvas re-renders with the painted
+            camera each frame — and nothing else does. */}
+        <CameraBound>
+          {(camera) => (
+            <>
+              <DrawingOverlay enabled={drawing} viewport={camera} />
+              {/* §4 Editing: the one note being edited swaps its canvas sprite for
+                    a DOM editor laid out with the same pretext metrics. */}
+              {editingNote && (
+                <NoteEditor
+                  key={editingNote.id}
+                  note={editingNote}
+                  viewport={camera}
+                  onGrow={(height) =>
+                    setPreviewPatches((previous) => ({ ...previous, [editingNote.id]: { height } }))
+                  }
+                  onCommit={(text, height) => {
+                    setPreviewPatches({});
+                    saveNote(editingNote.id, text, height);
+                  }}
+                  onExit={() => setNoteEditingId(null)}
+                />
+              )}
+              {/* §1 HOVERED — 1px 40% outline on an unselected node (any kind).
+                    Replaced by the selection outline the moment that node is
+                    selected. rotatedBounds() keeps the outline tight on rotated
+                    nodes. */}
+              {hoveredNodeId &&
+                !selectedNodeIds.includes(hoveredNodeId) &&
+                (() => {
+                  const node = boardNodesById.get(hoveredNodeId);
+                  if (!node) return null;
+                  const bounds = node.rotatedBounds();
+                  return (
+                    <div
+                      className="hover-outline"
+                      style={{
+                        position: 'absolute',
+                        left: camera.x + bounds.left * camera.zoom - 0.5,
+                        top: camera.y + bounds.top * camera.zoom - 0.5,
+                        width: (bounds.right - bounds.left) * camera.zoom,
+                        height: (bounds.bottom - bounds.top) * camera.zoom,
+                      }}
+                    />
+                  );
+                })()}
+              {/* §0.7 / §1 MULTI-SELECTED — ONE kind-agnostic shell around the
+                    whole selection (items and notes). Notes get the exact same 8
+                    zones (§4 RULE 5); double-click on a lone note enters editing. */}
+              {shellNodes.length > 0 && (
+                <SelectionOverlay
+                  nodes={shellNodes}
+                  viewport={camera}
+                  editing={noteEditing}
+                  locked={shellLocked}
+                  onDoubleClick={(event) =>
+                    doubleClickRef.current(
+                      boardCanvas.current?.nodeIdAt(event.clientX, event.clientY) ?? null,
+                    )
+                  }
+                  onOutsidePress={(event) => boardCanvas.current?.overlayPointerDown(event)}
+                  onChromePress={(event) => boardCanvas.current?.chromePointerDown(event)}
+                  onBodyClick={(event) => {
+                    // A click (no drag) inside the box behaves like a click on
+                    // bare canvas: Shift toggles the node under the pointer, a
+                    // plain click narrows a multi-selection to it.
+                    const nodeId = boardCanvas.current?.nodeIdAt(event.clientX, event.clientY);
+                    if (!nodeId) return;
+                    if (event.shiftKey) {
+                      setSelectedNodeIds((previous) =>
+                        previous.includes(nodeId)
+                          ? previous.filter((id) => id !== nodeId)
+                          : [...previous, nodeId],
+                      );
+                    } else if (selectedNodeIds.length > 1) {
+                      setSelectedNodeIds([nodeId]);
+                      bringNodeToFrontRef.current(nodeId);
+                    }
+                  }}
+                  onPreview={(changes) =>
+                    setPreviewPatches(
+                      Object.fromEntries(changes.map(({ id, patch }) => [id, patch])),
+                    )
+                  }
+                  onCommit={(changes) => {
+                    setPreviewPatches({});
+                    commitNodeChanges.current(changes);
+                  }}
+                />
+              )}
+            </>
+          )}
+        </CameraBound>
         {menu && (
           <BoardContextMenu
             position={menu.client}

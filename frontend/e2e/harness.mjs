@@ -104,7 +104,12 @@ export async function seedBoard(request, { images = [], notes = [] } = {}) {
 // ------------------------------------------------------------- browser --
 
 export async function launch() {
-  const browser = await chromium.launch({ headless: process.env.HEADED !== '1' });
+  const browser = await chromium.launch({
+    headless: process.env.HEADED !== '1',
+    // GPU=1: rasterize on the real GPU (like the WebView2 desktop shell)
+    // instead of headless SwiftShader — needed for meaningful frame timing.
+    args: process.env.GPU === '1' ? ['--use-angle=d3d11', '--ignore-gpu-blocklist'] : [],
+  });
   const context = await browser.newContext({ viewport: { width: 1400, height: 900 } });
   const page = await context.newPage();
   const errors = [];

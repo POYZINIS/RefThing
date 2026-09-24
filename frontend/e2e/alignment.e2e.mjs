@@ -151,3 +151,37 @@ test('middle-drag starting on a SELECTED node pans instead of moving it', async 
   assert.deepEqual([node.x, node.y], [before.x, before.y], 'middle-drag moved the item');
   assert.notEqual(after.viewport.x, viewportBefore.x, 'middle-drag did not pan');
 });
+
+test('a slow viewport save never yanks the camera back mid-pan', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, layout);
+  await openBoard(page, seeded);
+  // Hold every viewport save in flight for 600ms so the echo lands while
+  // the user is already panning again.
+  await page.route(`**/api/boards/${seeded.boardId}`, async (route) => {
+    if (route.request().method() === 'PATCH') await new Promise((r) => setTimeout(r, 600));
+    await route.continue();
+  });
+  const start = (await state(page)).viewport;
+  const pan = (from, dx) =>
+    drag(page, {
+      from,
+      button: 'middle',
+      samples: Array.from({ length: 30 }, (_, i) => ({
+        index: i,
+        timeMs: i * 16,
+        x: from.x + (dx * (i + 1)) / 30,
+        y: from.y,
+      })),
+    });
+  await pan({ x: 900, y: 650 }, 150);
+  await page.waitForTimeout(300); // debounced save fires at 250ms, now in flight
+  await pan({ x: 900, y: 650 }, 150);
+  await page.waitForTimeout(900); // the first save's echo lands during/after pan 2
+  const end = (await state(page)).viewport;
+  assert.ok(
+    Math.abs(end.x - start.x - 300) < 1,
+    `camera should sit 300px right of the start, is ${end.x - start.x}px`,
+  );
+  await page.unroute(`**/api/boards/${seeded.boardId}`);
+});

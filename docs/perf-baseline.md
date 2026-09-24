@@ -81,3 +81,28 @@ UNCAPPED=1 node frontend/src/dev/measure-perf.mjs http://localhost:5173 5000,200
 Each run prints `[refthing-perf] {json}` per scale; `gate.pass` is the p99 <
 16.6ms verdict. Playwright + chromium are required (`npm i -D -w frontend
 playwright && npx playwright install chromium`).
+
+
+## Full-app frame timing (2026-09-24)
+
+`node frontend/e2e/perf.mjs <count>` drives the real App (React chrome,
+selection shell, previews, write queue) on a seeded board — unlike
+`/dev/board/N`, which is canvas-only. Run it with `GPU=1` so Chromium
+rasterizes on the GPU like the WebView2 shell; headless SwiftShader pins
+every page at ~15fps regardless of content and is useless for timing.
+
+20,000 items, GPU, frame intervals:
+
+| Gesture                | p50    | p95    | p99    |
+|:-----------------------|:-------|:-------|:-------|
+| idle                   | 16.7ms | 16.8ms | 16.8ms |
+| drag unselected image  | 16.7ms | 16.8ms | 33.3ms |
+| drag selection shell   | 16.7ms | 16.8ms | 16.8ms |
+| pan (middle drag)      | 16.7ms | 16.8ms | 16.8ms |
+
+Pan was p95 33ms / p99 50ms before the rendered camera moved out of App
+state (canvas/renderedCamera.ts): committing it per frame re-rendered the
+whole shell. The one remaining p99 blip on "drag unselected image" is the
+select-to-front write at press time, which rebuilds the 20k-item snapshot
+and canvas grid once; making snapshot/canvas updates incremental would
+remove it.
