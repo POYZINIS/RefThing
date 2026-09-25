@@ -952,3 +952,19 @@ button:disabled {
 .board-context-menu .menu-choices button[aria-checked="true"] {
   color: #d6ff76;
 }
+
+/* Alignment guides (Shift+Space snap-move): one line per snapped axis. */
+.snap-guide {
+  position: absolute;
+  z-index: var(--z-selection);
+  pointer-events: none;
+  background: #ff5fd2;
+}
+
+.snap-guide--x {
+  width: 1px;
+}
+
+.snap-guide--y {
+  height: 1px;
+}

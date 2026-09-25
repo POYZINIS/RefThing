@@ -15,6 +15,7 @@ import {
   boxCenter,
   finishAspectReset,
   hitZone,
+  snapTranslate,
   stepGesture,
   toLocal,
   toWorld,
@@ -467,4 +468,40 @@ test('flip: a multi-selection mirrors positions across the shared center', () =>
   const left = { x: 0, y: 0, width: 10, height: 10, rotation: 0, flipY: false };
   const patch = applyToNode({ kind: 'flip', axis: 'y', center: { x: 50, y: 100 } }, left);
   assert.deepEqual([patch.x, patch.y, patch.flipY], [0, 190, true]);
+});
+
+// ------------------------------------------------------------ SNAPPING --
+
+test('snap: edges and centers pull onto the nearest line per axis, with guides', () => {
+  const moving = { left: 0, top: 0, right: 100, bottom: 50 };
+  const target = { left: 205, top: 300, right: 305, bottom: 400 };
+  // Moving right by 103 puts the right edge at 203 — 2px from target.left.
+  const result = snapTranslate(moving, 103, 0, [target], 8);
+  assert.equal(result.dx, 105, 'right edge snaps onto the target left edge');
+  assert.equal(result.dy, 0, 'no y line within reach');
+  assert.deepEqual(result.guides, [{ axis: 'x', at: 205, from: 0, to: 400 }]);
+});
+
+test('snap: centers align too, and nothing snaps outside the threshold', () => {
+  const moving = { left: 0, top: 0, right: 100, bottom: 100 };
+  const target = { left: 400, top: 0, right: 600, bottom: 90 };
+  const centered = snapTranslate(moving, 0, -3, [target], 8);
+  assert.equal(centered.dy, -5, 'moving center (50) snaps to target center (45)');
+  const far = snapTranslate(moving, 0, 30, [target], 8);
+  assert.deepEqual([far.dx, far.dy, far.guides.length], [0, 30, 0]);
+});
+
+test('snap: the closest candidate wins over the first one found', () => {
+  const moving = { left: 0, top: 0, right: 10, bottom: 10 };
+  const result = snapTranslate(
+    moving,
+    0,
+    0,
+    [
+      { left: 16, top: 50, right: 30, bottom: 60 },
+      { left: 13, top: 80, right: 20, bottom: 90 },
+    ],
+    8,
+  );
+  assert.equal(result.dx, 3, 'right edge 10 → 13 (3px) beats 10 → 16 (6px)');
 });

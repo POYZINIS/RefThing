@@ -1,4 +1,6 @@
+import { isHeld } from './heldKeys';
 import { type BoardNode, type NodeChange, nodeChangeKind } from './nodes/types';
+import { type Guide, type Rect, SNAP_DISTANCE_PX, snapTranslate } from './transform';
 
 export type InteractionCallbacks = {
   /** Press-selected a single node (replaces the selection), or null. */
@@ -14,6 +16,8 @@ export type InteractionCallbacks = {
    *  the canvas-side mutation; this feeds DOM chrome (selection outline,
    *  notes) so it tracks the drag from the very first sample. */
   onDragPreview?: (changes: NodeChange[]) => void;
+  /** Alignment guides while a Shift+Space snap-move is active ([] clears). */
+  onGuides?: (guides: Guide[]) => void;
   /** Drag committed on release; positions already reflect the mutation. */
   onNodesChange?: (changes: NodeChange[]) => void;
 };
@@ -23,6 +27,8 @@ export type InteractionHost = {
   candidates(): BoardNode[];
   /** Every node (box select + group-mate lookup). */
   allNodes(): BoardNode[];
+  /** Current rendered zoom (snap distance is screen px). */
+  zoom(): number;
   /** Client coords → world coords through the rendered viewport. */
   worldPoint(clientX: number, clientY: number): { x: number; y: number };
   /** Draw the box-select rectangle (client coords); nulls clear it. */
@@ -94,11 +100,41 @@ export class NodeInteractionController {
       // snapped to grid. origin never changes during the drag, so repeated
       // pointermove events don't accumulate.
       const grid = this.snapToGrid ? 24 : 1;
-      const nextX = Math.round((originX + point.x - startX) / grid) * grid;
-      const nextY = Math.round((originY + point.y - startY) / grid) * grid;
+      let nextX = Math.round((originX + point.x - startX) / grid) * grid;
+      let nextY = Math.round((originY + point.y - startY) / grid) * grid;
+      const moving = this.moveSet(node);
+      // Plan: Shift+Space + drag snaps the moving set to other nodes' edges
+      // and centers (Shift pressed after the press — a Shift press toggles).
+      if (event.shiftKey && isHeld('Space')) {
+        const ids = new Set(moving.map((candidate) => candidate.id));
+        const offsetX = node.x - originX;
+        const offsetY = node.y - originY;
+        const bounds = moving.map((candidate) => candidate.rotatedBounds());
+        const atOrigin: Rect = {
+          left: Math.min(...bounds.map((rect) => rect.left)) - offsetX,
+          top: Math.min(...bounds.map((rect) => rect.top)) - offsetY,
+          right: Math.max(...bounds.map((rect) => rect.right)) - offsetX,
+          bottom: Math.max(...bounds.map((rect) => rect.bottom)) - offsetY,
+        };
+        const targets = this.host
+          .candidates()
+          .filter((candidate) => !ids.has(candidate.id))
+          .map((candidate) => candidate.rotatedBounds());
+        const snapped = snapTranslate(
+          atOrigin,
+          nextX - originX,
+          nextY - originY,
+          targets,
+          SNAP_DISTANCE_PX / this.host.zoom(),
+        );
+        nextX = originX + snapped.dx;
+        nextY = originY + snapped.dy;
+        this.callbacks.onGuides?.(snapped.guides);
+      } else {
+        this.callbacks.onGuides?.([]);
+      }
       const deltaX = nextX - node.x;
       const deltaY = nextY - node.y;
-      const moving = this.moveSet(node);
       // Mutate in-place so the canvas repaint (which repositions sprites
       // from these same objects) follows the drag each frame.
       for (const candidate of moving) {
@@ -126,6 +162,7 @@ export class NodeInteractionController {
         this.callbacks.onNodesChange?.(this.moveSet(node).map(toChange));
       }
     }
+    if (this.dragging) this.callbacks.onGuides?.([]);
     this.dragging = null;
     this.boxOrigin = null;
     this.boxCurrent = null;

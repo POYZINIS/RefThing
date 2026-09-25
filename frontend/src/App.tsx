@@ -24,6 +24,7 @@ import {
 import { noteText } from '@/canvas/nodes/noteText';
 import type { CanvasNode, NodeChange, NodePatch } from '@/canvas/nodes/types';
 import { CameraBound, renderedCamera } from '@/canvas/renderedCamera';
+import type { Guide } from '@/canvas/transform';
 import { BoardContextMenu } from '@/components/BoardContextMenu';
 import BoardViewManager from '@/components/BoardViewManager';
 import { DrawingOverlay } from '@/components/DrawingOverlay';
@@ -127,6 +128,8 @@ function BoardApp() {
   // Live canvas-controller drag positions. The canvas already paints these
   // (it mutates its nodes in place), so they feed DOM chrome only.
   const [dragPreview, setDragPreview] = useState<Record<string, NodePatch>>({});
+  // Alignment guides while a Shift+Space snap-move is in progress.
+  const [guides, setGuides] = useState<Guide[]>([]);
   // Target camera (saves, view manager). DOM overlays never read this: they
   // follow the camera Pixi painted (canvas/renderedCamera.ts).
   const [viewport, setViewport] = useState<ViewportState>({ x: 0, y: 0, zoom: 1 });
@@ -360,6 +363,7 @@ function BoardApp() {
       onDoubleClick: (nodeId) => doubleClickRef.current(nodeId),
       // The controller mutates canvas-side node objects during a drag; DOM
       // chrome (selection outline, notes) needs the live positions relayed.
+      onGuides: setGuides,
       onDragPreview: (changes) => {
         setDragPreview(Object.fromEntries(changes.map((change) => [change.id, change.patch])));
       },
@@ -1115,6 +1119,25 @@ function BoardApp() {
         <CameraBound>
           {(camera) => (
             <>
+              {guides.map((guide) => (
+                <div
+                  key={`${guide.axis}:${guide.at}`}
+                  className={`snap-guide snap-guide--${guide.axis}`}
+                  style={
+                    guide.axis === 'x'
+                      ? {
+                          left: camera.x + guide.at * camera.zoom,
+                          top: camera.y + guide.from * camera.zoom,
+                          height: (guide.to - guide.from) * camera.zoom,
+                        }
+                      : {
+                          top: camera.y + guide.at * camera.zoom,
+                          left: camera.x + guide.from * camera.zoom,
+                          width: (guide.to - guide.from) * camera.zoom,
+                        }
+                  }
+                />
+              ))}
               <DrawingOverlay enabled={drawing} viewport={camera} />
               {/* §4 Editing: the one note being edited swaps its canvas sprite for
                     a DOM editor laid out with the same pretext metrics. */}
@@ -1189,6 +1212,8 @@ function BoardApp() {
                       bringNodeToFrontRef.current(nodeId);
                     }
                   }}
+                  snapTargets={(exclude) => boardCanvas.current?.snapTargets(exclude) ?? []}
+                  onGuides={setGuides}
                   onPreview={(changes) =>
                     setPreviewPatches(
                       Object.fromEntries(changes.map(({ id, patch }) => [id, patch])),

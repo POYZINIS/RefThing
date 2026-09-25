@@ -12,7 +12,8 @@
 
 export type Point = { x: number; y: number };
 export type Box = { x: number; y: number; width: number; height: number; rotation: number };
-export type Modifiers = { shift: boolean; alt: boolean };
+/** `snap`: Shift+Space held — snap-move to other nodes instead of axis lock. */
+export type Modifiers = { shift: boolean; alt: boolean; snap?: boolean };
 
 export type CornerZone = 'top-left' | 'top-right' | 'bottom-right' | 'bottom-left';
 export type EdgeZone = 'top' | 'bottom' | 'left' | 'right';
@@ -239,7 +240,7 @@ function stepMove(
 ): BoxTransform {
   const dx = pointer.x - gesture.start.x;
   const dy = pointer.y - gesture.start.y;
-  if (!modifiers.shift || modifiers.alt) {
+  if (!modifiers.shift || modifiers.alt || modifiers.snap) {
     gesture.axis = null;
   } else if (gesture.axis === null) {
     // Lock on the larger delta once the pointer has left the click epsilon;
@@ -436,4 +437,82 @@ export function applyToNode(transform: BoxTransform, node: Geometry): GeometryPa
       };
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Snap-move (plan: Shift+Space + drag) and alignment guides
+// ---------------------------------------------------------------------------
+
+export type Rect = { left: number; top: number; right: number; bottom: number };
+
+/** An alignment guide: a vertical (`axis: 'x'`) or horizontal line at `at`,
+ *  spanning `from`–`to` on the other axis. World coordinates. */
+export type Guide = { axis: 'x' | 'y'; at: number; from: number; to: number };
+
+/** Screen px within which an edge or center snaps to another node's. */
+export const SNAP_DISTANCE_PX = 8;
+
+const lines = (rect: Rect, axis: 'x' | 'y'): number[] =>
+  axis === 'x'
+    ? [rect.left, (rect.left + rect.right) / 2, rect.right]
+    : [rect.top, (rect.top + rect.bottom) / 2, rect.bottom];
+
+/**
+ * Snap a translation so the moving box's edges or center line up with the
+ * nearest edge/center of another node, per axis independently, within
+ * `threshold` world px. Returns the adjusted delta plus a guide for each axis
+ * that snapped, spanning the moving box and every target on that line.
+ */
+export function snapTranslate(
+  moving: Rect,
+  dx: number,
+  dy: number,
+  targets: readonly Rect[],
+  threshold: number,
+): { dx: number; dy: number; guides: Guide[] } {
+  const shifted = {
+    left: moving.left + dx,
+    right: moving.right + dx,
+    top: moving.top + dy,
+    bottom: moving.bottom + dy,
+  };
+  const guides: Guide[] = [];
+  const result = { dx, dy };
+  for (const axis of ['x', 'y'] as const) {
+    let best: { offset: number; at: number } | null = null;
+    for (const target of targets) {
+      for (const mine of lines(shifted, axis)) {
+        for (const theirs of lines(target, axis)) {
+          const offset = theirs - mine;
+          if (
+            Math.abs(offset) <= threshold &&
+            (!best || Math.abs(offset) < Math.abs(best.offset))
+          ) {
+            best = { offset, at: theirs };
+          }
+        }
+      }
+    }
+    if (!best) continue;
+    const { offset, at } = best;
+    if (axis === 'x') result.dx += offset;
+    else result.dy += offset;
+    // Span the guide across everything that sits on this line.
+    const snapped = {
+      left: moving.left + result.dx,
+      right: moving.right + result.dx,
+      top: moving.top + result.dy,
+      bottom: moving.bottom + result.dy,
+    };
+    const aligned = [snapped, ...targets].filter((rect) =>
+      lines(rect, axis).some((value) => Math.abs(value - at) < 1e-6),
+    );
+    guides.push({
+      axis,
+      at,
+      from: Math.min(...aligned.map((rect) => (axis === 'x' ? rect.top : rect.left))),
+      to: Math.max(...aligned.map((rect) => (axis === 'x' ? rect.bottom : rect.right))),
+    });
+  }
+  return { ...result, guides };
 }

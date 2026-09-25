@@ -9,6 +9,7 @@ import { type NoteTextureSource, noteTextureScale } from './nodes/NoteTextureSou
 import { type PyramidTextureSource, pyramidLevel } from './nodes/PyramidTextureSource';
 import { nodeKindRegistry } from './nodes/registry';
 import type { CanvasNode, NodeChange } from './nodes/types';
+import type { Guide, Rect } from './transform';
 
 export type ViewportState = { x: number; y: number; zoom: number };
 
@@ -28,6 +29,7 @@ type CanvasOptions = {
   /** Native dblclick on the canvas, with the topmost node under it. */
   onDoubleClick?: (nodeId: string | null, event: MouseEvent) => void;
   onDragPreview?: (changes: NodeChange[]) => void;
+  onGuides?: (guides: Guide[]) => void;
   onNodesChange?: (changes: NodeChange[]) => void;
   snapToGrid?: boolean;
 };
@@ -79,6 +81,7 @@ export class BoardCanvas {
       {
         candidates: () => this.visibleNodes(),
         allNodes: () => this.nodes,
+        zoom: () => this.renderedViewport.zoom,
         worldPoint: (clientX, clientY) => this.worldPoint(clientX, clientY),
         drawBoxSelect: (origin, current) => this.drawBoxSelect(origin, current),
       },
@@ -90,6 +93,7 @@ export class BoardCanvas {
         onHoverChange: (nodeId) => this.options.onHoverChange?.(nodeId),
         onBoxSelect: (worldRect) => this.options.onBoxSelect?.(worldRect),
         onDragPreview: (changes) => this.options.onDragPreview?.(changes),
+        onGuides: (guides) => this.options.onGuides?.(guides),
         onNodesChange: (changes) => this.options.onNodesChange?.(changes),
       },
       options.snapToGrid ?? false,
@@ -304,6 +308,13 @@ export class BoardCanvas {
     if (!bounds || !this.initialized) return null;
     const rect = this.app.canvas.getBoundingClientRect();
     return { ...bounds, x: bounds.x + rect.left, y: bounds.y + rect.top };
+  }
+
+  /** Bounds of the visible nodes other than `exclude` (snap-move targets). */
+  snapTargets(exclude: ReadonlySet<string>): Rect[] {
+    return this.visibleNodes()
+      .filter((node) => !exclude.has(node.id))
+      .map((node) => node.rotatedBounds());
   }
 
   /** Id of the topmost node under a client point, or null. */

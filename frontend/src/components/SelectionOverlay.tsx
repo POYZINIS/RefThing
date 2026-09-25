@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ViewportState } from '@/canvas/BoardCanvas';
 import { screenToWorld } from '@/canvas/coordinates';
+import { isHeld } from '@/canvas/heldKeys';
 import { type BoardNode, type NodeChange, nodeChangeKind } from '@/canvas/nodes/types';
 import {
   applyToNode,
@@ -14,10 +15,15 @@ import {
   CLICK_EPSILON_PX,
   finishAspectReset,
   type Gesture,
+  type Guide,
   hitZone,
   isCorner,
   isEdge,
+  type Modifiers,
   type Point,
+  type Rect,
+  SNAP_DISTANCE_PX,
+  snapTranslate,
   stepGesture,
   type Zone,
   zoneCursor,
@@ -51,6 +57,10 @@ type SelectionOverlayProps = {
   /** A click (no drag) on the body: re-select / Shift-toggle the node under
    *  the pointer, exactly like a click on bare canvas would. */
   onBodyClick?: (event: MouseEvent) => void;
+  /** Other nodes' bounds a snap-move (Shift+Space) can align to. */
+  snapTargets?: (exclude: ReadonlySet<string>) => Rect[];
+  /** Alignment guides to draw while snapping ([] clears). */
+  onGuides?: (guides: Guide[]) => void;
   editing?: boolean;
   /** §6 RULE 3: a locked group — outline only; move, resize, rotate and flip
    *  are all rejected. Clicks, double-click (drill in) and the menu remain. */
@@ -87,6 +97,20 @@ function selectionBox(nodes: BoardNode[]): Box | null {
   return { x: left, y: top, width: right - left, height: bottom - top, rotation: 0 };
 }
 
+/** Live modifiers: Shift+Space is snap-move (plan), plain Shift is axis lock. */
+function modifiersOf(event: { shiftKey: boolean; altKey: boolean }): Modifiers {
+  return { shift: event.shiftKey, alt: event.altKey, snap: event.shiftKey && isHeld('Space') };
+}
+
+function unionOf(rects: Rect[]): Rect {
+  return {
+    left: Math.min(...rects.map((rect) => rect.left)),
+    top: Math.min(...rects.map((rect) => rect.top)),
+    right: Math.max(...rects.map((rect) => rect.right)),
+    bottom: Math.max(...rects.map((rect) => rect.bottom)),
+  };
+}
+
 function hostRect(): DOMRect {
   return document.getElementById('canvas-host')?.getBoundingClientRect() ?? new DOMRect();
 }
@@ -111,7 +135,9 @@ type ActiveGesture = {
   freeTransform: boolean;
   pressClient: Point;
   lastClient: Point;
-  modifiers: { shift: boolean; alt: boolean };
+  modifiers: Modifiers;
+  /** Snap-move targets, gathered once per gesture on first use. */
+  targets: Rect[] | null;
   /** Last previewed result — pointerup commits exactly what the user saw. */
   last: NodeChange[] | null;
   moved: boolean;
@@ -131,6 +157,8 @@ export function SelectionOverlay({
   onOutsidePress,
   onChromePress,
   onBodyClick,
+  snapTargets,
+  onGuides,
   editing,
   locked = false,
   onDoubleClick,
@@ -143,8 +171,8 @@ export function SelectionOverlay({
   const lockedPress = useRef<Point | null>(null);
   const element = useRef<HTMLDivElement>(null);
   // Latest props for the window listeners (registered once).
-  const latest = useRef({ viewport, onPreview, onCommit, onBodyClick });
-  latest.current = { viewport, onPreview, onCommit, onBodyClick };
+  const latest = useRef({ viewport, onPreview, onCommit, onBodyClick, snapTargets, onGuides });
+  latest.current = { viewport, onPreview, onCommit, onBodyClick, snapTargets, onGuides };
 
   const collapsed =
     locked || (box ? zonesCollapsed(box, viewport.zoom, MIN_SCREEN_SIZE_PX) : false);
@@ -215,7 +243,8 @@ export function SelectionOverlay({
       freeTransform,
       pressClient: { x: event.clientX, y: event.clientY },
       lastClient: { x: event.clientX, y: event.clientY },
-      modifiers: { shift: event.shiftKey, alt: event.altKey },
+      modifiers: modifiersOf(event),
+      targets: null,
       last: null,
       moved: false,
       pressEvent: native,
@@ -251,7 +280,7 @@ export function SelectionOverlay({
         vp,
         hostRect(),
       );
-      const transform = stepGesture(
+      let transform = stepGesture(
         current.gesture,
         pointer,
         current.modifiers,
@@ -259,6 +288,22 @@ export function SelectionOverlay({
         current.freeTransform,
       );
       if (!transform) return;
+      const { snapTargets: targetsOf, onGuides: showGuides } = latest.current;
+      if (transform.kind === 'translate' && current.modifiers.snap && targetsOf) {
+        current.targets ??= targetsOf(new Set(current.origin.map((node) => node.id)));
+        const moving = unionOf(current.origin.map((node) => node.rotatedBounds()));
+        const snapped = snapTranslate(
+          moving,
+          transform.dx,
+          transform.dy,
+          current.targets,
+          SNAP_DISTANCE_PX / vp.zoom,
+        );
+        transform = { kind: 'translate', dx: snapped.dx, dy: snapped.dy };
+        showGuides?.(snapped.guides);
+      } else {
+        showGuides?.([]);
+      }
       current.last = distribute(transform, current.origin);
       latest.current.onPreview(current.last);
     };
@@ -267,7 +312,7 @@ export function SelectionOverlay({
       const current = active.current;
       if (!current || event.pointerId !== current.pointerId) return;
       current.lastClient = { x: event.clientX, y: event.clientY };
-      current.modifiers = { shift: event.shiftKey, alt: event.altKey };
+      current.modifiers = modifiersOf(event);
       sample();
     };
 
@@ -276,6 +321,7 @@ export function SelectionOverlay({
       if (!current || event.pointerId !== current.pointerId) return;
       active.current = null;
       setDragMode(null);
+      latest.current.onGuides?.([]);
       const { viewport: vp } = latest.current;
       if (current.gesture.mode === 'aspect-reset') {
         const pointer = screenToWorld(
@@ -303,9 +349,14 @@ export function SelectionOverlay({
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Control' || event.key === 'Meta') setCtrlHeld(event.type === 'keydown');
       const current = active.current;
-      if (!current || (event.key !== 'Shift' && event.key !== 'Alt')) return;
-      current.modifiers = { shift: event.shiftKey, alt: event.altKey };
-      sample();
+      if (!current || (event.key !== 'Shift' && event.key !== 'Alt' && event.code !== 'Space')) {
+        return;
+      }
+      // Let heldKeys see this key event first (it listens on the same target).
+      queueMicrotask(() => {
+        current.modifiers = modifiersOf(event);
+        sample();
+      });
     };
     const onBlur = () => setCtrlHeld(false);
 
