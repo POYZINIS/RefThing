@@ -1719,10 +1719,121 @@ kbd {
   transform: translateY(-50%);
 }
 
-/* Audio: the scrub bar starts right of the play button, clear of its
-   reveal zone. */
-.media-controls.audio:not(.compact) .media-scrub {
-  left: 76px;
+/* ------------------------------------------------ audio, for the ear
+   A playhead through the waveform that you drag to seek, and a transport
+   with millisecond time; the rest of the waveform stays free to move. */
+
+/* The playhead's frame: the item's own box, above the selection shell so
+   the playhead can be grabbed; the frame itself lets the pointer through. */
+.media-frame {
+  position: absolute;
+  z-index: var(--z-media-controls);
+  pointer-events: none;
+  transform-origin: center;
+}
+
+/* The playhead is its own seek control: a thin grab zone around the line. */
+.media-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  cursor: ew-resize;
+  pointer-events: auto;
+  touch-action: none;
+  transform: translateX(-50%);
+}
+
+.media-playhead:focus-visible {
+  outline: none;
+}
+
+.media-playhead-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  background: #f4f6f4;
+  box-shadow:
+    0 0 0 1px rgb(16 20 18 / 55%),
+    0 0 8px rgb(0 0 0 / 35%);
+  transform: translateX(-50%);
+  transition: transform 120ms var(--ease-out);
+}
+
+.media-playhead:hover .media-playhead-line,
+.media-playhead.dragging .media-playhead-line,
+.media-playhead:focus-visible .media-playhead-line {
+  transform: translateX(-50%) scaleX(1.5);
+}
+
+/* A cap at the top says "grab me". */
+.media-playhead-cap {
+  position: absolute;
+  top: -1px;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-top: 8px solid #f4f6f4;
+  border-right: 6px solid transparent;
+  border-left: 6px solid transparent;
+  filter: drop-shadow(0 1px 2px rgb(0 0 0 / 45%));
+  transform: translateX(-50%);
+}
+
+/* Its time, to the millisecond, while hovered or dragged. */
+.media-playhead-time {
+  position: absolute;
+  top: 8px;
+  left: calc(50% + 7px);
+  padding: 2px 6px;
+  border-radius: 5px;
+  color: #f4f6f4;
+  background: rgb(16 20 18 / 78%);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 110ms var(--ease-out);
+}
+
+.media-playhead:hover .media-playhead-time,
+.media-playhead.dragging .media-playhead-time,
+.media-playhead:focus-visible .media-playhead-time {
+  opacity: 1;
+}
+
+.media-transport {
+  bottom: 10px;
+  left: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.media-time.precise {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  padding: 0 11px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 999px;
+  background: var(--media-glass);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 28%);
+  backdrop-filter: blur(12px);
+  font-size: 11.5px;
+  gap: 5px;
+}
+
+.media-time-total {
+  color: rgb(244 246 244 / 60%);
+}
+
+.media-corner.bottom {
+  top: auto;
+  bottom: 10px;
 }
 
 .media-scrub {
@@ -1893,6 +2004,10 @@ kbd {
 .media-controls.compact .media-scrub {
   flex: 1;
   min-width: 0;
+}
+
+.media-controls.compact .media-time-total {
+  display: none;
 }
 
 /* §4 Editing surface. Geometry, font and colors come inline from the shared

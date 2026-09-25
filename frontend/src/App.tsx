@@ -22,16 +22,15 @@ import {
   itemFields,
   itemToNode,
   itemWithPatch,
+  noteTextHeight,
   noteToNode,
-  noteWithPatch,
+  noteWithResize,
 } from '@/canvas/nodes/adapters';
 import {
-  grownNoteHeight,
   NOTE_FONTS,
   NOTE_SIZES,
   type NoteFontId,
   type NoteStyle,
-  noteScale,
   noteStyle,
   noteText,
   storedStyle,
@@ -52,6 +51,7 @@ import { WindowControls } from '@/components/WindowControls';
 import { beginWindowMove, setNativeGlass } from '@/shell/desktop';
 import { useBoardStore } from '@/state/boardStore';
 import {
+  type Camera,
   type Clipboard,
   copySelection,
   duplicateOps,
@@ -157,8 +157,11 @@ function BoardApp() {
   /** Phase 11 live mode: the video/audio item whose player is mounted. */
   /** A media item that should start playing once its player mounts. */
   const [autoPlayId, setAutoPlayId] = useState<string | null>(null);
-  /** The mounted player's controls (double-click / Play toggle it). */
+  /** The selected player's controls (double-click / Play toggle it). */
   const mediaHandle = useRef<MediaHandle | null>(null);
+  /** Media items that keep their player (most recent first): deselecting
+   *  pauses rather than tears down, so position survives a reselect. */
+  const [residentMedia, setResidentMedia] = useState<string[]>([]);
   // §6 RULE 2: the group drilled into by double-click — its members select
   // and transform individually until Escape or an empty-canvas click.
   const [drillGroupId, setDrillGroupId] = useState<string | null>(null);
@@ -237,20 +240,33 @@ function BoardApp() {
   const ingest = useBoardStore((state) => state.ingest);
   const importBoard = useBoardStore((state) => state.importBoard);
   const saveViewport = useBoardStore((state) => state.saveViewport);
+  /** The camera things arrive under: painted zoom + the view's size. */
+  const arrivalCamera = (): Camera => {
+    const host = canvasHost.current;
+    return {
+      zoom: renderedCamera.get().zoom,
+      width: host?.clientWidth ?? 0,
+      height: host?.clientHeight ?? 0,
+    };
+  };
+  /** A new note, sized to the camera: its box and text look the same on
+   *  screen at any zoom (text scale = 1 / zoom). */
   const addNote = (at: { x: number; y: number }) => {
     if (!activeBoardId || !snapshot) return;
     const maxZ = topZ(snapshot);
     const now = Date.now();
+    const zoom = arrivalCamera().zoom || 1;
+    const scale = 1 / zoom;
     const note: Note = {
       id: crypto.randomUUID(),
       board_id: activeBoardId,
       x: at.x,
       y: at.y,
-      width: 280,
-      height: 180,
+      width: 280 * scale,
+      height: 180 * scale,
       rotation: 0,
       z_index: maxZ + 1,
-      content_json: { text: 'New note' },
+      content_json: Math.abs(scale - 1) < 1e-6 ? { text: 'New note' } : { text: 'New note', scale },
       bg_color: null,
       opacity: 1,
       created_at: now,
@@ -303,7 +319,8 @@ function BoardApp() {
     () =>
       snapshot?.notes.map((note) => {
         const preview = previewPatches[note.id] ?? dragPreview[note.id];
-        return noteWithPatch(note, preview);
+        // Live: shrinking a note onto its text scales the text (noteWithResize).
+        return noteWithResize(note, preview);
       }) ?? [],
     [snapshot?.notes, previewPatches, dragPreview],
   );
@@ -633,6 +650,16 @@ function BoardApp() {
     liveCandidate && (liveCandidate.kind === 'video' || liveCandidate.kind === 'audio')
       ? liveCandidate
       : null;
+  // Selecting a media item makes it resident (a small LRU of players).
+  useEffect(() => {
+    if (!liveNode) return;
+    const id = liveNode.id;
+    setResidentMedia((current) =>
+      current[0] === id
+        ? current
+        : [id, ...current.filter((other) => other !== id)].slice(0, MAX_RESIDENT_MEDIA),
+    );
+  }, [liveNode]);
   /** Double-click / Play: toggle the item's playback, selecting it (and
    *  starting it) first when it isn't the live one yet. */
   const playMediaRef = useRef<(nodeId: string) => void>(() => undefined);
@@ -784,7 +811,7 @@ function BoardApp() {
         ops.push({
           kind: 'put_note',
           op_id: crypto.randomUUID(),
-          note: { ...noteWithPatch(note, change.patch), updated_at: Date.now() },
+          note: { ...noteWithResize(note, change.patch), updated_at: Date.now() },
         });
       }
     }
@@ -873,6 +900,9 @@ function BoardApp() {
       const { ops, ids } = duplicateOps(
         snapshot,
         shellNodes.map((node) => node.id),
+        undefined,
+        undefined,
+        renderedCamera.get().zoom,
       );
       commitBoardOps.current(ops, 'Duplicate');
       setSelectedNodeIds(ids);
@@ -966,8 +996,7 @@ function BoardApp() {
       link.download = node.label;
       link.click();
     },
-    /** Restyle the selected notes (content_json.style) as one undo step; a
-     *  note grows to fit when its text gets bigger. */
+    /** Restyle the selected notes (content_json.style) as one undo step. */
     styleNotes: (patch: Partial<NoteStyle>) => {
       if (!snapshot) return;
       const now = Date.now();
@@ -976,17 +1005,12 @@ function BoardApp() {
         const { style: _old, ...rest } = (note.content_json ?? {}) as Record<string, unknown>;
         const stored = storedStyle(style);
         const content = Object.keys(stored).length > 0 ? { ...rest, style: stored } : rest;
-        const height = grownNoteHeight(
-          noteText(content),
-          note.width,
-          note.height,
-          noteScale(content),
-          style,
-        );
+        // The chosen size wins: the box stays, and text past its bottom
+        // clips (resize the note to show it).
         return {
           kind: 'put_note' as const,
           op_id: crypto.randomUUID(),
-          note: { ...note, content_json: content, height, updated_at: now },
+          note: { ...note, content_json: content, updated_at: now },
         };
       });
       if (ops.length > 0) commitBoardOps.current(ops, 'Text style');
@@ -1058,7 +1082,7 @@ function BoardApp() {
       // A PureRef board comes in whole, as a board of its own.
       const boardFiles = accepted.filter(isBoardFile);
       const rest = accepted.filter((file) => !isBoardFile(file));
-      if (rest.length > 0) void ingest(rest, actionsRef.current.dropPoint(client));
+      if (rest.length > 0) void ingest(rest, actionsRef.current.dropPoint(client), arrivalCamera());
       if (boardFiles.length > 0) void actionsRef.current.importBoards(boardFiles);
     },
     /** Import board files one after another; the last one stays open. */
@@ -1140,7 +1164,8 @@ function BoardApp() {
           const blob = await entry.getType(type);
           files.push(new File([blob], `pasted.${type.split('/')[1] ?? 'png'}`, { type }));
         }
-        if (files.length > 0) void ingest(files);
+        if (files.length > 0)
+          void ingest(files, actionsRef.current.dropPoint(null), arrivalCamera());
       } catch {
         // Clipboard permission denied or empty — Ctrl+V still works.
       }
@@ -1299,6 +1324,11 @@ function BoardApp() {
       itemTags: snapshot?.item_tags,
       undoDepth: undoStack.current.length,
       painted: (id: string) => boardCanvas.current?.paintedClientRect(id) ?? null,
+      /** A note's laid-out text height (world px, padding included). */
+      noteTextHeight: (id: string) => {
+        const note = snapshot?.notes.find((candidate) => candidate.id === id);
+        return note ? noteTextHeight(note) : null;
+      },
     };
   });
 
@@ -1309,6 +1339,7 @@ function BoardApp() {
     undoStack.current = [];
     redoStack.current = [];
     setDrillGroupId(null);
+    setResidentMedia([]);
   }, [activeBoardId]);
 
   const toasts: Toast[] = [];
@@ -1366,7 +1397,7 @@ function BoardApp() {
     if (accepted.length === 0) return;
     await createAndOpenBoard('Untitled board');
     // A new board opens framed on the world origin.
-    await ingest(accepted, { x: 0, y: 0 });
+    await ingest(accepted, { x: 0, y: 0 }, { ...arrivalCamera(), zoom: 1 });
   };
 
   // With no board yet (first run) the board group stays out: it's the way in.
@@ -1608,16 +1639,21 @@ function BoardApp() {
                   onExit={() => setNoteEditingId(null)}
                 />
               )}
-              {liveNode && (
-                <MediaPlayer
-                  key={liveNode.id}
-                  node={liveNode}
-                  viewport={camera}
-                  autoPlay={autoPlayId === liveNode.id}
-                  onAutoPlayed={() => setAutoPlayId(null)}
-                  handle={mediaHandle}
-                />
-              )}
+              {residentMedia.map((id) => {
+                const media = boardNodesById.get(id);
+                if (!media || (media.kind !== 'video' && media.kind !== 'audio')) return null;
+                return (
+                  <MediaPlayer
+                    key={id}
+                    node={media}
+                    viewport={camera}
+                    selected={liveNode?.id === id}
+                    autoPlay={autoPlayId === id}
+                    onAutoPlayed={() => setAutoPlayId(null)}
+                    handle={mediaHandle}
+                  />
+                );
+              })}
               {/* §1 HOVERED — 1px 40% outline on an unselected node (any kind).
                     Replaced by the selection outline the moment that node is
                     selected. rotatedBounds() keeps the outline tight on rotated
@@ -1976,6 +2012,9 @@ function BoardApp() {
     </div>
   );
 }
+
+/** Media items that keep a (paused) player once deselected. */
+const MAX_RESIDENT_MEDIA = 6;
 
 /** A right press that travels less than this (screen px) is a click: the
  *  context menu. Further, and it's a right-drag (the window moves). */

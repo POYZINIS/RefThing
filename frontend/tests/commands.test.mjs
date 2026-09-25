@@ -271,3 +271,32 @@ test('wheelZoomFactor: 25% a notch, normalised across delta modes, capped', asyn
   assert.ok(Math.abs(wheelZoomFactor(-5000, 0, 1) - 1.25 ** 3) < 1e-9, 'a fling caps at 3');
   assert.ok(Math.abs(wheelZoomFactor(-4, 0, 1) - 1.25 ** 0.04) < 1e-9, 'trackpad: proportional');
 });
+
+test('arrivalSize: natural pixels on screen at any zoom, capped to the view', async () => {
+  const { arrivalSize, ARRIVAL_FIT } = await import('../src/state/commands.ts');
+  const view = { width: 1400, height: 900 };
+  assert.deepEqual(arrivalSize({ width: 400, height: 300 }, { ...view, zoom: 1 }), {
+    width: 400,
+    height: 300,
+  });
+  // Zoomed out to 3%: the same 400 px on screen = 400 / 0.03 world px.
+  const far = arrivalSize({ width: 400, height: 300 }, { ...view, zoom: 0.03 });
+  assert.ok(Math.abs(far.width * 0.03 - 400) < 1e-6 && Math.abs(far.height * 0.03 - 300) < 1e-6);
+  // Bigger than the view: fits in ARRIVAL_FIT of it, keeping proportions.
+  const big = arrivalSize({ width: 1600, height: 1200 }, { ...view, zoom: 2 });
+  assert.ok(Math.abs(big.height * 2 - 900 * ARRIVAL_FIT) < 1e-6, 'height-bound fit');
+  assert.ok(Math.abs(big.width / big.height - 4 / 3) < 1e-9, 'aspect kept');
+});
+
+test('duplicate offset is screen px: divided by the zoom', async () => {
+  const { DUPLICATE_OFFSET, duplicateOps } = await import('../src/state/commands.ts');
+  const snapshot = {
+    items: [item('a', 1, { x: 100, y: 100 })],
+    notes: [],
+    groups: [],
+    tags: [],
+    item_tags: {},
+  };
+  const { ops } = duplicateOps(snapshot, ['a'], newId, 1, 0.05);
+  assert.equal(ops[0].item.x, 100 + DUPLICATE_OFFSET / 0.05);
+});

@@ -368,3 +368,149 @@ test('right-clicking a note gives text controls; the menu stays open while styli
   await page.keyboard.press('Escape');
   assert.equal((await style()).text, '**Hello **world****', 'selection wrapped as markdown');
 });
+
+test('added things are sized to the camera: the same on screen at any zoom', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    images: [{ name: 'anchor.png', x: 0, y: 0, width: 200, height: 200 }],
+  });
+  await openBoard(page, seeded);
+  // Zoom far out.
+  await page.mouse.move(700, 450);
+  for (let i = 0; i < 12; i += 1) await page.mouse.wheel(0, 100);
+  await page.waitForTimeout(800);
+  const zoom = await page.evaluate(() => window.__refthing.viewport.zoom);
+  assert.ok(zoom < 0.1, `zoomed out: ${zoom}`);
+
+  // A note from the menu: 280 px wide on screen, whatever the zoom.
+  await page.mouse.click(500, 400, { button: 'right' });
+  await page.getByRole('menuitem', { name: 'Add Note' }).click();
+  await page.waitForTimeout(300);
+  const noteId = (await state(page)).selection[0];
+  const note = await page.evaluate((id) => window.__refthing.painted(id), noteId);
+  assert.ok(Math.abs(note.width - 280) < 3, `note on screen: ${note.width}px`);
+
+  // A dropped 160x100 image: 160 px on screen.
+  const drop = { x: 900, y: 560 };
+  await page.evaluate(async ({ x, y }) => {
+    const canvas = new OffscreenCanvas(160, 100);
+    const context2d = canvas.getContext('2d');
+    context2d.fillStyle = '#3070c0';
+    context2d.fillRect(0, 0, 160, 100);
+    const blob = await canvas.convertToBlob({ type: 'image/png' });
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([blob], 'far.png', { type: 'image/png' }));
+    const target = document.elementFromPoint(x, y);
+    for (const type of ['dragenter', 'dragover', 'drop']) {
+      target.dispatchEvent(
+        new DragEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          clientX: x,
+          clientY: y,
+          dataTransfer: transfer,
+        }),
+      );
+    }
+  }, drop);
+  await page.waitForFunction(() => window.__refthing.nodes.length === 3, null, { timeout: 15000 });
+  await page.waitForTimeout(400);
+  const dropped = (await state(page)).nodes.find(
+    (candidate) => candidate.kind !== 'note' && candidate.id !== seeded.ids['anchor.png'],
+  );
+  const painted = await page.evaluate((id) => window.__refthing.painted(id), dropped.id);
+  assert.ok(Math.abs(painted.width - 160) < 3, `image on screen: ${painted.width}px`);
+  assert.ok(Math.abs(painted.x + painted.width / 2 - drop.x) < 3, 'centred on the drop');
+});
+
+test('note sizing: Size clips; width truncates; height scales text down once it meets it', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    notes: [
+      { name: 'fits', x: 100, y: 100, width: 260, height: 90, text: 'Label' },
+      { name: 'room', x: 500, y: 100, width: 260, height: 200, text: 'Two lines\nof text' },
+      {
+        name: 'clipped',
+        x: 100,
+        y: 400,
+        width: 200,
+        height: 50,
+        text: 'A long note\nwith many\nlines that\ndo not fit',
+      },
+    ],
+  });
+  await openBoard(page, seeded);
+  const note = async (name) => {
+    await page.waitForTimeout(350);
+    const board = await (
+      await context.request.get(`${BASE_URL}/api/boards/${seeded.boardId}`)
+    ).json();
+    return board.notes.find((candidate) => candidate.id === seeded.ids[name]);
+  };
+  const scaleOf = (record) => record.content_json.scale ?? 1;
+  const zoom = () => page.evaluate(() => window.__refthing.viewport.zoom);
+  /** Drag a zone of the selected note's box (`at` picks it from the rect). */
+  const zoneDrag = async (id, at, dx, dy) => {
+    const center = await nodeCenter(page, id);
+    await page.mouse.click(center.x, center.y);
+    const rect = await page.evaluate(() => {
+      const r = document.querySelector('.selection-overlay').getBoundingClientRect();
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+    });
+    const from = at(rect);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + dx / 2, from.y + dy / 2, { steps: 5 });
+    await page.mouse.move(from.x + dx, from.y + dy, { steps: 5 });
+    await page.mouse.up();
+  };
+  const corner = (r) => ({ x: r.right - 2, y: r.bottom - 2 });
+  const bottom = (r) => ({ x: (r.left + r.right) / 2, y: r.bottom - 2 });
+  const right = (r) => ({ x: r.right - 2, y: (r.top + r.bottom) / 2 });
+
+  // Size from the menu: the text grows, the box does not.
+  const before = await note('fits');
+  const center = await nodeCenter(page, seeded.ids.fits);
+  await page.mouse.click(center.x, center.y, { button: 'right' });
+  await page.getByRole('menuitemradio', { name: 'L', exact: true }).click();
+  await page.keyboard.press('Escape');
+  const sized = await note('fits');
+  assert.equal(sized.content_json.style.size, 20);
+  assert.equal(sized.height, before.height, 'the box keeps its size (text clips)');
+
+  // Growing never scales the text.
+  await zoneDrag(seeded.ids.fits, corner, 200, 80);
+  const grown = await note('fits');
+  assert.ok(grown.width > sized.width + 100, 'it did resize');
+  assert.equal(scaleOf(grown), scaleOf(sized), 'growing keeps the text size');
+
+  // Width truncates: narrowing reflows, the text size stays.
+  const room = await note('room');
+  await zoneDrag(seeded.ids.room, right, -150, 0);
+  const narrow = await note('room');
+  assert.ok(narrow.width < room.width - 100, 'narrowed');
+  assert.equal(scaleOf(narrow), scaleOf(room), 'narrowing keeps the text size');
+
+  // Height: shrinking with room below the text leaves it alone ...
+  await zoneDrag(seeded.ids.room, bottom, 0, -40 * (await zoom()));
+  const shorter = await note('room');
+  assert.ok(shorter.height < narrow.height - 30, 'shortened');
+  assert.equal(scaleOf(shorter), scaleOf(narrow), 'room left: text unchanged');
+  // ... and past the text's bottom, scales it down to just fit.
+  const target = 40;
+  await zoneDrag(seeded.ids.room, bottom, 0, -(shorter.height - target) * (await zoom()));
+  const squeezed = await note('room');
+  assert.ok(Math.abs(squeezed.height - target) < 3, `height ${squeezed.height}`);
+  assert.ok(scaleOf(squeezed) < scaleOf(shorter) * 0.9, `text shrank: ${scaleOf(squeezed)}`);
+  assert.ok(scaleOf(squeezed) > 0.1);
+  const fitted = await page.evaluate((id) => window.__refthing.noteTextHeight(id), seeded.ids.room);
+  assert.ok(fitted <= squeezed.height + 0.5, `fits: ${fitted} <= ${squeezed.height}`);
+  assert.ok(fitted > squeezed.height * 0.8, `just fits: ${fitted} vs ${squeezed.height}`);
+
+  // A note already clipping: shrinking moves the box over the text.
+  const clippedBefore = await note('clipped');
+  await zoneDrag(seeded.ids.clipped, bottom, 0, -15 * (await zoom()));
+  const clippedAfter = await note('clipped');
+  assert.ok(clippedAfter.height < clippedBefore.height - 5, 'it did resize');
+  assert.equal(scaleOf(clippedAfter), scaleOf(clippedBefore), 'text size unchanged');
+});

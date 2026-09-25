@@ -407,8 +407,18 @@ Done:
   fading in only when the pointer comes within 12px of it, never mid-drag.
   The item still moves and resizes while it plays. Double-click (bindings
   [double_click] media) or Play / Pause in the menu toggles playback,
-  selecting and starting an unselected item; deselecting stops it. Items
-  too small on screen get the controls as a strip under them.
+  selecting and starting an unselected item. Deselecting PAUSES (the
+  player stays resident — the last 6 — keeping its place); reselecting
+  never resumes on its own. Audio, for ears: a playhead through the
+  waveform that you drag to seek (its time to the millisecond while
+  held), and a millisecond transport; nothing on an item is grabbable
+  until it is selected. Items too small on screen get the controls as a strip under
+  them.
+- Added things are sized to the camera (state/commands.ts arrivalSize):
+  files arrive at natural pixels ON SCREEN (capped to 80% of the view),
+  new notes at the same on-screen size and text, Duplicate's offset is
+  screen px — the same at any zoom. Pasted copies and imports keep their
+  sizes.
 - Files: double-click opens the original, and Download is in the context
   menu. Drop, paste and Add files accept every file type.
 - Feature flags (src/features.ts). Restore Proportions un-squashes items

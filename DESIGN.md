@@ -89,6 +89,12 @@ Chrome only (`ui/motion.ts`): menus and popovers pop in (120ms), sheets and
 toasts rise (180ms); hover transitions 140ms. The board and the selection
 shell never animate. Reduced motion removes it all.
 
+## Added things
+
+New things arrive sized to the camera, never to the world: a dropped file
+shows at its natural pixels on screen (at most 80% of the view), a new
+note at the same on-screen size and text, whatever the zoom.
+
 ## Layout at small sizes
 
 Below 760px the corner groups share one wrapping row; below 500px spacing

@@ -183,6 +183,8 @@ export function restackOps(
 }
 
 /** Offset a duplicate lands at, so it is visibly a copy (world px). */
+/** Duplicate's offset, in SCREEN px: divided by the zoom so the copy is
+ *  visibly offset at any zoom. */
 export const DUPLICATE_OFFSET = 24;
 
 /**
@@ -195,7 +197,9 @@ export function duplicateOps(
   ids: readonly string[],
   newId: NewId = opId,
   now = Date.now(),
+  zoom = 1,
 ): { ops: BatchRequestOp[]; ids: string[] } {
+  const offset = DUPLICATE_OFFSET / zoom;
   let z = topZ(snapshot);
   const ops: BatchRequestOp[] = [];
   const created: string[] = [];
@@ -207,8 +211,8 @@ export function duplicateOps(
     created.push(id);
     const geometry = {
       id,
-      x: source.x + DUPLICATE_OFFSET,
-      y: source.y + DUPLICATE_OFFSET,
+      x: source.x + offset,
+      y: source.y + offset,
       z_index: z,
       created_at: now,
       updated_at: now,
@@ -411,4 +415,32 @@ export function arrangeDrop(
     top += r.height + gap;
   }
   return positions;
+}
+
+/** The camera new things arrive under: zoom and the view's size (px). */
+export type Camera = { zoom: number; width: number; height: number };
+
+/** Largest share of the view a newly added item may cover on screen. */
+export const ARRIVAL_FIT = 0.8;
+
+/**
+ * Camera-relative size for something newly added: its natural size in
+ * SCREEN px (an image's pixels, 1:1), capped to `ARRIVAL_FIT` of the view,
+ * turned into world size at the current zoom — so a drop looks the same
+ * whether you're zoomed in close or out over a huge board.
+ */
+export function arrivalSize(
+  natural: { width: number; height: number },
+  camera: Camera,
+): { width: number; height: number } {
+  const zoom = camera.zoom > 0 ? camera.zoom : 1;
+  const fit =
+    camera.width > 0 && camera.height > 0
+      ? Math.min(
+          1,
+          (camera.width * ARRIVAL_FIT) / Math.max(1, natural.width),
+          (camera.height * ARRIVAL_FIT) / Math.max(1, natural.height),
+        )
+      : 1;
+  return { width: (natural.width * fit) / zoom, height: (natural.height * fit) / zoom };
 }

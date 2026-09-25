@@ -73,6 +73,22 @@ conflict in this file; confirm or overrule them here.
 12. A note with no fill is text only, in the theme's flipped colour (light
    text on the dark theme, dark on the light); a fill makes automatic text
    contrast with it. Notes no longer default to yellow.
+13. Note text size, as the user decided (supersedes item 6's "never scales
+   with the note's height" and Rule 5's reflow-only resize):
+   - a new note's text is sized to the camera (same on screen at any zoom);
+   - choosing a text Size never resizes the box: the text clips at the
+     bottom;
+   - WIDTH truncates: narrowing or widening never scales the text; it
+     reflows at the new width and whatever no longer fits clips at the
+     bottom;
+   - HEIGHT scales the text DOWN, and only once the box's bottom edge meets
+     the text's (shrinking past it shrinks the text to just fit, measured
+     at the width the gesture started with); growing never scales text up;
+   - text that is already clipped keeps its size; the box moves over it.
+14. Audio seeks by dragging the playhead itself (the line through the
+   waveform) — there is no separate ruler or seek bar. Per Section 0
+   Rule 8 the playhead exists only while the item is selected; grabbing
+   it never moves the item.
 
 PURPOSE
 --------------------------------------------------------------------
@@ -108,6 +124,12 @@ SECTION 0 — GUIDING PRINCIPLES (non-negotiable)
    video, 3D model, audio, embed). Only the content rendered inside
    an item differs by type (per the poster/live model) — the
    selection/transform shell around it never does.
+8. Never edit something without clicking it first. Nothing on an item
+   (a control, a playhead, a handle, its text) can be grabbed or changed
+   until a click has selected it; on an unselected item the first press
+   only selects (and may begin a move). The right-click context menu is
+   the implied exception: right-clicking retargets the selection to the
+   item under the pointer and then offers its actions.
 
 
 ========================================================================

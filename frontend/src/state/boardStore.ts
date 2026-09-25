@@ -21,7 +21,7 @@ import {
   updateTag as updateTagApi,
 } from '@/api/client';
 import { CLIENT_ID } from '@/api/clientId';
-import { arrangeDrop } from './commands';
+import { arrangeDrop, arrivalSize, type Camera, DROP_GAP } from './commands';
 import { applyBoardOps } from './history';
 
 /** Geometry patch for a note — kept for the (unwired) drawing overlay's
@@ -52,8 +52,9 @@ type BoardState = {
   deleteBoard: (boardId: string) => Promise<void>;
   /** Import a board file (PureRef `.pur`) as a new board and open it. */
   importBoard: (file: File) => Promise<ImportResult | null>;
-  /** Upload files; `at` (world) centres them on the drop point. */
-  ingest: (files: File[], at?: { x: number; y: number }) => Promise<void>;
+  /** Upload files; `at` (world) centres them on the drop point, sized
+   *  relative to `camera` (see arrivalSize). */
+  ingest: (files: File[], at?: { x: number; y: number }, camera?: Camera) => Promise<void>;
   saveViewport: (viewportState: { x: number; y: number; zoom: number }) => Promise<void>;
   saveDrawing: (noteId: string, strokes: Array<Array<{ x: number; y: number }>>) => Promise<void>;
   createTag: (name: string, color?: string | null) => Promise<Tag>;
@@ -229,17 +230,19 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     }
   },
 
-  async ingest(files, at) {
+  async ingest(files, at, camera = { zoom: 1, width: 0, height: 0 }) {
     const boardId = get().activeBoardId;
     if (!boardId || files.length === 0) return;
     set({ busy: `Adding ${plural(files.length, 'file')}…`, error: null });
     try {
       const response = await ingestFiles(boardId, files, at);
-      // Centre the drop on the point it landed (sizes are known only now,
-      // after the server probed each file). Best effort: they already sit at
-      // the drop point if this fails.
+      // Size each file to the camera (natural pixels on screen, capped to
+      // the view) and centre the drop on the point it landed — sizes are
+      // known only now, after the server probed each file. Best effort:
+      // they already sit at the drop point if this fails.
       if (at && response.items.length > 0) {
-        const corners = arrangeDrop(response.items, at);
+        const sizes = response.items.map((item) => arrivalSize(item, camera));
+        const corners = arrangeDrop(sizes, at, DROP_GAP / (camera.zoom > 0 ? camera.zoom : 1));
         await submitBatch(boardId, {
           base_seq: response.seq,
           client_id: CLIENT_ID,
@@ -247,7 +250,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
             kind: 'update' as const,
             op_id: crypto.randomUUID(),
             item_id: item.item_id,
-            fields: corners[index] ?? at,
+            fields: { ...(corners[index] ?? at), ...sizes[index] },
           })),
         }).catch(() => undefined);
       }

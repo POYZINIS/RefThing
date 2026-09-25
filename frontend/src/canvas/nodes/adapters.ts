@@ -1,7 +1,7 @@
 import type { BlobInfo, Item, ItemPatch, Note } from '@/api/client';
 import { type Crop, FULL_CROP } from '../transform';
 import { cardDetail, itemKind, POSTER_LEVELS } from './itemKind';
-import { noteScale, noteStyle, noteText } from './noteText';
+import { layoutNoteDocument, noteScale, noteStyle, noteText } from './noteText';
 import { nodeKindRegistry } from './registry';
 import { type NodePatch, type NoteNode, nodeGeometry, type SpriteNode } from './types';
 
@@ -112,4 +112,52 @@ function parseCrop(value: unknown): Crop {
     crop.y + crop.h <= 1 + 1e-9
     ? crop
     : FULL_CROP;
+}
+
+/** The height of a note's laid-out text (world px, padding included), at
+ *  its own width and scale unless given. */
+export function noteTextHeight(
+  note: Note,
+  width = note.width,
+  scale = noteScale(note.content_json),
+): number {
+  return layoutNoteDocument(noteText(note.content_json), width, scale, noteStyle(note.content_json))
+    .contentHeight;
+}
+
+/** Is the note's text taller than its box, so the bottom is clipped? */
+export function noteClipped(note: Note): boolean {
+  return noteTextHeight(note, note.width, noteScale(note.content_json)) > note.height + 0.5;
+}
+
+/**
+ * A note resized by a patch (`note` is the note before the gesture).
+ * - Width never scales the text: it reflows at the new width and whatever
+ *   no longer fits is truncated at the bottom.
+ * - Height scales the text DOWN, and only once the box's bottom meets the
+ *   text's: shrinking past it shrinks the text to just fit. Growing never
+ *   scales text up (text size is the Size setting's job).
+ * - Text that is already clipped keeps its size; the box moves over it.
+ * Moves pass through.
+ */
+export function noteWithResize(note: Note, patch: NodePatch | undefined): Note {
+  const next = noteWithPatch(note, patch);
+  if (patch?.height === undefined || patch.height >= note.height) return next;
+  const scale = noteScale(note.content_json);
+  // Measured at the gesture's starting width: the vertical edge meets the
+  // text as it was, so a narrowing in the same drag only truncates.
+  const textHeight = noteTextHeight(note, note.width, scale);
+  if (textHeight > note.height + 0.5 || patch.height >= textHeight) return next;
+  // The largest scale whose text fits the new height (reflow makes the
+  // height only roughly proportional to the scale, so bisect).
+  let low = 0;
+  let high = scale;
+  for (let step = 0; step < 14; step += 1) {
+    const mid = (low + high) / 2;
+    if (noteTextHeight(note, note.width, mid) <= patch.height) low = mid;
+    else high = mid;
+  }
+  if (low <= 0) return next;
+  const content = (note.content_json ?? {}) as Record<string, unknown>;
+  return { ...next, content_json: { ...content, scale: low } };
 }

@@ -91,10 +91,10 @@ test('any file lands as a card that paints and opens', async () => {
 const opacityOf = (locator) =>
   locator.evaluate((element) => Number(getComputedStyle(element).opacity));
 
-test('audio: selecting mounts the player; each control reveals on its own', async () => {
+test('audio: a playhead through the waveform that you drag to seek; a precise transport', async () => {
   const { page, context } = session;
   const seeded = await seedBoard(context.request, {
-    files: [{ name: 'tone.wav', x: 200, y: 200, buffer: wav(2) }],
+    files: [{ name: 'tone.wav', x: 200, y: 200, buffer: wav(4) }],
   });
   await openBoard(page, seeded);
   const id = seeded.ids['tone.wav'];
@@ -111,42 +111,67 @@ test('audio: selecting mounts the player; each control reveals on its own', asyn
 
   const player = page.locator('[data-testid="live-media"]');
   assert.equal(await player.count(), 0, 'no player until selected');
+  assert.equal(await page.locator('.media-playhead').count(), 0, 'nothing to grab until clicked');
   const center = await nodeCenter(page, id);
   await page.mouse.click(center.x, center.y);
   await player.waitFor({ state: 'attached' });
   assert.equal(await player.evaluate((element) => element.tagName), 'AUDIO');
   assert.match(await player.getAttribute('src'), /\/blob\/[0-9a-f]{64}\/full$/);
 
-  // Controls reveal independently: near the play button only it shows.
-  const play = page.locator('.media-play');
-  const scrub = page.locator('.media-scrub');
+  // Each control reveals on its own; the waveform's middle shows none.
+  const transport = page.locator('.media-transport');
   await page.mouse.move(center.x, center.y);
-  await page.waitForTimeout(700);
-  assert.equal(await opacityOf(play), 0, 'nothing shows away from the controls');
-  const playBox = await play.boundingBox();
-  await page.mouse.move(playBox.x + playBox.width / 2, playBox.y + playBox.height / 2);
-  await page.waitForTimeout(300);
-  assert.equal(await opacityOf(play), 1, 'the play button shows near it');
-  assert.equal(await opacityOf(scrub), 0, 'the scrub bar stays hidden');
+  await page.waitForTimeout(500);
+  assert.equal(await opacityOf(transport), 0, 'nothing over the waveform body');
+  assert.equal(await page.locator('.media-ruler').count(), 0, 'no ruler: the playhead seeks');
+  const transportBox = await transport.boundingBox();
+  await page.mouse.move(transportBox.x + 15, transportBox.y + transportBox.height / 2);
+  await page.waitForTimeout(250);
+  assert.equal(await opacityOf(transport), 1, 'the transport shows near it');
+  assert.match(await transport.textContent(), /0:00\.\d{3}/, 'millisecond time');
 
+  // Play: the playhead runs through the waveform.
   await page.getByRole('button', { name: 'Play' }).click();
   await page.waitForFunction(() => !document.querySelector('[data-testid="live-media"]').paused);
-  assert.equal(await page.getByRole('button', { name: 'Pause' }).count(), 1);
+  await page.waitForTimeout(500);
+  const playhead = page.getByRole('slider', { name: 'Playhead' });
+  const left = await playhead.evaluate((element) => Number.parseFloat(element.style.left));
+  assert.ok(left > 0, `the playhead moved: ${left}%`);
+  await page.getByRole('button', { name: 'Pause' }).click();
 
-  // Scrub to the middle.
-  const track = page.getByRole('slider', { name: 'Seek' });
-  const trackBox = await track.boundingBox();
-  await page.mouse.move(trackBox.x + trackBox.width / 2, trackBox.y + trackBox.height / 2);
-  await page.waitForTimeout(300);
-  assert.equal(await opacityOf(scrub), 1, 'the scrub bar shows near it');
-  await page.mouse.click(trackBox.x + trackBox.width / 2, trackBox.y + trackBox.height / 2);
+  // Drag the playhead itself to the middle of the waveform.
+  const item = await page.evaluate((nodeId) => window.__refthing.painted(nodeId), id);
+  const grip = await playhead.boundingBox();
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.waitForTimeout(150);
+  assert.equal(
+    await page.locator('.media-playhead-time').evaluate((e) => getComputedStyle(e).opacity),
+    '1',
+    'its time shows while hovered',
+  );
+  await page.mouse.down();
+  await page.mouse.move(item.x + item.width / 2, grip.y + grip.height / 2, { steps: 8 });
+  await page.mouse.up();
   const at = await player.evaluate((element) => element.currentTime / element.duration);
-  assert.ok(Math.abs(at - 0.5) < 0.12, `seeked to the middle: ${at}`);
-  assert.deepEqual((await state(page)).selection, [id], 'controls never change the selection');
+  assert.ok(Math.abs(at - 0.5) < 0.05, `dragged to the middle: ${at}`);
+  assert.deepEqual((await state(page)).selection, [id], 'the playhead never moves the item');
+  const moved = await node(page, id);
+  assert.deepEqual([moved.x, moved.y], [audio.x, audio.y], 'the item stayed put');
 
-  // Deselecting stops it.
+  // Deselecting pauses (the player stays, keeping its place) ...
+  await page.mouse.click(center.x, center.y + 300);
+  await page.waitForFunction(() => document.querySelector('[data-testid="live-media"]').paused);
+  const pausedAt = await player.evaluate((element) => element.currentTime);
+  assert.equal(await page.locator('.media-controls').count(), 0, 'no controls when deselected');
+  // ... and selecting again doesn't resume it.
+  await page.mouse.click(center.x, center.y);
+  await page.waitForTimeout(500);
+  assert.equal(await player.evaluate((element) => element.paused), true, 'still paused');
+  assert.ok(
+    Math.abs((await player.evaluate((element) => element.currentTime)) - pausedAt) < 0.01,
+    'at the same place',
+  );
   await page.keyboard.press('Escape');
-  await player.waitFor({ state: 'detached' });
 });
 
 test('video: probed to its frame size, poster painted, double-click plays over the item', async (t) => {
@@ -211,8 +236,15 @@ test('video: probed to its frame size, poster painted, double-click plays over t
     headers: { Range: 'bytes=0-9' },
   });
   assert.equal(range.status(), 206);
+  // Playing, then deselected: paused, and reselecting doesn't resume.
+  await page.mouse.dblclick(center.x, center.y);
+  await page.waitForFunction(() => !document.querySelector('[data-testid="live-media"]').paused);
   await page.keyboard.press('Escape');
-  await player.waitFor({ state: 'detached' });
+  await page.waitForFunction(() => document.querySelector('[data-testid="live-media"]').paused);
+  await page.mouse.click(center.x, center.y);
+  await page.waitForTimeout(400);
+  assert.equal(await player.evaluate((element) => element.paused), true, 'no auto-resume');
+  await page.keyboard.press('Escape');
 });
 
 test('volume slides out from its button, works, and nothing sticks after a click', async () => {
@@ -243,14 +275,15 @@ test('volume slides out from its button, works, and nothing sticks after a click
   await page.waitForTimeout(300);
   assert.equal(await opacityOf(slider), 0, 'gone after moving off');
 
-  // Same for the play button after clicking it.
-  const play = await page.locator('.media-play').boundingBox();
-  await page.mouse.move(play.x + play.width / 2, play.y + play.height / 2);
+  // Same for the transport after clicking play.
+  const transport = page.locator('.media-transport');
+  const play = await transport.boundingBox();
+  await page.mouse.move(play.x + 15, play.y + play.height / 2);
   await page.waitForTimeout(250);
   await page.getByRole('button', { name: 'Play' }).click();
   await page.mouse.move(center.x + 120, center.y);
   await page.waitForTimeout(300);
-  assert.equal(await opacityOf(page.locator('.media-play')), 0, 'play hides after a click');
+  assert.equal(await opacityOf(transport), 0, 'the transport hides after a click');
   await page.keyboard.press('Escape');
 });
 
