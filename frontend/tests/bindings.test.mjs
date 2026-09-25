@@ -45,6 +45,13 @@ test('default presses reproduce the interaction conventions', () => {
   }
 });
 
+test('Z + drag is the alternate zoom on any target', () => {
+  for (const target of ['item', 'empty', 'selection', 'handle']) {
+    assert.equal(resolvePress(0, mods('z'), target, defaults), 'drag_zoom', target);
+  }
+  assert.deepEqual([...heldModifiers(ev(), (code) => code === 'KeyZ')], ['z']);
+});
+
 test('Space is always allowed (it is the snap-move role, not a press modifier)', () => {
   assert.equal(resolvePress(0, mods('shift', 'space'), 'selection', defaults), 'move_selection');
 });
@@ -64,12 +71,18 @@ test('default keys', () => {
 });
 
 test('gesture roles follow the table, and an override rebinds them everywhere', () => {
-  assert.deepEqual(gestureRoles(ev({ shiftKey: true }), false, defaults), {
-    constrain: true,
-    center: false,
-    snap: false,
-  });
-  assert.equal(gestureRoles(ev({ shiftKey: true }), true, defaults).snap, true);
+  assert.deepEqual(
+    gestureRoles(ev({ shiftKey: true }), () => false, defaults),
+    {
+      constrain: true,
+      center: false,
+      snap: false,
+    },
+  );
+  assert.equal(
+    gestureRoles(ev({ shiftKey: true }), (code) => code === 'Space', defaults).snap,
+    true,
+  );
   const custom = loadBindings(`
 [gesture]
 center = ["shift"]
@@ -83,11 +96,14 @@ target = "selection"
 [keys.undo]
 key = "u"
 `);
-  assert.deepEqual(gestureRoles(ev({ shiftKey: true }), false, custom), {
-    constrain: false,
-    center: true,
-    snap: false,
-  });
+  assert.deepEqual(
+    gestureRoles(ev({ shiftKey: true }), () => false, custom),
+    {
+      constrain: false,
+      center: true,
+      snap: false,
+    },
+  );
   assert.equal(resolvePress(0, mods('primary', 'alt'), 'selection', custom), 'flip');
   assert.equal(resolveKey({ ...ev(), key: 'u' }, custom), 'undo');
   assert.equal(

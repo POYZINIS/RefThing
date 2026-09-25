@@ -37,11 +37,14 @@ import { SnapshotManager } from '@/components/SnapshotManager';
 import TagManager from '@/components/TagManager';
 import { useBoardStore } from '@/state/boardStore';
 import {
+  type Clipboard,
+  copySelection,
   duplicateOps,
   fitViewport,
   groupOps,
   groupStyleOps,
   lockOps,
+  pasteOps,
   restackOps,
   toggleTagOps,
   topZ,
@@ -148,6 +151,11 @@ function BoardApp() {
     world: { x: number; y: number };
   } | null>(null);
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
+  // Board clipboard (Ctrl+C/X): whole records plus the marker we left on the
+  // OS clipboard to recognise our own paste.
+  const clipboardRef = useRef<{ clip: Clipboard; marker: string } | null>(null);
+  // Last pointer position over the board (client px) — pastes land there.
+  const lastPointer = useRef<{ x: number; y: number } | null>(null);
   // Right-press origin: a right-drag past the click epsilon is not a click,
   // so it must not open the menu (testing §2B context menu vs move window).
   const rightPress = useRef<{ x: number; y: number } | null>(null);
@@ -410,8 +418,28 @@ function BoardApp() {
     return () => window.removeEventListener('refthing-color-sampled', onSample);
   }, []);
 
+  // Copy / cut / paste ride the platform's own clipboard events (Ctrl/Cmd+C,
+  // X, V): they carry clipboard data synchronously and need no permission.
+  // Copying puts a one-off marker on the OS clipboard; a paste whose text is
+  // still that marker pastes our items, anything newer (an image copied in a
+  // browser) is ingested instead.
   useEffect(() => {
+    const typing = (event: Event) =>
+      event.target instanceof HTMLElement &&
+      !!event.target.closest('input, textarea, [contenteditable="true"]');
+    const onCopyOrCut = (event: ClipboardEvent) => {
+      if (typing(event) || !actionsRef.current.copy(event.type === 'cut')) return;
+      event.clipboardData?.setData('text/plain', clipboardRef.current?.marker ?? '');
+      event.preventDefault();
+    };
     const onPaste = (event: ClipboardEvent) => {
+      if (typing(event)) return;
+      const text = event.clipboardData?.getData('text/plain') ?? '';
+      if (clipboardRef.current && text === clipboardRef.current.marker) {
+        event.preventDefault();
+        actionsRef.current.pasteClipboard(null);
+        return;
+      }
       const files = Array.from(event.clipboardData?.files ?? []).filter((file) =>
         file.type.startsWith('image/'),
       );
@@ -420,8 +448,14 @@ function BoardApp() {
         void ingest(files);
       }
     };
+    window.addEventListener('copy', onCopyOrCut);
+    window.addEventListener('cut', onCopyOrCut);
     window.addEventListener('paste', onPaste);
-    return () => window.removeEventListener('paste', onPaste);
+    return () => {
+      window.removeEventListener('copy', onCopyOrCut);
+      window.removeEventListener('cut', onCopyOrCut);
+      window.removeEventListener('paste', onPaste);
+    };
   }, [ingest]);
 
   // Restore a board's saved camera ONCE, when it opens. The saved value only
@@ -854,10 +888,54 @@ function BoardApp() {
       }
     },
     addNoteAt: (world: { x: number; y: number }) => addNote(world),
-    pasteImages: async () => {
+    /** Ctrl+C / Ctrl+X: capture the selection (and its group-mates). */
+    copy: (cut: boolean) => {
+      if (!snapshot || shellNodes.length === 0) return false;
+      clipboardRef.current = {
+        clip: copySelection(
+          snapshot,
+          shellNodes.map((node) => node.id),
+        ),
+        marker: `refthing-clipboard:${crypto.randomUUID()}`,
+      };
+      if (cut) deleteSelectionRef.current();
+      return true;
+    },
+    /** Paste our clipboard centred on `at` (world), else on the cursor, else
+     *  on the middle of the view. One undo entry; the paste is selected. */
+    pasteClipboard: (at: { x: number; y: number } | null) => {
+      const held = clipboardRef.current;
+      if (!snapshot || !held) return;
+      const camera = renderedCamera.get();
+      const host = canvasHost.current?.getBoundingClientRect();
+      const pointer = lastPointer.current;
+      const target =
+        at ??
+        (pointer && host
+          ? screenToWorld({ clientX: pointer.x, clientY: pointer.y }, camera, host)
+          : host
+            ? screenToWorld(
+                { clientX: host.left + host.width / 2, clientY: host.top + host.height / 2 },
+                camera,
+                host,
+              )
+            : { x: 0, y: 0 });
+      const { ops, ids } = pasteOps(snapshot, held.clip, target);
+      commitBoardOps.current(ops, 'Paste');
+      setNoteEditingId(null);
+      setSelectedNodeIds(ids);
+    },
+    pasteImages: async (at: { x: number; y: number } | null = null) => {
       try {
         const files: File[] = [];
         for (const entry of await navigator.clipboard.read()) {
+          if (entry.types.includes('text/plain') && clipboardRef.current) {
+            const text = await (await entry.getType('text/plain')).text();
+            if (text === clipboardRef.current.marker) {
+              actionsRef.current.pasteClipboard(at);
+              return;
+            }
+          }
           const type = entry.types.find((candidate) => candidate.startsWith('image/'));
           if (!type) continue;
           const blob = await entry.getType(type);
@@ -1160,6 +1238,12 @@ function BoardApp() {
 
       <main
         className="canvas-frame"
+        onPointerMove={(event) => {
+          lastPointer.current = { x: event.clientX, y: event.clientY };
+        }}
+        onPointerLeave={() => {
+          lastPointer.current = null;
+        }}
         onPointerDownCapture={(event) => {
           if (event.button === 2) rightPress.current = { x: event.clientX, y: event.clientY };
         }}
@@ -1294,7 +1378,9 @@ function BoardApp() {
                     )
                   }
                   onOutsidePress={(event) => boardCanvas.current?.overlayPointerDown(event)}
-                  onChromePress={(event) => boardCanvas.current?.chromePointerDown(event)}
+                  onChromePress={(event, action) =>
+                    boardCanvas.current?.chromePointerDown(event, action)
+                  }
                   onBodyClick={(event) => {
                     // A click (no drag) inside the box behaves like a click on
                     // bare canvas: Shift toggles the node under the pointer, a
@@ -1439,7 +1525,7 @@ function BoardApp() {
                     {
                       label: 'Paste',
                       shortcut: 'Ctrl+V',
-                      action: () => void actions.pasteImages(),
+                      action: () => void actions.pasteImages(menu.world),
                     },
                     { label: 'Zoom to Fit', action: actions.zoomToFit },
                   ]

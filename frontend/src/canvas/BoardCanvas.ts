@@ -293,10 +293,21 @@ export class BoardCanvas {
    * shell). Middle-drag pans exactly as it would on bare canvas; the right
    * button is left to the contextmenu event.
    */
-  chromePointerDown(event: PointerEvent): void {
-    // The shell already resolved this press to `pan` via the bindings.
+  chromePointerDown(event: PointerEvent, action: 'pan' | 'drag_zoom' = 'pan'): void {
+    // The shell already resolved this press via the bindings.
     this.capturePress(event);
-    this.startPan();
+    if (action === 'drag_zoom') this.startDragZoom(event);
+    else this.startPan();
+  }
+
+  /** Plan: Z + drag zooms around the press point (right/up = in). */
+  private startDragZoom(event: PointerEvent): void {
+    this.controller.clearHover();
+    this.zoomDrag = {
+      startClient: { x: event.clientX, y: event.clientY },
+      anchor: this.worldPoint(event.clientX, event.clientY),
+      startZoom: this.viewport.zoom,
+    };
   }
 
   /** Capture on the canvas so the gesture keeps receiving moves after the
@@ -310,6 +321,12 @@ export class BoardCanvas {
       // Drag still works via explicit pointermove/up on the canvas.
     }
   }
+
+  private zoomDrag: {
+    startClient: { x: number; y: number };
+    anchor: { x: number; y: number };
+    startZoom: number;
+  } | null = null;
 
   private startPan(): void {
     this.controller.clearHover();
@@ -525,6 +542,10 @@ export class BoardCanvas {
       this.startPan();
       return;
     }
+    if (action === 'drag_zoom') {
+      this.startDragZoom(event);
+      return;
+    }
     this.controller.press(event, action);
   };
 
@@ -534,6 +555,20 @@ export class BoardCanvas {
   };
 
   private readonly onPointerMove = (event: PointerEvent): void => {
+    if (this.zoomDrag) {
+      const { startClient, anchor, startZoom } = this.zoomDrag;
+      const travel = event.clientX - startClient.x - (event.clientY - startClient.y);
+      const zoom = Math.max(0.1, Math.min(4, startZoom * Math.exp(travel * 0.005)));
+      const rect = this.app.canvas.getBoundingClientRect();
+      // Keep the pressed world point under the press position.
+      this.viewport = {
+        zoom,
+        x: startClient.x - rect.left - anchor.x * zoom,
+        y: startClient.y - rect.top - anchor.y * zoom,
+      };
+      this.options.onViewportChange?.(this.getViewport(), 'zoom');
+      return;
+    }
     if (this.panning) {
       this.viewport.x += event.clientX - this.lastPointer.x;
       this.viewport.y += event.clientY - this.lastPointer.y;
@@ -549,6 +584,7 @@ export class BoardCanvas {
   private readonly onPointerUp = (): void => {
     this.controller.release();
     this.panning = false;
+    this.zoomDrag = null;
     this.options.onViewportChange?.(this.getViewport(), 'release');
   };
 

@@ -85,11 +85,7 @@ export class NodeInteractionController {
   /** What a canvas press means (bindings table), from what it lands on. */
   resolve(event: PointerEvent): PressAction | null {
     const node = this.hitTest(this.host.worldPoint(event.clientX, event.clientY));
-    return resolvePress(
-      event.button,
-      heldModifiers(event, isHeld('Space')),
-      node ? 'item' : 'empty',
-    );
+    return resolvePress(event.button, heldModifiers(event, isHeld), node ? 'item' : 'empty');
   }
 
   /** Canvas press, already resolved to an action. */
@@ -127,7 +123,7 @@ export class NodeInteractionController {
       const moving = this.moveSet(node);
       // Plan: Shift+Space + drag snaps the moving set to other nodes' edges
       // and centers (Shift pressed after the press — a Shift press toggles).
-      if (gestureRoles(event, isHeld('Space')).snap) {
+      if (gestureRoles(event, isHeld).snap) {
         const ids = new Set(moving.map((candidate) => candidate.id));
         const offsetX = node.x - originX;
         const offsetY = node.y - originY;

@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  copySelection,
   DUPLICATE_OFFSET,
   duplicateOps,
   fitViewport,
   groupOps,
   groupStyleOps,
   lockOps,
+  pasteOps,
   restackOps,
   toggleTagOps,
   ungroupOps,
@@ -198,4 +200,29 @@ test('group style and tag toggles are single undoable commands', () => {
     remove.map((op) => op.fields),
     [{ remove_tag_ids: ['red'] }, { remove_tag_ids: ['red'] }],
   );
+});
+
+test('copy → paste lands centred on the cursor, on top, into another board', () => {
+  const source = board();
+  const clip = copySelection(source, ['a', 'n']);
+  assert.deepEqual(clip.itemTags, { a: ['red'] });
+  const target = board({ board: { id: 'other' }, items: [item('z', 9)], notes: [] });
+  const { ops, ids } = pasteOps(target, clip, { x: 1000, y: 500 }, newId, 3);
+  assert.equal(ids.length, 2);
+  const placed = ops.map((op) => op.item ?? op.note);
+  assert.ok(placed.every((record) => record.board_id === 'other'));
+  assert.ok(
+    placed.every((record) => record.z_index > 9),
+    'above everything on the target',
+  );
+  const left = Math.min(...placed.map((r) => r.x));
+  const right = Math.max(...placed.map((r) => r.x + r.width));
+  const top = Math.min(...placed.map((r) => r.y));
+  const bottom = Math.max(...placed.map((r) => r.y + r.height));
+  assert.deepEqual([(left + right) / 2, (top + bottom) / 2], [1000, 500]);
+  roundTrip(target, ops);
+  assert.deepEqual(pasteOps(target, copySelection(source, []), { x: 0, y: 0 }), {
+    ops: [],
+    ids: [],
+  });
 });

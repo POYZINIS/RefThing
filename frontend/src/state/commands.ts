@@ -266,3 +266,67 @@ export function unionRect(rects: WorldRect[]): WorldRect | null {
     bottom: Math.max(union.bottom, rect.bottom),
   }));
 }
+
+/** What Ctrl+C / Ctrl+X captured: whole records, so they paste into any
+ *  board (blobs are global, so items keep pointing at the same image). */
+export type Clipboard = { items: Item[]; notes: Note[]; itemTags: Record<string, string[]> };
+
+export function copySelection(snapshot: Snapshot, ids: readonly string[]): Clipboard {
+  const wanted = new Set(ids);
+  const items = snapshot.items.filter((item) => wanted.has(item.id));
+  return {
+    items,
+    notes: snapshot.notes.filter((note) => wanted.has(note.id)),
+    itemTags: Object.fromEntries(items.map((item) => [item.id, snapshot.item_tags[item.id] ?? []])),
+  };
+}
+
+/**
+ * Paste a clipboard centred on `at` (world px) into `snapshot`'s board: fresh
+ * ids, on top of the paint order in the original relative order, ungrouped,
+ * tags kept. Returns the new ids so the paste can be selected.
+ */
+export function pasteOps(
+  snapshot: Snapshot,
+  clip: Clipboard,
+  at: { x: number; y: number },
+  newId: NewId = opId,
+  now = Date.now(),
+): { ops: BatchRequestOp[]; ids: string[] } {
+  const records = [...clip.items, ...clip.notes].sort((a, b) => a.z_index - b.z_index);
+  if (records.length === 0) return { ops: [], ids: [] };
+  const left = Math.min(...records.map((record) => record.x));
+  const top = Math.min(...records.map((record) => record.y));
+  const right = Math.max(...records.map((record) => record.x + record.width));
+  const bottom = Math.max(...records.map((record) => record.y + record.height));
+  const dx = at.x - (left + right) / 2;
+  const dy = at.y - (top + bottom) / 2;
+  let z = topZ(snapshot);
+  const ops: BatchRequestOp[] = [];
+  const ids: string[] = [];
+  for (const record of records) {
+    z += 1;
+    const id = newId();
+    ids.push(id);
+    const placed = {
+      id,
+      board_id: snapshot.board.id,
+      x: record.x + dx,
+      y: record.y + dy,
+      z_index: z,
+      created_at: now,
+      updated_at: now,
+    };
+    if ('content_json' in record) {
+      ops.push({ kind: 'put_note', op_id: newId(), note: { ...record, ...placed } });
+    } else {
+      ops.push({
+        kind: 'restore_item',
+        op_id: newId(),
+        item: { ...record, ...placed, group_id: null },
+        tag_ids: clip.itemTags[record.id] ?? [],
+      });
+    }
+  }
+  return { ops, ids };
+}

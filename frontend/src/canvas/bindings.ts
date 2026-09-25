@@ -26,6 +26,13 @@ button = "middle"
 target = "any"
 optional = ["shift", "alt", "primary"]
 
+# Plan: "Z + drag - alternate zoom gesture" (drag right/up = zoom in,
+# around the press point). Z is held, not typed.
+[actions.drag_zoom]
+button = "left"
+modifiers = ["z"]
+target = "any"
+
 [actions.toggle_select]
 button = "left"
 modifiers = ["shift"]
@@ -119,10 +126,12 @@ optional = ["shift"]
 key = "Escape"
 `;
 
-export type Modifier = 'shift' | 'alt' | 'primary' | 'space';
+/** `space` and `z` are held keys (PointerEvent doesn't carry them). */
+export type Modifier = 'shift' | 'alt' | 'primary' | 'space' | 'z';
 export type PressTarget = 'item' | 'empty' | 'selection' | 'handle';
 export type PressAction =
   | 'pan'
+  | 'drag_zoom'
   | 'toggle_select'
   | 'move_item'
   | 'box_select'
@@ -236,14 +245,19 @@ const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad)/.test(navigat
 
 type ModifierEvent = { shiftKey: boolean; altKey: boolean; ctrlKey: boolean; metaKey: boolean };
 
-/** The modifiers physically held, as binding names. `space` comes from the
- *  held-key tracker (PointerEvent doesn't carry it). */
-export function heldModifiers(event: ModifierEvent, spaceHeld = false): Set<Modifier> {
+/** Is a physical key (KeyboardEvent.code) down right now? (heldKeys.ts) */
+type KeyProbe = (code: string) => boolean;
+const noKeys: KeyProbe = () => false;
+
+/** The modifiers physically held, as binding names. `space` and `z` come
+ *  from the held-key tracker (PointerEvent doesn't carry them). */
+export function heldModifiers(event: ModifierEvent, keyDown: KeyProbe = noKeys): Set<Modifier> {
   const held = new Set<Modifier>();
   if (event.shiftKey) held.add('shift');
   if (event.altKey) held.add('alt');
   if (isMac ? event.metaKey : event.ctrlKey) held.add('primary');
-  if (spaceHeld) held.add('space');
+  if (keyDown('Space')) held.add('space');
+  if (keyDown('KeyZ')) held.add('z');
   return held;
 }
 
@@ -299,10 +313,10 @@ export function resolveKey(
 /** Gesture roles for a pointer sample (see transform.ts Modifiers). */
 export function gestureRoles(
   event: ModifierEvent,
-  spaceHeld: boolean,
+  keyDown: KeyProbe = noKeys,
   table: Bindings = active,
 ): { constrain: boolean; center: boolean; snap: boolean } {
-  const held = heldModifiers(event, spaceHeld);
+  const held = heldModifiers(event, keyDown);
   const on = (keys: Modifier[]) => keys.length > 0 && keys.every((key) => held.has(key));
   const snap = on(table.gesture.snapMove);
   return { constrain: on(table.gesture.constrain), center: on(table.gesture.center), snap };
