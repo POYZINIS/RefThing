@@ -8,6 +8,7 @@
 //! take `&SqlitePool` and cannot join one.
 
 pub mod board_service;
+pub mod import_service;
 pub mod ingest_service;
 pub mod item_service;
 pub mod search;

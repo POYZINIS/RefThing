@@ -4,7 +4,15 @@
  */
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { launch, nodeCenter, openBoard, seedBoard, settle, state } from './harness.mjs';
+import {
+  launch,
+  nodeCenter,
+  openBoard,
+  seedBoard,
+  settle,
+  state,
+  switchBoard,
+} from './harness.mjs';
 
 let session;
 before(async () => {
@@ -71,8 +79,7 @@ test('paste into a different board keeps the images (blobs are global)', async (
   const a = await nodeCenter(page, source.ids['a.png']);
   await page.mouse.click(a.x, a.y);
   await page.keyboard.press('Control+c');
-  await page.locator('.board-row', { hasText: target.name }).click();
-  await page.waitForFunction((id) => window.__refthing.boardId === id, target.boardId);
+  await switchBoard(page, target);
   await page.mouse.move(700, 500);
   await page.keyboard.press('Control+v');
   await page.waitForTimeout(300);

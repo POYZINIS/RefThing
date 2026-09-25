@@ -35,9 +35,9 @@ export function FpsHud() {
       data-fps-hud="true"
       style={{
         position: 'fixed',
-        // Bottom-left over the board: clear of the toolbar and the canvas meta.
+        // Bottom-left over the board, clear of the centred view toolbar.
         bottom: 12,
-        left: 260,
+        left: 12,
         zIndex: 9999,
         padding: '6px 10px',
         borderRadius: 6,

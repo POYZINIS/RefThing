@@ -51,7 +51,7 @@ impl JobHandler for MediaPosterJob {
                 &[
                     "-filter_complex",
                     &format!(
-                        "aformat=channel_layouts=mono,showwavespic=s={WAVEFORM}:colors=0xd6ff76:scale=sqrt"
+                        "aformat=channel_layouts=mono,showwavespic=s={WAVEFORM}:colors=0x6f8f78:scale=sqrt"
                     ),
                     "-frames:v",
                     "1",

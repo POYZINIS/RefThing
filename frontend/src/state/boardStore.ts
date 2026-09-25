@@ -6,15 +6,22 @@ import {
   type BoardSummary,
   createBoard,
   createTag as createTagApi,
+  deleteBoard as deleteBoardApi,
   deleteTag as deleteTagApi,
   fetchBoard,
+  type ImportResult,
+  importBoard as importBoardApi,
   ingestFiles,
   listBoards,
+  renameBoard as renameBoardApi,
+  submitBatch,
   type Tag,
   updateBoardViewport,
   updateNote,
   updateTag as updateTagApi,
 } from '@/api/client';
+import { CLIENT_ID } from '@/api/clientId';
+import { arrangeDrop } from './commands';
 import { applyBoardOps } from './history';
 
 /** Geometry patch for a note — kept for the (unwired) drawing overlay's
@@ -34,11 +41,19 @@ type BoardState = {
   activeBoardId: string | null;
   snapshot: BoardSnapshot | null;
   loading: boolean;
+  /** A long write in progress, for the status line ("Adding 3 files…"). */
+  busy: string | null;
   error: string | null;
+  clearError: () => void;
   loadBoards: () => Promise<void>;
   openBoard: (boardId: string) => Promise<void>;
   createAndOpenBoard: (name: string) => Promise<void>;
-  ingest: (files: File[]) => Promise<void>;
+  renameBoard: (boardId: string, name: string) => Promise<void>;
+  deleteBoard: (boardId: string) => Promise<void>;
+  /** Import a board file (PureRef `.pur`) as a new board and open it. */
+  importBoard: (file: File) => Promise<ImportResult | null>;
+  /** Upload files; `at` (world) centres them on the drop point. */
+  ingest: (files: File[], at?: { x: number; y: number }) => Promise<void>;
   saveViewport: (viewportState: { x: number; y: number; zoom: number }) => Promise<void>;
   saveDrawing: (noteId: string, strokes: Array<Array<{ x: number; y: number }>>) => Promise<void>;
   createTag: (name: string, color?: string | null) => Promise<Tag>;
@@ -62,6 +77,28 @@ const LEVEL_EDGES: Record<string, number> = {
   full: Number.POSITIVE_INFINITY,
 };
 
+/** The board to open on launch: `?board=<id>` in the URL, else the last one
+ *  opened on this machine. */
+const LAST_BOARD_KEY = 'refthing.lastBoard';
+function preferredBoard(): string | null {
+  try {
+    const fromUrl = new URLSearchParams(globalThis.location?.search ?? '').get('board');
+    return fromUrl ?? globalThis.localStorage?.getItem(LAST_BOARD_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+function rememberBoard(boardId: string | null): void {
+  try {
+    if (boardId) globalThis.localStorage?.setItem(LAST_BOARD_KEY, boardId);
+    else globalThis.localStorage?.removeItem(LAST_BOARD_KEY);
+  } catch {
+    // Storage blocked: launch falls back to the first board.
+  }
+}
+
+const plural = (count: number, one: string) => `${count} ${one}${count === 1 ? '' : 's'}`;
+
 /** Unacknowledged optimistic ops (registered by the active BatchQueue). */
 let pendingOpsSource: (() => BatchOp[]) | null = null;
 
@@ -74,14 +111,22 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   activeBoardId: null,
   snapshot: null,
   loading: true,
+  busy: null,
   error: null,
+
+  clearError() {
+    set({ error: null });
+  },
 
   async loadBoards() {
     set({ loading: true, error: null });
     try {
       const boards = await listBoards();
       set({ boards });
-      const activeBoardId = get().activeBoardId ?? boards[0]?.id;
+      const preferred = preferredBoard();
+      const activeBoardId =
+        get().activeBoardId ??
+        (boards.some((board) => board.id === preferred) ? preferred : boards[0]?.id);
       if (activeBoardId) {
         await get().openBoard(activeBoardId);
       } else {
@@ -97,6 +142,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
 
   async openBoard(activeBoardId) {
     set({ loading: true, error: null, activeBoardId });
+    rememberBoard(activeBoardId);
     try {
       const fetched = await fetchBoard(activeBoardId);
       // Writes still on their way to the server are missing from a fetch
@@ -126,12 +172,85 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     await get().openBoard(board.id);
   },
 
-  async ingest(files) {
+  async renameBoard(boardId, name) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    try {
+      const board = await renameBoardApi(boardId, trimmed);
+      set((state) => ({
+        boards: state.boards.map((entry) =>
+          entry.id === boardId ? { ...entry, name: board.name } : entry,
+        ),
+        snapshot:
+          state.snapshot?.board.id === boardId
+            ? { ...state.snapshot, board: { ...state.snapshot.board, name: board.name } }
+            : state.snapshot,
+      }));
+    } catch (error: unknown) {
+      set({ error: error instanceof Error ? error.message : 'Could not rename the board' });
+    }
+  },
+
+  async deleteBoard(boardId) {
+    try {
+      await deleteBoardApi(boardId);
+    } catch (error: unknown) {
+      set({ error: error instanceof Error ? error.message : 'Could not delete the board' });
+      return;
+    }
+    const boards = get().boards.filter((board) => board.id !== boardId);
+    set({ boards });
+    if (get().activeBoardId !== boardId) return;
+    const next = boards[0]?.id ?? null;
+    if (next) {
+      await get().openBoard(next);
+    } else {
+      rememberBoard(null);
+      set({ activeBoardId: null, snapshot: null, loading: false });
+    }
+  },
+
+  async importBoard(file) {
+    set({ busy: `Importing ${file.name}…`, error: null });
+    try {
+      const result = await importBoardApi(file);
+      set({ boards: await listBoards() });
+      await get().openBoard(result.board_id);
+      return result;
+    } catch (error: unknown) {
+      set({
+        error: `Could not import ${file.name}: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      });
+      return null;
+    } finally {
+      set({ busy: null });
+    }
+  },
+
+  async ingest(files, at) {
     const boardId = get().activeBoardId;
     if (!boardId || files.length === 0) return;
-    set({ loading: true, error: null });
+    set({ busy: `Adding ${plural(files.length, 'file')}…`, error: null });
     try {
-      await ingestFiles(boardId, files);
+      const response = await ingestFiles(boardId, files, at);
+      // Centre the drop on the point it landed (sizes are known only now,
+      // after the server probed each file). Best effort: they already sit at
+      // the drop point if this fails.
+      if (at && response.items.length > 0) {
+        const corners = arrangeDrop(response.items, at);
+        await submitBatch(boardId, {
+          base_seq: response.seq,
+          client_id: CLIENT_ID,
+          ops: response.items.map((item, index) => ({
+            kind: 'update' as const,
+            op_id: crypto.randomUUID(),
+            item_id: item.item_id,
+            fields: corners[index] ?? at,
+          })),
+        }).catch(() => undefined);
+      }
       await get().openBoard(boardId);
       set((state) => ({
         boards: state.boards.map((board) =>
@@ -143,8 +262,10 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     } catch (error: unknown) {
       set({
         loading: false,
-        error: error instanceof Error ? error.message : 'Could not ingest files',
+        error: error instanceof Error ? error.message : 'Could not add the files',
       });
+    } finally {
+      set({ busy: null });
     }
   },
 

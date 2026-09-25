@@ -1,3 +1,4 @@
+import type { NoteStyle } from './noteText';
 export type NodeKind = 'image' | 'gif' | 'video' | 'audio' | 'file' | 'note';
 
 /** Kinds backed by an item + blob (everything but notes). */
@@ -62,6 +63,10 @@ export interface SpriteNode extends BoardNode {
 export interface NoteNode extends BoardNode {
   readonly kind: 'note';
   readonly text: string;
+  /** Text scale (content_json.scale): metrics multiply by it. */
+  readonly textScale: number;
+  /** Font, size, weight, alignment, text colour, markdown (content_json.style). */
+  readonly style: NoteStyle;
   readonly bgColor: string | null;
 }
 

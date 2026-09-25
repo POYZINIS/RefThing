@@ -1,7 +1,7 @@
 import type { BlobInfo, Item, ItemPatch, Note } from '@/api/client';
 import { type Crop, FULL_CROP } from '../transform';
 import { cardDetail, itemKind, POSTER_LEVELS } from './itemKind';
-import { noteText } from './noteText';
+import { noteScale, noteStyle, noteText } from './noteText';
 import { nodeKindRegistry } from './registry';
 import { type NodePatch, type NoteNode, nodeGeometry, type SpriteNode } from './types';
 
@@ -41,6 +41,8 @@ export function noteToNode(note: Note): NoteNode {
     id: note.id,
     kind: 'note',
     text: noteText(note.content_json),
+    textScale: noteScale(note.content_json),
+    style: noteStyle(note.content_json),
     bgColor: note.bg_color,
     x: note.x,
     y: note.y,

@@ -5,7 +5,7 @@ import type { ViewportState } from './BoardCanvas';
  * The camera Pixi actually painted this frame, as a tiny external store.
  *
  * It changes every frame while the camera eases, so it must NOT live in App
- * state: that re-rendered the whole shell (sidebar, search bar, …) per frame.
+ * state: that re-rendered the whole shell (toolbars, search bar, …) per frame.
  * Only the DOM chrome that sits on the canvas subscribes (via CameraBound);
  * non-render code reads `renderedCamera.get()`.
  */

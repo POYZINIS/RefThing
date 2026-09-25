@@ -1,4 +1,5 @@
 import type { BatchRequestOp, BoardSnapshot, Group, Item, Note } from '../api/client';
+import { MAX_ZOOM, MIN_ZOOM } from '../canvas/coordinates';
 import type { BoardNode, NodeChange } from '../canvas/nodes/types';
 
 /**
@@ -240,7 +241,7 @@ export function fitViewport(
   width: number,
   height: number,
   margin = 48,
-  zoomRange: [number, number] = [0.1, 4],
+  zoomRange: [number, number] = [MIN_ZOOM, MAX_ZOOM],
 ): { x: number; y: number; zoom: number } | null {
   if (!bounds || width <= 0 || height <= 0) return null;
   const boundsWidth = Math.max(1, bounds.right - bounds.left);
@@ -365,4 +366,49 @@ export function pasteOps(
     }
   }
   return { ops, ids };
+}
+
+/** Gap between files dropped together (world px). */
+export const DROP_GAP = 24;
+
+/**
+ * Where files dropped together land: packed left to right in rows (a row
+ * wraps near a square block), the whole block centred on the drop point, as
+ * PureRef centres a drop on the cursor. Returns top-left corners, in order.
+ */
+export function arrangeDrop(
+  sizes: readonly { width: number; height: number }[],
+  center: { x: number; y: number },
+  gap = DROP_GAP,
+): { x: number; y: number }[] {
+  if (sizes.length === 0) return [];
+  const area = sizes.reduce((sum, size) => sum + (size.width + gap) * (size.height + gap), 0);
+  const widest = Math.max(...sizes.map((size) => size.width));
+  const rowLimit = Math.max(widest, Math.sqrt(area) * 1.4);
+  const rows: { indices: number[]; width: number; height: number }[] = [];
+  let row = { indices: [] as number[], width: 0, height: 0 };
+  sizes.forEach((size, index) => {
+    const next = row.indices.length === 0 ? size.width : row.width + gap + size.width;
+    if (row.indices.length > 0 && next > rowLimit) {
+      rows.push(row);
+      row = { indices: [], width: 0, height: 0 };
+    }
+    row.width = row.indices.length === 0 ? size.width : row.width + gap + size.width;
+    row.height = Math.max(row.height, size.height);
+    row.indices.push(index);
+  });
+  rows.push(row);
+  const blockHeight = rows.reduce((sum, r) => sum + r.height, 0) + gap * (rows.length - 1);
+  const positions: { x: number; y: number }[] = new Array(sizes.length);
+  let top = center.y - blockHeight / 2;
+  for (const r of rows) {
+    let left = center.x - r.width / 2;
+    for (const index of r.indices) {
+      const size = sizes[index] as { width: number; height: number };
+      positions[index] = { x: left, y: top + (r.height - size.height) / 2 };
+      left += size.width + gap;
+    }
+    top += r.height + gap;
+  }
+  return positions;
 }

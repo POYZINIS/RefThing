@@ -29,7 +29,7 @@ const BLUE = [40, 90, 230];
 // Image under, note on top (created later → higher z), overlapping.
 const layout = {
   images: [{ name: 'under.png', x: 100, y: 100, width: 300, height: 200, color: BLUE }],
-  notes: [{ name: 'over', x: 250, y: 180, width: 220, height: 160, text: '' }],
+  notes: [{ name: 'over', x: 250, y: 180, width: 220, height: 160, text: '', fill: '#f5e7ad' }],
 };
 
 const isBlue = ([r, , b]) => b > 180 && r < 90;

@@ -1,6 +1,6 @@
 import { Application, Container, Graphics, type Texture } from 'pixi.js';
 import type { BlobInfo, Group, Item, Note } from '@/api/client';
-import { screenToWorld } from './coordinates';
+import { clampZoom, screenToWorld, wheelZoomFactor } from './coordinates';
 import { NodeInteractionController } from './NodeInteractionController';
 import { itemToNode, noteToNode } from './nodes/adapters';
 import type { CardTextureSource } from './nodes/CardTextureSource';
@@ -36,6 +36,8 @@ type CanvasOptions = {
   onDragPreview?: (changes: NodeChange[]) => void;
   onGuides?: (guides: Guide[]) => void;
   onNodesChange?: (changes: NodeChange[]) => void;
+  /** A right press bound to `move_window` (desktop shell drags the window). */
+  onMoveWindow?: (event: PointerEvent) => void;
   snapToGrid?: boolean;
 };
 
@@ -89,6 +91,8 @@ export class BoardCanvas {
   private initialized = false;
   private destroyed = false;
   private grayscale = false;
+  /** Wheel zoom speed multiplier (Settings → Scroll zoom speed). */
+  private zoomSpeed = 1;
 
   constructor(options: CanvasOptions = {}) {
     this.options = options;
@@ -119,7 +123,9 @@ export class BoardCanvas {
 
   async mount(host: HTMLElement): Promise<void> {
     await this.app.init({
-      background: themeColor('--color-canvas', '#0d1014'),
+      // Transparent: the workspace colour, grain and (desktop) glass backdrop
+      // are the page behind the canvas, so a theme switch never repaints it.
+      backgroundAlpha: 0,
       resizeTo: host,
       antialias: true,
       resolution: window.devicePixelRatio,
@@ -255,7 +261,7 @@ export class BoardCanvas {
   }
 
   setViewport(viewport: ViewportState): void {
-    this.viewport = { ...viewport, zoom: Math.max(0.1, Math.min(4, viewport.zoom)) };
+    this.viewport = { ...viewport, zoom: clampZoom(viewport.zoom) };
     this.renderedViewport = { ...this.viewport };
     this.applyViewport();
     this.renderVisible();
@@ -265,7 +271,7 @@ export class BoardCanvas {
   /** Ease the camera to `viewport` (zoom to fit, double-click zoom) — the
    *  render loop animates there exactly like a wheel zoom. */
   flyTo(viewport: ViewportState): void {
-    this.viewport = { ...viewport, zoom: Math.max(0.1, Math.min(4, viewport.zoom)) };
+    this.viewport = { ...viewport, zoom: clampZoom(viewport.zoom) };
     this.renderVisible();
     this.options.onViewportChange?.(this.getViewport(), 'zoom');
   }
@@ -286,6 +292,16 @@ export class BoardCanvas {
     this.renderVisible();
   }
 
+  /** Repaint what's on screen (theme change: unfilled notes' text follows
+   *  the theme, and note textures key on it). */
+  redraw(): void {
+    this.renderVisible();
+  }
+
+  setZoomSpeed(speed: number): void {
+    this.zoomSpeed = speed;
+  }
+
   setGrayscale(enabled: boolean): void {
     this.grayscale = enabled;
     for (const renderer of this.renderers.values()) {
@@ -298,8 +314,15 @@ export class BoardCanvas {
    * shell). Middle-drag pans exactly as it would on bare canvas; the right
    * button is left to the contextmenu event.
    */
-  chromePointerDown(event: PointerEvent, action: 'pan' | 'drag_zoom' = 'pan'): void {
+  chromePointerDown(
+    event: PointerEvent,
+    action: 'pan' | 'drag_zoom' | 'move_window' = 'pan',
+  ): void {
     // The shell already resolved this press via the bindings.
+    if (action === 'move_window') {
+      this.options.onMoveWindow?.(event);
+      return;
+    }
     this.capturePress(event);
     if (action === 'drag_zoom') this.startDragZoom(event);
     else this.startPan();
@@ -342,7 +365,7 @@ export class BoardCanvas {
    * Press the selection shell couldn't place (clicked outside the selection
    * box). Only structural empty-area targets are forwarded — the frame
    * itself or the hit-zone strips past the canvas overflow; interactive
-   * chrome (search bar, sidebar, drawing layer) keeps its own behavior and
+   * chrome (search bar, toolbars, popovers) keeps its own behavior and
    * never clears the selection from here. Runs through the same controller
    * path as any canvas press, so out-of-box clicks clear the selection — or
    * hit another node and select it. Events the controller already handled
@@ -557,6 +580,12 @@ export class BoardCanvas {
     // The bindings table decides what this press means.
     const action = this.controller.resolve(event);
     if (action === null) return; // e.g. right button: the context menu
+    if (action === 'move_window') {
+      // The desktop shell moves the window; a press that never travels is
+      // still a click, and the context menu owns it.
+      this.options.onMoveWindow?.(event);
+      return;
+    }
     this.capturePress(event);
     if (action === 'pan') {
       this.startPan();
@@ -578,7 +607,7 @@ export class BoardCanvas {
     if (this.zoomDrag) {
       const { startClient, anchor, startZoom } = this.zoomDrag;
       const travel = event.clientX - startClient.x - (event.clientY - startClient.y);
-      const zoom = Math.max(0.1, Math.min(4, startZoom * Math.exp(travel * 0.005)));
+      const zoom = clampZoom(startZoom * Math.exp(travel * 0.005));
       const rect = this.app.canvas.getBoundingClientRect();
       // Keep the pressed world point under the press position.
       this.viewport = {
@@ -636,7 +665,7 @@ export class BoardCanvas {
     this.boxSelectGraphic.clear();
     if (w > 0 && h > 0) {
       this.boxSelectGraphic.rect(x, y, w, h);
-      const accent = themeColor('--color-accent', '#d6ff76');
+      const accent = themeColor('--color-accent', '#527966');
       this.boxSelectGraphic.fill({ color: accent, alpha: 0.15 });
       this.boxSelectGraphic.stroke({ color: accent, alpha: 0.6, width: 1 });
     }
@@ -652,13 +681,16 @@ export class BoardCanvas {
 
   private readonly onWheel = (event: WheelEvent): void => {
     event.preventDefault();
-    const previousZoom = this.renderedViewport.zoom;
-    const nextZoom = Math.max(0.1, Math.min(4, previousZoom * (event.deltaY < 0 ? 1.1 : 0.9)));
+    // Multiply the TARGET zoom, so notches spun faster than the camera eases
+    // all add up; anchor on the world point under the pointer as painted.
+    const nextZoom = clampZoom(
+      this.viewport.zoom * wheelZoomFactor(event.deltaY, event.deltaMode, this.zoomSpeed),
+    );
     const rect = this.app.canvas.getBoundingClientRect();
     const pointerX = event.clientX - rect.left;
     const pointerY = event.clientY - rect.top;
-    const worldX = (pointerX - this.renderedViewport.x) / previousZoom;
-    const worldY = (pointerY - this.renderedViewport.y) / previousZoom;
+    const worldX = (pointerX - this.renderedViewport.x) / this.renderedViewport.zoom;
+    const worldY = (pointerY - this.renderedViewport.y) / this.renderedViewport.zoom;
     this.viewport.zoom = nextZoom;
     this.viewport.x = pointerX - worldX * nextZoom;
     this.viewport.y = pointerY - worldY * nextZoom;

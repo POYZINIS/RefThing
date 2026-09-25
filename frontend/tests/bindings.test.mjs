@@ -33,7 +33,7 @@ test('default presses reproduce the interaction conventions', () => {
     [0, ['alt', 'shift'], 'selection', 'flip'],
     [0, [], 'handle', 'scale'],
     [0, ['shift', 'alt'], 'handle', 'scale'],
-    [2, [], 'item', null], // right button is the context menu, not a press
+    [2, [], 'item', 'move_window'], // right: a click opens the menu, a drag moves the window
     [0, ['primary'], 'item', null], // no binding: ignored rather than guessed
   ];
   for (const [button, held, target, expected] of cases) {

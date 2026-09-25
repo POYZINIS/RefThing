@@ -107,6 +107,9 @@ export async function seedBoard(request, { images = [], notes = [], files = [] }
         width: note.width,
         height: note.height,
         content_json: { text: note.text ?? 'note' },
+        // Notes are text-only by default; a fixture that reads a note's
+        // face from pixels gives it a fill.
+        ...(note.fill ? { bg_color: note.fill } : {}),
       },
     });
     const body = await response.json();
@@ -131,15 +134,23 @@ export async function launch() {
   return { browser, context, page, errors };
 }
 
-/** Open a seeded board in the UI and wait until its nodes are painted. */
+/** Open a seeded board in the UI (a `?board=` deep link) and wait until its
+ *  nodes are painted. */
 export async function openBoard(page, seeded) {
-  await page.goto(BASE_URL);
-  await page.locator('.board-row', { hasText: seeded.name }).click();
+  await page.goto(`${BASE_URL}/?board=${seeded.boardId}`);
+  await page.waitForFunction((id) => window.__refthing?.boardId === id, seeded.boardId);
   await page.waitForFunction(
     (count) => (window.__refthing?.nodes?.length ?? 0) >= count,
     Object.keys(seeded.ids).length,
   );
   await settle(page);
+}
+
+/** Switch boards the way a user does: the board switcher, then the row. */
+export async function switchBoard(page, seeded) {
+  await page.getByRole('button', { name: /^Boards/ }).click();
+  await page.locator('.board-row', { hasText: seeded.name }).getByRole('button').first().click();
+  await page.waitForFunction((id) => window.__refthing?.boardId === id, seeded.boardId);
 }
 
 /** Two animation frames: React commits, then Pixi paints. */

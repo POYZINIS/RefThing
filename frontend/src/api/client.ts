@@ -359,6 +359,18 @@ export function noteContent(note: Note): {
     : {};
 }
 
+export function renameBoard(boardId: string, name: string): Promise<Board> {
+  return request<{ board: Board }>(`/api/boards/${boardId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, client_id: CLIENT_ID }),
+  }).then((result) => result.board);
+}
+
+export function deleteBoard(boardId: string): Promise<void> {
+  return request<void>(`/api/boards/${boardId}`, { method: 'DELETE' });
+}
+
 export function updateBoardViewport(boardId: string, viewportState: unknown): Promise<Board> {
   return request<{ board: Board }>(`/api/boards/${boardId}`, {
     method: 'PATCH',
@@ -368,8 +380,17 @@ export function updateBoardViewport(boardId: string, viewportState: unknown): Pr
   }).then((result) => result.board);
 }
 
-export async function ingestFiles(boardId: string, files: File[]): Promise<IngestResponse> {
+/** Upload files onto a board. `at` (world) places them all there; without it
+ *  the server cascades them from the origin. */
+export async function ingestFiles(
+  boardId: string,
+  files: File[],
+  at?: { x: number; y: number },
+): Promise<IngestResponse> {
   const form = new FormData();
+  if (at) {
+    form.append('meta', JSON.stringify(Object.fromEntries(files.map((file) => [file.name, at]))));
+  }
   for (const file of files) {
     form.append('files', file, file.name);
   }
@@ -378,6 +399,26 @@ export async function ingestFiles(boardId: string, files: File[]): Promise<Inges
     body: form,
   });
 }
+
+/** What `POST /api/boards:import` brought across into its new board. */
+export interface ImportResult {
+  board_id: string;
+  name: string;
+  images: number;
+  notes: number;
+  /** What the file held that RefThing could not bring in, in words. */
+  skipped: string[];
+}
+
+/** A board file from another app (PureRef 2 `.pur`) → a new board. */
+export function importBoard(file: File): Promise<ImportResult> {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  return request<ImportResult>('/api/boards:import', { method: 'POST', body: form });
+}
+
+/** Board files RefThing imports whole, as new boards. */
+export const isBoardFile = (file: File) => /\.pur$/i.test(file.name);
 
 export function blobUrl(hash: string, level = 'full'): string {
   return `/blob/${hash}/${level}`;

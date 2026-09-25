@@ -57,6 +57,22 @@ conflict in this file; confirm or overrule them here.
    command; Bring to Front / Send to Back from the menu are undoable.
 9. [NEEDS SIGN-OFF] Section 5 asks for a custom rotate cursor; a circular
    arrow icon is used (hotspot centered).
+10. [NEEDS SIGN-OFF] Imported notes (PureRef labels are often drawn 3–12x
+   larger) carry a fixed text scale in content_json.scale. It is a
+   property of the note, not a gesture result: Rule 6 still holds — resizing
+   reflows the text and never changes its size. Notes made in RefThing have
+   no scale (1).
+11. Note text is markdown by default (a per-note toggle turns it off) and
+   carries a style (font, size, bold, italic, alignment, text colour) set
+   from the note's context menu; Ctrl/Cmd+B / +I toggle bold / italic on
+   selected notes and wrap the selection while editing. Rule 7 holds: the
+   painted note is laid out by pretext (rich-inline for markdown runs).
+   Rule 4's "no reflow on entering Editing" now reads: the editor shows the
+   RAW text in the note's own font and size, so markdown markers appear
+   while editing and render again on exit. [NEEDS SIGN-OFF]
+12. A note with no fill is text only, in the theme's flipped colour (light
+   text on the dark theme, dark on the light); a fill makes automatic text
+   contrast with it. Notes no longer default to yellow.
 
 PURPOSE
 --------------------------------------------------------------------

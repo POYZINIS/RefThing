@@ -73,6 +73,13 @@ button = "left"
 target = "handle"
 optional = ["shift", "alt"]
 
+# Plan: "Right click + drag - move the window" (desktop app). A right press
+# that never travels past the click epsilon opens the context menu instead.
+[actions.move_window]
+button = "right"
+target = "any"
+optional = ["shift", "alt", "primary"]
+
 # Double-clicks, by what is under the pointer.
 [double_click]
 note = "enter_note_edit"
@@ -127,6 +134,23 @@ optional = ["shift"]
 
 [keys.escape]
 key = "Escape"
+
+[keys.add_files]
+key = "o"
+modifiers = ["primary"]
+
+[keys.find]
+key = "f"
+modifiers = ["primary"]
+
+# Selected notes (the editor wraps its selection in markdown instead).
+[keys.bold]
+key = "b"
+modifiers = ["primary"]
+
+[keys.italic]
+key = "i"
+modifiers = ["primary"]
 `;
 
 /** `space` and `z` are held keys (PointerEvent doesn't carry them). */
@@ -142,7 +166,8 @@ export type PressAction =
   | 'flip'
   | 'reset_aspect'
   | 'move_selection'
-  | 'scale';
+  | 'scale'
+  | 'move_window';
 export type KeyAction =
   | 'delete'
   | 'group'
@@ -154,7 +179,11 @@ export type KeyAction =
   | 'nudge_right'
   | 'nudge_up'
   | 'nudge_down'
-  | 'escape';
+  | 'escape'
+  | 'add_files'
+  | 'find'
+  | 'bold'
+  | 'italic';
 export type DoubleClickTarget = 'note' | 'group' | 'item' | 'media' | 'file' | 'empty';
 
 type PressBinding = {

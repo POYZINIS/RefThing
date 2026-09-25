@@ -10,7 +10,8 @@
     "frontendDist": "../frontend/dist"
   },
   "app": {
-    "windows": []
+    "windows": [],
+    "withGlobalTauri": true
   },
   "bundle": {
     "active": true,

@@ -68,11 +68,17 @@ test('context menu Opacity 50% fades the image; undo restores full opacity', asy
   await openBoard(page, seeded);
   const leftSide = await worldToClient(page, { x: 190, y: 280 });
   const opaque = await pixel(page, leftSide);
+  // The workspace colour, in whichever theme: 50% should land halfway there.
+  const workspace = await pixel(page, { x: 6, y: 890 });
   await page.mouse.click(leftSide.x, leftSide.y, { button: 'right' });
   await page.getByRole('menuitemradio', { name: '50%' }).click();
   await page.waitForTimeout(150);
   const faded = await pixel(page, leftSide);
-  assert.ok(faded[0] < opaque[0] - 60, `red channel should drop (was ${opaque}, now ${faded})`);
+  const halfway = opaque.map((channel, i) => (channel + workspace[i]) / 2);
+  assert.ok(
+    faded.every((channel, i) => Math.abs(channel - halfway[i]) < 20),
+    `expected a 50% blend of ${opaque} over ${workspace}, got ${faded}`,
+  );
   await page.keyboard.press('Control+z');
   await page.waitForTimeout(150);
   assert.deepEqual(await pixel(page, leftSide), opaque);

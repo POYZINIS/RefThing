@@ -1,14 +1,11 @@
 import { Texture } from 'pixi.js';
 import {
-  layoutNoteText,
-  NOTE_BORDER_COLOR,
+  currentTheme,
+  layoutNoteDocument,
   NOTE_BORDER_PX,
-  NOTE_DEFAULT_BG,
-  NOTE_FONT_PX,
-  NOTE_LINE_HEIGHT_PX,
-  NOTE_TEXT_COLOR,
-  NOTE_TEXT_INSET_PX,
-  noteFont,
+  type NoteColors,
+  noteColors,
+  type PaintLine,
 } from './noteText';
 import type { TextureSource } from './TextureSource';
 import type { NoteNode } from './types';
@@ -41,10 +38,12 @@ export class NoteTextureSource implements TextureSource<NoteNode> {
       MAX_TEXTURE_PX / Math.max(1, node.width),
       MAX_TEXTURE_PX / Math.max(1, node.height),
     );
-    const key = `${scale}|${node.width}|${node.height}|${node.bgColor}|${node.text}`;
+    // The theme is part of the key: an unfilled note's text follows it.
+    const theme = currentTheme();
+    const key = `${scale}|${node.width}|${node.height}|${node.bgColor}|${node.textScale}|${theme}|${JSON.stringify(node.style)}|${node.text}`;
     const existing = this.entries.get(node.id);
     if (existing?.key === key) return existing.texture;
-    const texture = Texture.from(paintNote(node, scale));
+    const texture = Texture.from(paintNote(node, scale, theme));
     existing?.texture.destroy(true);
     this.entries.set(node.id, { key, texture });
     return texture;
@@ -68,37 +67,111 @@ export class NoteTextureSource implements TextureSource<NoteNode> {
   }
 }
 
-function paintNote(node: NoteNode, scale: number): HTMLCanvasElement {
+function paintNote(node: NoteNode, scale: number, theme: 'light' | 'dark'): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(node.width * scale));
   canvas.height = Math.max(1, Math.round(node.height * scale));
   const context = canvas.getContext('2d');
   if (!context) return canvas;
   context.scale(scale, scale);
-  const radius = 4;
-  context.beginPath();
-  context.roundRect(0.5, 0.5, node.width - 1, node.height - 1, radius);
-  context.fillStyle = node.bgColor ?? NOTE_DEFAULT_BG;
-  context.fill();
-  context.lineWidth = NOTE_BORDER_PX;
-  context.strokeStyle = NOTE_BORDER_COLOR;
-  context.stroke();
+  const colors = noteColors(node.bgColor, node.style.color, theme);
+  // No fill: text only, blending into the board.
+  if (colors.fill) {
+    context.beginPath();
+    context.roundRect(0.5, 0.5, node.width - 1, node.height - 1, 4);
+    context.fillStyle = colors.fill;
+    context.fill();
+    if (colors.border) {
+      context.lineWidth = NOTE_BORDER_PX;
+      context.strokeStyle = colors.border;
+      context.stroke();
+    }
+  }
   // Text clips to the note: overflow scrolls only in the editor (§4 RULE 6).
   context.save();
   context.beginPath();
   context.rect(0, 0, node.width, node.height);
   context.clip();
-  context.font = noteFont(NOTE_FONT_PX);
-  context.fillStyle = NOTE_TEXT_COLOR;
+  // Laid out in note units, drawn through the note's text scale.
+  const textScale = node.textScale;
+  context.scale(textScale, textScale);
+  const laid = layoutNoteDocument(node.text, node.width, textScale, node.style);
+  const limit = node.height / textScale;
+  for (const line of laid.lines) {
+    if (line.y > limit) break;
+    paintLine(context, line, laid.left, laid.width, colors);
+  }
+  context.restore();
+  return canvas;
+}
+
+function paintLine(
+  context: CanvasRenderingContext2D,
+  line: PaintLine,
+  left: number,
+  width: number,
+  colors: NoteColors,
+): void {
+  const middle = line.y + line.height / 2;
+  if (line.codeBand) {
+    context.fillStyle = colors.codeFill;
+    context.fillRect(left, line.y, width, line.height);
+  }
+  if (line.rule) {
+    context.fillStyle = colors.rule;
+    context.fillRect(left, middle - 0.5, width, 1);
+  }
+  if (line.quoteBar !== undefined) {
+    context.fillStyle = colors.rule;
+    context.fillRect(line.quoteBar, line.y, Math.max(2, line.px * 0.14), line.height);
+  }
+  const marker = line.marker;
+  if (marker) {
+    context.fillStyle = colors.text;
+    context.strokeStyle = colors.text;
+    if (marker.kind === 'bullet') {
+      context.beginPath();
+      context.arc(marker.x + line.px * 0.35, middle, line.px * 0.14, 0, Math.PI * 2);
+      context.fill();
+    } else if (marker.kind === 'ordered') {
+      context.font = marker.font;
+      context.textBaseline = 'middle';
+      context.fillText(marker.text, marker.x, middle);
+    } else {
+      const size = line.px * 0.78;
+      const top = middle - size / 2;
+      context.lineWidth = Math.max(1, line.px * 0.08);
+      context.beginPath();
+      context.roundRect(marker.x, top, size, size, size * 0.18);
+      context.stroke();
+      if (marker.checked) {
+        context.beginPath();
+        context.moveTo(marker.x + size * 0.22, top + size * 0.52);
+        context.lineTo(marker.x + size * 0.42, top + size * 0.72);
+        context.lineTo(marker.x + size * 0.8, top + size * 0.28);
+        context.stroke();
+      }
+    }
+  }
   // CSS centers glyphs vertically inside each line box; 'middle' at the line
   // box's center matches the textarea to within a pixel.
   context.textBaseline = 'middle';
-  const { lines } = layoutNoteText(node.text, node.width);
-  lines.forEach((line, index) => {
-    const y = NOTE_TEXT_INSET_PX + index * NOTE_LINE_HEIGHT_PX + NOTE_LINE_HEIGHT_PX / 2;
-    if (y - NOTE_LINE_HEIGHT_PX / 2 > node.height) return;
-    context.fillText(line, NOTE_TEXT_INSET_PX, y);
-  });
-  context.restore();
-  return canvas;
+  for (const run of line.runs) {
+    const pad = run.code?.pad ?? 0;
+    if (run.code) {
+      context.fillStyle = colors.codeFill;
+      context.beginPath();
+      context.roundRect(run.x, line.y + line.height * 0.12, run.width, line.height * 0.76, 3);
+      context.fill();
+    }
+    context.font = run.font;
+    context.fillStyle = run.muted ? colors.muted : colors.text;
+    context.fillText(run.text, run.x + pad, middle);
+    if (run.strike || run.underline) {
+      const textWidth = run.width - pad * 2;
+      const thickness = Math.max(1, line.px * 0.07);
+      const at = run.strike ? middle : middle + line.px * 0.55;
+      context.fillRect(run.x + pad, at - thickness / 2, textWidth, thickness);
+    }
+  }
 }

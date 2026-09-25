@@ -16,6 +16,7 @@ product spec and `docs/architecture.md` for the module map.
 | Build desktop app (installer) | `npm run build:app` |
 | Frontend unit tests (transform math, commands, history, filters) | `npm test` |
 | Browser gesture tests (boots its own isolated stack on 7191/5191 with a temp data dir; set `BASE_URL` to target a running one) | `npm run test:e2e` |
+| Chrome screenshots for design review (throwaway stack only; see header) | `node frontend/e2e/shots.mjs` |
 | Lint frontend (Biome) | `npm run lint` |
 | Format frontend (Biome) | `npm run fmt` |
 | Backend tests | `cargo test --manifest-path backend/Cargo.toml --workspace` |

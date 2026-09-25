@@ -10,14 +10,14 @@ import {
   fetchHealth,
   type HealthStatus,
   type Item,
-  type ItemPatch,
+  isBoardFile,
   type Note,
 } from '@/api/client';
 import { CLIENT_ID } from '@/api/clientId';
 import { BoardSync } from '@/api/ws';
 import { BoardCanvas, type ViewportState } from '@/canvas/BoardCanvas';
 import { applyBindingsOverride, bindings, resolveKey } from '@/canvas/bindings';
-import { screenToWorld } from '@/canvas/coordinates';
+import { MIN_ZOOM, screenToWorld } from '@/canvas/coordinates';
 import {
   itemFields,
   itemToNode,
@@ -25,19 +25,31 @@ import {
   noteToNode,
   noteWithPatch,
 } from '@/canvas/nodes/adapters';
-import { noteText } from '@/canvas/nodes/noteText';
+import {
+  grownNoteHeight,
+  NOTE_FONTS,
+  NOTE_SIZES,
+  type NoteFontId,
+  type NoteStyle,
+  noteScale,
+  noteStyle,
+  noteText,
+  storedStyle,
+} from '@/canvas/nodes/noteText';
 import type { CanvasNode, NodeChange, NodePatch, SpriteNode } from '@/canvas/nodes/types';
 import { CameraBound, renderedCamera } from '@/canvas/renderedCamera';
 import { type Guide, recrop } from '@/canvas/transform';
-import { BoardContextMenu } from '@/components/BoardContextMenu';
-import BoardViewManager from '@/components/BoardViewManager';
-import { DrawingOverlay } from '@/components/DrawingOverlay';
-import { LiveMedia } from '@/components/LiveMedia';
+import { BoardContextMenu, type MenuEntry } from '@/components/BoardContextMenu';
+import { BoardSwitcher } from '@/components/BoardSwitcher';
+import { type MediaHandle, MediaPlayer } from '@/components/MediaPlayer';
 import { NoteEditor } from '@/components/NoteEditor';
 import SearchBar, { emptyFilter, type FilterState } from '@/components/SearchBar';
 import { SelectionOverlay } from '@/components/SelectionOverlay';
+import { SettingsSheet } from '@/components/SettingsSheet';
 import { SnapshotManager } from '@/components/SnapshotManager';
-import TagManager from '@/components/TagManager';
+import { OpenTarget, type Toast, Toasts } from '@/components/Toasts';
+import { WindowControls } from '@/components/WindowControls';
+import { beginWindowMove, setNativeGlass } from '@/shell/desktop';
 import { useBoardStore } from '@/state/boardStore';
 import {
   type Clipboard,
@@ -57,7 +69,9 @@ import {
 } from '@/state/commands';
 import { type HistoryEntry, prepareCommand } from '@/state/history';
 import { useBoardFilter } from '@/state/useBoardFilter';
-import { enter } from '@/ui/motion';
+import { useAppearance } from '@/ui/appearance';
+import { Icon } from '@/ui/Icon';
+import { useProximityReveal } from '@/ui/useProximityReveal';
 
 type HealthState =
   | { kind: 'loading' }
@@ -118,16 +132,33 @@ function BoardApp() {
   const canvasHost = useRef<HTMLDivElement>(null);
   const boardCanvas = useRef<BoardCanvas | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  // Search opens where it was asked for (right-click point / cursor).
+  const [searchAt, setSearchAt] = useState<{ x: number; y: number } | null>(null);
+  // The corner groups hide until the pointer comes near (useProximityReveal).
+  const boardCorner = useRef<HTMLDivElement>(null);
+  const windowCorner = useRef<HTMLDivElement>(null);
   const [health, setHealth] = useState<HealthState>({ kind: 'loading' });
-  const [newBoardName, setNewBoardName] = useState('');
-  const [isCreating, setIsCreating] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Files dragged over the window (drop feedback); a counter, because
+  // dragenter/leave fire for every child the drag crosses.
+  const [fileDrag, setFileDrag] = useState(0);
+  const [bindingsDismissed, setBindingsDismissed] = useState(false);
+  // A quiet confirmation (e.g. what an imported board brought across).
+  const [notice, setNotice] = useState<{ title: string; message?: string } | null>(null);
+  const [healthDismissed, setHealthDismissed] = useState(false);
+  const theme = useAppearance((state) => state.resolved);
+  const setAppearance = useAppearance((state) => state.set);
+  const glass = useAppearance((state) => state.glass);
   // Unified selection: items and notes share one id list (mixed multi-select
   // works); the noteIds set below routes persistence per kind.
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   // The note currently in text-edit mode (§4 RULE 2 — double-click only).
   const [noteEditingId, setNoteEditingId] = useState<string | null>(null);
   /** Phase 11 live mode: the video/audio item whose player is mounted. */
-  const [liveNodeId, setLiveNodeId] = useState<string | null>(null);
+  /** A media item that should start playing once its player mounts. */
+  const [autoPlayId, setAutoPlayId] = useState<string | null>(null);
+  /** The mounted player's controls (double-click / Play toggle it). */
+  const mediaHandle = useRef<MediaHandle | null>(null);
   // §6 RULE 2: the group drilled into by double-click — its members select
   // and transform individually until Escape or an empty-canvas click.
   const [drillGroupId, setDrillGroupId] = useState<string | null>(null);
@@ -148,9 +179,6 @@ function BoardApp() {
   // Target camera (saves, view manager). DOM overlays never read this: they
   // follow the camera Pixi painted (canvas/renderedCamera.ts).
   const [viewport, setViewport] = useState<ViewportState>({ x: 0, y: 0, zoom: 1 });
-  const [grayscale, setGrayscale] = useState(false);
-  const [drawing, setDrawing] = useState(false);
-  const [sampledColor, setSampledColor] = useState<string | null>(null);
   // §5B context menu: what was right-clicked, and where.
   const [menu, setMenu] = useState<{
     kind: 'selection' | 'canvas';
@@ -163,8 +191,10 @@ function BoardApp() {
   const clipboardRef = useRef<{ clip: Clipboard; marker: string } | null>(null);
   // Last pointer position over the board (client px) — pastes land there.
   const lastPointer = useRef<{ x: number; y: number } | null>(null);
-  // Right-press origin: a right-drag past the click epsilon is not a click,
-  // so it must not open the menu (testing §2B context menu vs move window).
+  // Right-press origin, in SCREEN px: a right-drag past the click epsilon is
+  // not a click, so it must not open the menu (testing §2B context menu vs
+  // move window). Screen, not client: moving the window keeps the pointer
+  // still relative to the page.
   const rightPress = useRef<{ x: number; y: number } | null>(null);
   // Double-click zoom on an image toggles back to the camera it came from.
   const zoomReturn = useRef<{ nodeId: string; viewport: ViewportState } | null>(null);
@@ -173,7 +203,6 @@ function BoardApp() {
   const socket = useRef<BoardSync | null>(null);
   const batchQueue = useRef<BatchQueue | null>(null);
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const commitItemChange = useRef<(itemId: string, patch: ItemPatch) => void>(() => undefined);
   const commitItemChanges = useRef<(changes: NodeChange[]) => void>(() => undefined);
   // Kind-routing commit: items go through batch update ops, notes through
   // put_note upserts — one command, one undo entry (history.ts).
@@ -197,11 +226,16 @@ function BoardApp() {
   const snapshot = useBoardStore((state) => state.snapshot);
   const activeBoardId = useBoardStore((state) => state.activeBoardId);
   const loading = useBoardStore((state) => state.loading);
+  const busy = useBoardStore((state) => state.busy);
   const error = useBoardStore((state) => state.error);
+  const clearError = useBoardStore((state) => state.clearError);
   const loadBoards = useBoardStore((state) => state.loadBoards);
   const openBoard = useBoardStore((state) => state.openBoard);
   const createAndOpenBoard = useBoardStore((state) => state.createAndOpenBoard);
+  const renameBoard = useBoardStore((state) => state.renameBoard);
+  const deleteBoard = useBoardStore((state) => state.deleteBoard);
   const ingest = useBoardStore((state) => state.ingest);
+  const importBoard = useBoardStore((state) => state.importBoard);
   const saveViewport = useBoardStore((state) => state.saveViewport);
   const addNote = (at: { x: number; y: number }) => {
     if (!activeBoardId || !snapshot) return;
@@ -237,7 +271,13 @@ function BoardApp() {
         {
           kind: 'put_note',
           op_id: crypto.randomUUID(),
-          note: { ...note, content_json: { text: content }, height, updated_at: Date.now() },
+          // Keep every other content key (an imported note's text scale).
+          note: {
+            ...note,
+            content_json: { ...(note.content_json as object), text: content },
+            height,
+            updated_at: Date.now(),
+          },
         },
       ],
       'Edit note',
@@ -254,15 +294,10 @@ function BoardApp() {
     [snapshot?.notes],
   );
   const primaryNodeId = selectedNodeIds[0] ?? null;
-  const primaryItemId = primaryNodeId && !noteIds.has(primaryNodeId) ? primaryNodeId : null;
   const selectedNoteId =
     selectedNodeIds.length === 1 && primaryNodeId && noteIds.has(primaryNodeId)
       ? primaryNodeId
       : null;
-  const selectedItemTags = useMemo(
-    () => new Set(primaryItemId ? (snapshot?.item_tags[primaryItemId] ?? []) : []),
-    [snapshot?.item_tags, primaryItemId],
-  );
   // Notes keep a live preview while either the shell or the controller drags.
   const renderedNotes = useMemo(
     () =>
@@ -309,17 +344,26 @@ function BoardApp() {
       .catch(() => undefined); // no override reachable: defaults stand
   }, []);
 
-  useEffect(() => {
-    void createSession().then(() => loadBoards());
+  const connectRef = useRef<() => void>(() => undefined);
+  connectRef.current = () => {
+    setHealth({ kind: 'loading' });
+    setHealthDismissed(false);
     fetchHealth()
-      .then((result) => setHealth({ kind: 'ok', health: result }))
+      .then((result) => {
+        setHealth({ kind: 'ok', health: result });
+        return createSession().then(() => loadBoards());
+      })
       .catch((caught: unknown) => {
         setHealth({
           kind: 'error',
           message: caught instanceof Error ? caught.message : 'Backend unreachable',
         });
       });
-  }, [loadBoards]);
+  };
+  useEffect(() => connectRef.current(), []);
+
+  // The desktop backdrop material follows the glass preference.
+  useEffect(() => setNativeGlass(glass), [glass]);
 
   useEffect(() => {
     if (!activeBoardId) return;
@@ -399,9 +443,13 @@ function BoardApp() {
         commitNodeChanges.current(changes);
         setDragPreview({});
       },
+      onMoveWindow: (event) => {
+        beginWindowMove(event, RIGHT_CLICK_EPSILON_PX);
+      },
       snapToGrid: false,
     });
     boardCanvas.current = canvas;
+    canvas.setZoomSpeed(useAppearance.getState().zoomSpeed);
     void canvas.mount(canvasHost.current);
     return () => {
       if (viewportSaveTimer.current) clearTimeout(viewportSaveTimer.current);
@@ -410,20 +458,20 @@ function BoardApp() {
     };
   }, [saveViewport]);
 
+  // Scroll zoom speed (Settings), live.
+  const zoomSpeed = useAppearance((state) => state.zoomSpeed);
   useEffect(() => {
-    boardCanvas.current?.setGrayscale(grayscale);
-  }, [grayscale]);
+    boardCanvas.current?.setZoomSpeed(zoomSpeed);
+  }, [zoomSpeed]);
+  // Unfilled notes draw their text in the theme's flip: repaint on a switch.
+  useEffect(() => {
+    if (theme) boardCanvas.current?.redraw();
+  }, [theme]);
 
   // The note being edited is drawn by its DOM editor, not the canvas.
   useEffect(() => {
     boardCanvas.current?.setHiddenNode(noteEditing ? noteEditingId : null);
   }, [noteEditing, noteEditingId]);
-
-  useEffect(() => {
-    const onSample = (event: Event) => setSampledColor((event as CustomEvent<string>).detail);
-    window.addEventListener('refthing-color-sampled', onSample);
-    return () => window.removeEventListener('refthing-color-sampled', onSample);
-  }, []);
 
   // Copy / cut / paste ride the platform's own clipboard events (Ctrl/Cmd+C,
   // X, V): they carry clipboard data synchronously and need no permission.
@@ -451,7 +499,7 @@ function BoardApp() {
       const files = Array.from(event.clipboardData?.files ?? []);
       if (files.length > 0) {
         event.preventDefault();
-        void ingest(files);
+        actionsRef.current.addFiles(files, lastPointer.current);
       }
     };
     window.addEventListener('copy', onCopyOrCut);
@@ -462,7 +510,7 @@ function BoardApp() {
       window.removeEventListener('cut', onCopyOrCut);
       window.removeEventListener('paste', onPaste);
     };
-  }, [ingest]);
+  }, []);
 
   // Restore a board's saved camera ONCE, when it opens. The saved value only
   // flows the other way afterwards: every debounced save echoes back into
@@ -473,9 +521,36 @@ function BoardApp() {
   useEffect(() => {
     if (!openedBoard || cameraRestoredFor.current === openedBoard.id) return;
     cameraRestoredFor.current = openedBoard.id;
-    const saved = asViewport(openedBoard.viewport_state);
-    boardCanvas.current?.setViewport(saved);
-    setViewport(saved);
+    const saved = savedViewport(openedBoard.viewport_state);
+    if (saved) {
+      boardCanvas.current?.setViewport(saved);
+      setViewport(saved);
+      return;
+    }
+    // Never framed (NULL viewport_state): show the whole board, not the
+    // world origin — content left of or above 0,0 would open off-screen.
+    const canvas = boardCanvas.current;
+    const content = useBoardStore.getState().snapshot;
+    const host = canvasHost.current;
+    if (!canvas || !content || !host) return;
+    // The host, not canvas.size(): Pixi may still be initialising.
+    const { clientWidth: width, clientHeight: height } = host;
+    const bounds = unionRect([
+      ...content.items.map((item) => ({
+        left: item.x,
+        top: item.y,
+        right: item.x + item.width,
+        bottom: item.y + item.height,
+      })),
+      ...content.notes.map((note) => noteToNode(note).rotatedBounds()),
+    ]);
+    const start = fitViewport(bounds, width, height, 72, [MIN_ZOOM, 1]) ?? {
+      x: width / 2,
+      y: height / 2,
+      zoom: 1,
+    };
+    canvas.setViewport(start);
+    setViewport(start);
   }, [openedBoard]);
 
   // Blobs by hash: a node's kind (GIF playback, media posters, file cards)
@@ -500,10 +575,6 @@ function BoardApp() {
   useEffect(() => {
     boardCanvas.current?.setDrillGroup(drillGroupId);
   }, [drillGroupId]);
-
-  commitItemChange.current = (itemId, patch) => {
-    commitItemChanges.current([{ id: itemId, kind: 'item', patch }]);
-  };
 
   // Unified node view of the board for selection chrome, hover outlines, and
   // group-mate lookup. Unfiltered — the shell tracks selected nodes even
@@ -552,18 +623,28 @@ function BoardApp() {
     return byId;
   }, [baseItemNodes, blobsByHash, previewPatches, dragPreview, renderedNotes]);
   const boardNodes = useMemo(() => [...boardNodesById.values()], [boardNodesById]);
-  // Live mode lasts while its item stays the one selected node.
+  // A lone selected video/audio item gets its player (custom controls);
+  // it lasts while that item stays the one selected node.
   const liveCandidate =
-    liveNodeId !== null && selectedNodeIds.length === 1 && selectedNodeIds[0] === liveNodeId
-      ? boardNodesById.get(liveNodeId)
+    selectedNodeIds.length === 1 && selectedNodeIds[0]
+      ? boardNodesById.get(selectedNodeIds[0])
       : undefined;
   const liveNode =
     liveCandidate && (liveCandidate.kind === 'video' || liveCandidate.kind === 'audio')
       ? liveCandidate
       : null;
-  useEffect(() => {
-    if (liveNodeId !== null && liveNode === null) setLiveNodeId(null);
-  }, [liveNodeId, liveNode]);
+  /** Double-click / Play: toggle the item's playback, selecting it (and
+   *  starting it) first when it isn't the live one yet. */
+  const playMediaRef = useRef<(nodeId: string) => void>(() => undefined);
+  playMediaRef.current = (nodeId) => {
+    if (liveNode?.id === nodeId && mediaHandle.current) {
+      mediaHandle.current.toggle();
+      return;
+    }
+    setNoteEditingId(null);
+    setSelectedNodeIds([nodeId]);
+    setAutoPlayId(nodeId);
+  };
   const selectedNodes = useMemo(
     () =>
       selectedNodeIds
@@ -710,14 +791,6 @@ function BoardApp() {
     commitBoardOps.current(ops, label, coalesceKey);
   };
 
-  const toggleTagOnSelection = (tagId: string) => {
-    if (!primaryItemId) return;
-    const hasTag = selectedItemTags.has(tagId);
-    commitItemChange.current(primaryItemId, {
-      ...(hasTag ? { remove_tag_ids: [tagId] } : { add_tag_ids: [tagId] }),
-    });
-  };
-
   commitItemChanges.current = (changes) => {
     const ops: BatchRequestOp[] = changes.map(({ id, patch }) => ({
       kind: 'update' as const,
@@ -765,6 +838,9 @@ function BoardApp() {
   // Every board action, shared by the keyboard map and the context menu so a
   // shortcut and its menu entry can never drift apart.
   const selectedItemIds = selectedNodeIds.filter((id) => !noteIds.has(id));
+  const selectedNoteRecords =
+    snapshot?.notes.filter((note) => selectedNodeIds.includes(note.id)) ?? [];
+  const selectedNoteStyles = selectedNoteRecords.map((note) => noteStyle(note.content_json));
   // From the selected nodes, not a scan of every item (20k on big boards).
   const selectionGroupIds = [
     ...new Set(selectedNodes.map((node) => node.groupId).filter((id): id is string => id !== null)),
@@ -890,6 +966,48 @@ function BoardApp() {
       link.download = node.label;
       link.click();
     },
+    /** Restyle the selected notes (content_json.style) as one undo step; a
+     *  note grows to fit when its text gets bigger. */
+    styleNotes: (patch: Partial<NoteStyle>) => {
+      if (!snapshot) return;
+      const now = Date.now();
+      const ops: BatchRequestOp[] = selectedNoteRecords.map((note) => {
+        const style = { ...noteStyle(note.content_json), ...patch };
+        const { style: _old, ...rest } = (note.content_json ?? {}) as Record<string, unknown>;
+        const stored = storedStyle(style);
+        const content = Object.keys(stored).length > 0 ? { ...rest, style: stored } : rest;
+        const height = grownNoteHeight(
+          noteText(content),
+          note.width,
+          note.height,
+          noteScale(content),
+          style,
+        );
+        return {
+          kind: 'put_note' as const,
+          op_id: crypto.randomUUID(),
+          note: { ...note, content_json: content, height, updated_at: now },
+        };
+      });
+      if (ops.length > 0) commitBoardOps.current(ops, 'Text style');
+    },
+    /** The selected notes' fill; null = none (text only, over the board). */
+    fillNotes: (fill: string | null) => {
+      const now = Date.now();
+      const ops: BatchRequestOp[] = selectedNoteRecords.map((note) => ({
+        kind: 'put_note' as const,
+        op_id: crypto.randomUUID(),
+        note: { ...note, bg_color: fill, updated_at: now },
+      }));
+      if (ops.length > 0) commitBoardOps.current(ops, 'Note fill');
+    },
+    /** Ctrl/Cmd+B / +I on selected notes: on for all, unless all are on. */
+    bold: () =>
+      actionsRef.current.styleNotes({ bold: !selectedNoteStyles.every((style) => style.bold) }),
+    italic: () =>
+      actionsRef.current.styleNotes({
+        italic: !selectedNoteStyles.every((style) => style.italic),
+      }),
     restoreProportions: () => {
       const changes = restoreProportionsChanges(shellNodes, ({ id }) => {
         const item = snapshot?.items.find((candidate) => candidate.id === id);
@@ -924,6 +1042,51 @@ function BoardApp() {
       }
     },
     addNoteAt: (world: { x: number; y: number }) => addNote(world),
+    /** World point for files arriving at `client` (a drop, the pointer), or
+     *  the middle of the view when there is none. */
+    dropPoint: (client: { x: number; y: number } | null) => {
+      const host = canvasHost.current?.getBoundingClientRect();
+      if (!host) return { x: 0, y: 0 };
+      const at = client ?? { x: host.left + host.width / 2, y: host.top + host.height / 2 };
+      return screenToWorld({ clientX: at.x, clientY: at.y }, renderedCamera.get(), host);
+    },
+    /** Add files (Phase 11: every type lands; the server's type handlers
+     *  decide how it draws), centred where they arrived. Empty entries —
+     *  dropped folders — are skipped. */
+    addFiles: (files: FileList | File[], client: { x: number; y: number } | null = null) => {
+      const accepted = Array.from(files).filter((file) => file.size > 0);
+      // A PureRef board comes in whole, as a board of its own.
+      const boardFiles = accepted.filter(isBoardFile);
+      const rest = accepted.filter((file) => !isBoardFile(file));
+      if (rest.length > 0) void ingest(rest, actionsRef.current.dropPoint(client));
+      if (boardFiles.length > 0) void actionsRef.current.importBoards(boardFiles);
+    },
+    /** Import board files one after another; the last one stays open. */
+    importBoards: async (files: File[]) => {
+      for (const file of files) {
+        const result = await importBoard(file);
+        if (!result) continue;
+        const counts = [
+          `${result.images} ${result.images === 1 ? 'image' : 'images'}`,
+          `${result.notes} ${result.notes === 1 ? 'note' : 'notes'}`,
+        ].join(', ');
+        setNotice({
+          title: `Imported ${result.name}`,
+          message:
+            result.skipped.length > 0
+              ? `${counts}. Not brought in: ${result.skipped.join('; ')}.`
+              : `${counts}.`,
+        });
+      }
+    },
+    add_files: () => {
+      if (activeBoardId) fileInput.current?.click();
+    },
+    /** Ctrl+F: the search panel, at the cursor (else the top of the view). */
+    find: () => {
+      if (!snapshot) return;
+      setSearchAt(lastPointer.current ?? { x: window.innerWidth / 2 - 180, y: 64 });
+    },
     /** Ctrl+C / Ctrl+X: capture the selection (and its group-mates). */
     copy: (cut: boolean) => {
       if (!snapshot || shellNodes.length === 0) return false;
@@ -1025,8 +1188,7 @@ function BoardApp() {
       return;
     }
     if (action === 'play_media' && (node.kind === 'video' || node.kind === 'audio')) {
-      setSelectedNodeIds([nodeId]);
-      setLiveNodeId(nodeId);
+      playMediaRef.current(nodeId);
       return;
     }
     if (action === 'open_file' && node.kind !== 'note') {
@@ -1065,7 +1227,12 @@ function BoardApp() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.closest('input, textarea, [contenteditable="true"], dialog')) return;
+      if (
+        target?.closest(
+          'input, textarea, select, [contenteditable="true"], dialog, [role="dialog"], [role="menu"]',
+        )
+      )
+        return;
       const action = resolveKey(event);
       if (!action) return;
       event.preventDefault();
@@ -1144,151 +1311,221 @@ function BoardApp() {
     setDrillGroupId(null);
   }, [activeBoardId]);
 
-  async function submitBoard(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setIsCreating(true);
-    try {
-      await createAndOpenBoard(newBoardName);
-      setNewBoardName('');
-    } finally {
-      setIsCreating(false);
-    }
+  const toasts: Toast[] = [];
+  if (health.kind === 'error' && !healthDismissed) {
+    toasts.push({
+      id: 'health',
+      kind: 'error',
+      title: 'Can’t reach the RefThing server',
+      message: `Boards can’t open or save until it answers (${health.message}).`,
+      action: { label: 'Try again', run: () => connectRef.current() },
+      onDismiss: () => setHealthDismissed(true),
+    });
+  }
+  if (error) {
+    toasts.push({ id: 'error', kind: 'error', title: error, onDismiss: clearError });
+  }
+  if (bindingsError && !bindingsDismissed) {
+    toasts.push({
+      id: 'bindings',
+      kind: 'error',
+      title: 'bindings.toml was ignored',
+      message: `The default controls are in use. ${bindingsError}`,
+      onDismiss: () => setBindingsDismissed(true),
+    });
+  }
+  if (notice) {
+    toasts.push({
+      id: `notice:${notice.title}`,
+      kind: 'info',
+      title: notice.title,
+      message: notice.message,
+      onDismiss: () => setNotice(null),
+    });
   }
 
-  function acceptFiles(files: FileList | File[]) {
-    // Phase 11: every file type lands (the server's type handlers decide how
-    // it draws). Empty entries — dropped folders — are skipped.
-    const accepted = Array.from(files).filter((file) => file.size > 0);
-    if (accepted.length > 0) void ingest(accepted);
-  }
+  // Empty and settled: not while it loads or while files are arriving.
+  const boardIsEmpty =
+    !!snapshot && snapshot.items.length === 0 && snapshot.notes.length === 0 && !loading && !busy;
+  const noBoards = health.kind === 'ok' && !loading && !activeBoardId && boards.length === 0;
+  const status = busy ?? (loading && activeBoardId ? 'Opening board…' : null);
+  const primaryKey = /Mac|iP(hone|ad)/.test(navigator.platform) ? '⌘' : 'Ctrl+';
+
+  /** Files dropped or chosen: onto the open board at `client`, or — with no
+   *  board yet — onto a new one. */
+  const dropFiles = async (files: FileList | File[], client: { x: number; y: number } | null) => {
+    if (activeBoardId) {
+      actions.addFiles(files, client);
+      return;
+    }
+    const all = Array.from(files).filter((file) => file.size > 0);
+    // Board files need no board to land on: each becomes its own.
+    const boardFiles = all.filter(isBoardFile);
+    if (boardFiles.length > 0) await actions.importBoards(boardFiles);
+    const accepted = all.filter((file) => !isBoardFile(file));
+    if (accepted.length === 0) return;
+    await createAndOpenBoard('Untitled board');
+    // A new board opens framed on the world origin.
+    await ingest(accepted, { x: 0, y: 0 });
+  };
+
+  // With no board yet (first run) the board group stays out: it's the way in.
+  const boardCornerShown = useProximityReveal(boardCorner, !activeBoardId);
+  const windowCornerShown = useProximityReveal(windowCorner, false);
+
+  // Text controls for the notes in the selection (§5B: a note's rare
+  // actions live in its menu). Rows stay open while you adjust.
+  const every = <K extends keyof NoteStyle>(key: K, value: NoteStyle[K]) =>
+    selectedNoteStyles.length > 0 && selectedNoteStyles.every((style) => style[key] === value);
+  const fills = selectedNoteRecords.map((note) => note.bg_color);
+  const textMenu: MenuEntry[] =
+    selectedNoteRecords.length === 0
+      ? []
+      : [
+          {
+            label: 'Style',
+            keepOpen: true,
+            action: () => undefined,
+            choices: [
+              {
+                label: 'Bold',
+                toggle: true,
+                active: every('bold', true),
+                action: actions.bold,
+              },
+              {
+                label: 'Italic',
+                toggle: true,
+                active: every('italic', true),
+                action: actions.italic,
+              },
+            ],
+          },
+          {
+            label: 'Align',
+            keepOpen: true,
+            action: () => undefined,
+            choices: (['left', 'center', 'right'] as const).map((align) => ({
+              label: align[0]?.toUpperCase() + align.slice(1),
+              active: every('align', align),
+              action: () => actions.styleNotes({ align }),
+            })),
+          },
+          {
+            label: 'Font',
+            keepOpen: true,
+            action: () => undefined,
+            choices: (Object.keys(NOTE_FONTS) as NoteFontId[]).map((font) => ({
+              label: NOTE_FONTS[font].label,
+              font: NOTE_FONTS[font].family,
+              active: every('font', font),
+              action: () => actions.styleNotes({ font }),
+            })),
+          },
+          {
+            label: 'Size',
+            keepOpen: true,
+            action: () => undefined,
+            choices: NOTE_SIZES.map((size) => ({
+              label: size.label,
+              active: every('size', size.px),
+              action: () => actions.styleNotes({ size: size.px }),
+            })),
+          },
+          {
+            label: 'Text color',
+            keepOpen: true,
+            action: () => undefined,
+            choices: [
+              {
+                label: 'Automatic',
+                swatch: 'auto',
+                active: every('color', null),
+                action: () => actions.styleNotes({ color: null }),
+              },
+              ...NOTE_TEXT_COLORS.map(({ name, value }) => ({
+                label: name,
+                swatch: value,
+                active: every('color', value),
+                action: () => actions.styleNotes({ color: value }),
+              })),
+            ],
+          },
+          {
+            label: 'Fill',
+            keepOpen: true,
+            action: () => undefined,
+            choices: [
+              {
+                label: 'No fill',
+                swatch: null,
+                active: fills.every((fill) => fill === null),
+                action: () => actions.fillNotes(null),
+              },
+              ...NOTE_FILLS.map(({ name, value }) => ({
+                label: name,
+                swatch: value,
+                active: fills.every((fill) => fill === value),
+                action: () => actions.fillNotes(value),
+              })),
+            ],
+          },
+          {
+            label: 'Markdown',
+            keepOpen: true,
+            checked: every('markdown', true),
+            action: () => actions.styleNotes({ markdown: !every('markdown', true) }),
+          },
+          { separator: true, label: 'text' },
+        ];
+
+  const canvasMenu: MenuEntry[] = [
+    { label: 'Add Note', action: () => actions.addNoteAt(menu?.world ?? { x: 0, y: 0 }) },
+    {
+      label: 'Paste',
+      shortcut: `${primaryKey}V`,
+      action: () => void actions.pasteImages(menu?.world ?? null),
+    },
+    { label: 'Add Files…', shortcut: `${primaryKey}O`, action: actions.add_files },
+    { separator: true, label: 'view' },
+    {
+      label: 'Search…',
+      shortcut: `${primaryKey}F`,
+      action: () => setSearchAt(menu?.client ?? null),
+    },
+    { label: 'Zoom to Fit', action: actions.zoomToFit },
+  ];
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div className="brand-lockup">
-          <span className="brand-mark">R</span>
-          <div>
-            <h1>RefThing</h1>
-            <span className="workspace-label">reference workspace</span>
-          </div>
-        </div>
-        <div className="topbar-actions">
-          <HealthPill state={health} />
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={() => fileInput.current?.click()}
-            disabled={!activeBoardId}
-          >
-            Add files
-          </button>
-          <button
-            className={`ghost-button ${grayscale ? 'active' : ''}`}
-            type="button"
-            onClick={() => setGrayscale((enabled) => !enabled)}
-            disabled={!activeBoardId}
-            aria-pressed={grayscale}
-          >
-            Grayscale
-          </button>
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={() => setSnapshotsOpen(true)}
-            disabled={!activeBoardId}
-          >
-            Snapshots
-          </button>
-          <button
-            className={`ghost-button ${drawing ? 'active' : ''}`}
-            type="button"
-            onClick={() => setDrawing((enabled) => !enabled)}
-            disabled={!activeBoardId}
-            aria-pressed={drawing}
-          >
-            Draw
-          </button>
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={() => void sampleColor()}
-            disabled={!activeBoardId}
-          >
-            {sampledColor ? `Color ${sampledColor}` : 'Sample color'}
-          </button>
-          <input
-            ref={fileInput}
-            className="visually-hidden"
-            type="file"
-            multiple
-            onChange={(event) => {
-              if (event.target.files) acceptFiles(event.target.files);
-              event.target.value = '';
-            }}
-          />
-        </div>
-      </header>
-
-      <aside className="sidebar">
-        <div className="sidebar-heading">
-          <span>Boards</span>
-          <span className="count-badge">{boards.length}</span>
-        </div>
-        <div className="board-list">
-          {boards.map((board) => (
-            <button
-              className={`board-row ${board.id === activeBoardId ? 'selected' : ''}`}
-              key={board.id}
-              type="button"
-              onClick={() => void openBoard(board.id)}
-            >
-              <span className="board-dot" />
-              <span className="board-name">{board.name}</span>
-              <span className="board-count">{board.item_count}</span>
-            </button>
-          ))}
-        </div>
-        <form className="new-board-form" onSubmit={(event) => void submitBoard(event)}>
-          <input
-            aria-label="New board name"
-            value={newBoardName}
-            onChange={(event) => setNewBoardName(event.target.value)}
-            placeholder="New board name"
-          />
-          <button type="submit" disabled={isCreating} aria-label="Create board">
-            +
-          </button>
-        </form>
-        {snapshot && (
-          <TagManager
-            tags={snapshot.tags}
-            selectedItemTags={selectedItemTags}
-            onCreate={(name) => createTag(name).then(() => undefined)}
-            onRename={(tagId, name) => renameTag(tagId, name).then(() => undefined)}
-            onDelete={(tagId) => deleteTag(tagId)}
-            onToggle={toggleTagOnSelection}
-          />
-        )}
-        {activeBoardId && (
-          <BoardViewManager
-            boardId={activeBoardId}
-            currentViewport={viewport}
-            onApply={(applied) => {
-              // Jump the canvas immediately, then persist right away so no
-              // pending debounced save or later snapshot clobbers the applied
-              // view.
-              setViewport(applied);
-              boardCanvas.current?.setViewport(applied);
-              if (viewportSaveTimer.current) clearTimeout(viewportSaveTimer.current);
-              void saveViewport(applied);
-            }}
-          />
-        )}
-        <div className="sidebar-footer">Local library · {snapshot?.items.length ?? 0} items</div>
-      </aside>
-
+    // biome-ignore lint/a11y/noStaticElementInteractions: file drops land anywhere in the window
+    <div
+      className="app-shell"
+      onDragEnter={(event) => {
+        if (!isFileDrag(event)) return;
+        event.preventDefault();
+        setFileDrag((count) => count + 1);
+      }}
+      onDragLeave={(event) => {
+        if (isFileDrag(event)) setFileDrag((count) => Math.max(0, count - 1));
+      }}
+      onDragOver={(event) => {
+        if (!isFileDrag(event)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = health.kind === 'ok' ? 'copy' : 'none';
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setFileDrag(0);
+        if (health.kind !== 'ok' || event.dataTransfer.files.length === 0) return;
+        void dropFiles(event.dataTransfer.files, { x: event.clientX, y: event.clientY });
+      }}
+      onContextMenu={(event) => {
+        // No browser menu over the chrome; text fields keep theirs.
+        if (!(event.target as HTMLElement).closest('input, textarea')) event.preventDefault();
+      }}
+    >
       <main
-        className="canvas-frame"
+        className={`canvas-frame ${fileDrag > 0 ? 'dragging-files' : ''}`}
         onPointerMove={(event) => {
           lastPointer.current = { x: event.clientX, y: event.clientY };
         }}
@@ -1296,17 +1533,21 @@ function BoardApp() {
           lastPointer.current = null;
         }}
         onPointerDownCapture={(event) => {
-          if (event.button === 2) rightPress.current = { x: event.clientX, y: event.clientY };
+          if (event.button === 2) rightPress.current = { x: event.screenX, y: event.screenY };
         }}
         onContextMenu={(event) => {
-          if ((event.target as HTMLElement).closest('input, textarea, .search-filter')) return;
+          if ((event.target as HTMLElement).closest('input, textarea, .open-target')) return;
           event.preventDefault();
           const press = rightPress.current;
           rightPress.current = null;
           // A right-DRAG is not a click (§2B): no menu.
-          if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) >= 3) return;
+          if (
+            press &&
+            Math.hypot(event.screenX - press.x, event.screenY - press.y) >= RIGHT_CLICK_EPSILON_PX
+          )
+            return;
           const canvas = boardCanvas.current;
-          if (!canvas) return;
+          if (!canvas || !activeBoardId) return;
           const nodeId = canvas.nodeIdAt(event.clientX, event.clientY);
           const world = screenToWorld(
             event,
@@ -1324,26 +1565,8 @@ function BoardApp() {
             setMenu({ kind: 'canvas', client: { x: event.clientX, y: event.clientY }, world });
           }
         }}
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={(event) => {
-          event.preventDefault();
-          acceptFiles(event.dataTransfer.files);
-        }}
       >
         <div id="canvas-host" ref={canvasHost} />
-        {snapshot && (
-          <SearchBar
-            tags={snapshot.tags}
-            filter={filter}
-            onChange={setFilter}
-            loading={filtered.loading}
-            error={filtered.error}
-            resultCount={
-              filtered.active ? filtered.items.length + filtered.notes.length : undefined
-            }
-            onRetry={filtered.retry}
-          />
-        )}
         {/* Everything positioned on the canvas re-renders with the painted
             camera each frame — and nothing else does. */}
         <CameraBound>
@@ -1368,7 +1591,6 @@ function BoardApp() {
                   }
                 />
               ))}
-              <DrawingOverlay enabled={drawing} viewport={camera} />
               {/* §4 Editing: the one note being edited swaps its canvas sprite for
                     a DOM editor laid out with the same pretext metrics. */}
               {editingNote && (
@@ -1387,11 +1609,13 @@ function BoardApp() {
                 />
               )}
               {liveNode && (
-                <LiveMedia
+                <MediaPlayer
                   key={liveNode.id}
                   node={liveNode}
                   viewport={camera}
-                  onExit={() => setLiveNodeId(null)}
+                  autoPlay={autoPlayId === liveNode.id}
+                  onAutoPlayed={() => setAutoPlayId(null)}
+                  handle={mediaHandle}
                 />
               )}
               {/* §1 HOVERED — 1px 40% outline on an unselected node (any kind).
@@ -1424,7 +1648,7 @@ function BoardApp() {
                 <SelectionOverlay
                   nodes={shellNodes}
                   viewport={camera}
-                  editing={noteEditing || liveNode !== null}
+                  editing={noteEditing}
                   locked={shellLocked}
                   cropping={
                     cropNodeId !== null &&
@@ -1473,177 +1697,277 @@ function BoardApp() {
             </>
           )}
         </CameraBound>
-        {menu && (
-          <BoardContextMenu
-            position={menu.client}
-            onClose={() => setMenu(null)}
-            entries={
-              menu.kind === 'selection'
-                ? [
-                    { label: 'Duplicate', action: actions.duplicate },
-                    ...(() => {
-                      // Phase 11: play / open / download a lone media or file item.
-                      const lone = shellNodes.length === 1 ? shellNodes[0] : undefined;
-                      if (!lone || lone.kind === 'note') return [];
-                      return [
-                        ...(lone.kind === 'video' || lone.kind === 'audio'
-                          ? [{ label: 'Play', action: () => setLiveNodeId(lone.id) }]
-                          : []),
-                        ...(lone.kind === 'file'
-                          ? [{ label: 'Open', action: () => actions.openFile(lone) }]
-                          : []),
-                        { label: 'Download', action: () => actions.download(lone) },
-                      ];
-                    })(),
-                    { label: 'Restore Proportions', action: actions.restoreProportions },
-                    ...(shellNodes.length === 1 && shellNodes[0]?.kind !== 'note'
-                      ? [
-                          cropNodeId === shellNodes[0]?.id
-                            ? {
-                                label: 'Done Cropping',
-                                shortcut: 'Enter',
-                                action: () => setCropNodeId(null),
-                              }
-                            : {
-                                label: 'Crop',
-                                action: () => setCropNodeId(shellNodes[0]?.id ?? null),
-                              },
-                          ...(shellNodes[0] && isCropped(shellNodes[0])
-                            ? [{ label: 'Reset Crop', action: actions.resetCrop }]
-                            : []),
-                        ]
-                      : []),
-                    selectionGrouped
-                      ? { label: 'Ungroup', shortcut: 'Ctrl+Shift+G', action: actions.ungroup }
-                      : {
-                          label: 'Group',
-                          shortcut: 'Ctrl+G',
-                          disabled: selectedItemIds.length < 2,
-                          action: actions.group,
-                        },
-                    {
-                      label: 'Opacity',
-                      action: () => undefined,
-                      choices: [1, 0.75, 0.5, 0.25].map((value) => ({
-                        label: `${value * 100}%`,
-                        active: shellNodes.every((node) => node.opacity === value),
-                        action: () => actions.setOpacity(value),
-                      })),
-                    },
-                    ...(selectionGrouped
-                      ? [
-                          selectionLocked
-                            ? { label: 'Unlock', action: () => actions.lock(false) }
-                            : { label: 'Lock', action: () => actions.lock(true) },
-                        ]
-                      : []),
-                    ...(selectionGrouped
-                      ? [
-                          {
-                            label: 'Group Color',
-                            action: () => undefined,
-                            choices: GROUP_COLORS.map(({ name, value }) => ({
-                              label: name,
-                              swatch: value,
-                              active: selectionGroupStyle?.bg_color === value,
-                              action: () =>
-                                actions.setGroupStyle(value, selectionGroupStyle?.opacity ?? 0.35),
-                            })),
-                          },
-                          ...(selectionGroupStyle?.bg_color
-                            ? [
-                                {
-                                  label: 'Group Opacity',
-                                  action: () => undefined,
-                                  choices: [0.2, 0.35, 0.6, 1].map((value) => ({
-                                    label: `${Math.round(value * 100)}%`,
-                                    active: selectionGroupStyle.opacity === value,
-                                    action: () =>
-                                      actions.setGroupStyle(selectionGroupStyle.bg_color, value),
-                                  })),
-                                },
-                              ]
-                            : []),
-                        ]
-                      : []),
-                    ...(selectedItemIds.length > 0
-                      ? [
-                          ...(snapshot?.tags.length
-                            ? [
-                                {
-                                  label: 'Tags',
-                                  action: () => undefined,
-                                  choices: snapshot.tags.map((tag) => ({
-                                    label: tag.name,
-                                    active: selectedItemIds.every((id) =>
-                                      (snapshot.item_tags[id] ?? []).includes(tag.id),
-                                    ),
-                                    action: () => actions.toggleTag(tag.id),
-                                  })),
-                                },
-                              ]
-                            : []),
-                          {
-                            label: 'Add Tag',
-                            action: () => undefined,
-                            input: { placeholder: 'Add tag…', onSubmit: actions.newTag },
-                          },
-                        ]
-                      : []),
-                    { label: 'Bring to Front', action: actions.bringToFront },
-                    { label: 'Send to Back', action: actions.sendToBack },
-                    { label: 'Delete', shortcut: 'Del', action: actions.delete },
-                  ]
-                : [
-                    { label: 'Add Note', action: () => actions.addNoteAt(menu.world) },
-                    {
-                      label: 'Paste',
-                      shortcut: 'Ctrl+V',
-                      action: () => void actions.pasteImages(menu.world),
-                    },
-                    { label: 'Zoom to Fit', action: actions.zoomToFit },
-                  ]
-            }
+        {noBoards && (
+          <OpenTarget
+            label="New board"
+            dropLabel="Drop to start a board"
+            hint="or drop images and files anywhere"
+            dragging={fileDrag > 0}
+            onActivate={() => void createAndOpenBoard('Untitled board')}
           />
         )}
-        {snapshotsOpen && activeBoardId && (
-          <SnapshotManager
-            boardId={activeBoardId}
-            onClose={() => setSnapshotsOpen(false)}
-            onRestored={() => openBoard(activeBoardId)}
+        {activeBoardId && boardIsEmpty && (
+          <OpenTarget
+            label="Add files"
+            dropLabel="Drop files"
+            hint="Drop or paste images, video, audio or any file. Right-click for a note."
+            dragging={fileDrag > 0}
+            onActivate={actions.add_files}
           />
         )}
-        {!activeBoardId && !loading && (
-          <div className="empty-state">
-            <div className="empty-glyph">+</div>
-            <h2>Start a reference board</h2>
-            <p>Create a board, then drop images anywhere on the canvas.</p>
-          </div>
-        )}
-        {activeBoardId && snapshot?.items.length === 0 && !loading && (
-          <div className="empty-state empty-state-board">
-            <div className="empty-glyph">↗</div>
-            <h2>{snapshot.board.name} is ready</h2>
-            <p>Drop images, video, audio or any file here, or use Add files.</p>
-          </div>
-        )}
-        {loading && <div className="canvas-status">Syncing board…</div>}
-        {error && (
-          <div className="error-banner" ref={(element) => enter(element, 'rise')}>
-            {error}
-          </div>
-        )}
-        {bindingsError && (
-          <div className="error-banner" ref={(element) => enter(element, 'rise')}>
-            bindings.toml ignored (using the defaults): {bindingsError}
-          </div>
-        )}
-        {snapshot && (
-          <div className="canvas-meta">
-            {snapshot.items.length} items · seq {snapshot.seq}
+        {fileDrag > 0 && activeBoardId && !boardIsEmpty && (
+          <div className="drop-overlay">
+            <span>Drop to add here</span>
           </div>
         )}
       </main>
+
+      <header className="chrome-top" data-tauri-drag-region>
+        <div
+          ref={boardCorner}
+          className="chrome-corner"
+          data-revealed={boardCornerShown}
+          role="toolbar"
+          aria-label="Board"
+        >
+          <div className="control-group">
+            <BoardSwitcher
+              boards={boards}
+              activeBoardId={activeBoardId}
+              activeItemCount={
+                snapshot && snapshot.board.id === activeBoardId
+                  ? snapshot.items.length + snapshot.notes.length
+                  : null
+              }
+              onOpen={(boardId) => void openBoard(boardId)}
+              onCreate={(name) => createAndOpenBoard(name)}
+              onRename={renameBoard}
+              onDelete={deleteBoard}
+              onSnapshots={() => setSnapshotsOpen(true)}
+            />
+            <span className="chrome-divider" />
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Add files"
+              title={`Add files (${primaryKey}O)`}
+              disabled={!activeBoardId}
+              onClick={actions.add_files}
+            >
+              <Icon name="addFiles" />
+            </button>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+              title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+              onClick={() => setAppearance({ theme: theme === 'dark' ? 'light' : 'dark' })}
+            >
+              <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
+            </button>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Settings"
+              aria-haspopup="dialog"
+              aria-expanded={settingsOpen}
+              title="Settings"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <Icon name="gear" />
+            </button>
+          </div>
+        </div>
+        <span className="chrome-spacer" data-tauri-drag-region />
+        <div ref={windowCorner} className="chrome-corner" data-revealed={windowCornerShown}>
+          <WindowControls />
+        </div>
+      </header>
+
+      {snapshot && (
+        <SearchBar
+          tags={snapshot.tags}
+          filter={filter}
+          onChange={setFilter}
+          loading={filtered.loading}
+          error={filtered.error}
+          resultCount={filtered.active ? filtered.items.length + filtered.notes.length : undefined}
+          onRetry={filtered.retry}
+          openAt={searchAt}
+          onOpen={() => setSearchAt({ x: window.innerWidth / 2 - 180, y: 64 })}
+          onClose={() => setSearchAt(null)}
+        />
+      )}
+
+      {/* Opening a board, adding files, importing: a quiet line, bottom centre. */}
+      {status && (
+        <div className="chrome-bottom">
+          <div className="status-pill" role="status">
+            <span className="spinner" />
+            {status}
+          </div>
+        </div>
+      )}
+
+      {menu && (
+        <BoardContextMenu
+          position={menu.client}
+          onClose={() => setMenu(null)}
+          entries={
+            menu.kind === 'selection'
+              ? [
+                  ...textMenu,
+                  { label: 'Duplicate', action: actions.duplicate },
+                  ...(() => {
+                    // Phase 11: play / open / download a lone media or file item.
+                    const lone = shellNodes.length === 1 ? shellNodes[0] : undefined;
+                    if (!lone || lone.kind === 'note') return [];
+                    return [
+                      ...(lone.kind === 'video' || lone.kind === 'audio'
+                        ? [
+                            {
+                              label: 'Play / Pause',
+                              action: () => playMediaRef.current(lone.id),
+                            },
+                          ]
+                        : []),
+                      ...(lone.kind === 'file'
+                        ? [{ label: 'Open', action: () => actions.openFile(lone) }]
+                        : []),
+                      { label: 'Download', action: () => actions.download(lone) },
+                    ];
+                  })(),
+                  { label: 'Restore Proportions', action: actions.restoreProportions },
+                  ...(shellNodes.length === 1 && shellNodes[0]?.kind !== 'note'
+                    ? [
+                        cropNodeId === shellNodes[0]?.id
+                          ? {
+                              label: 'Done Cropping',
+                              shortcut: 'Enter',
+                              action: () => setCropNodeId(null),
+                            }
+                          : {
+                              label: 'Crop',
+                              action: () => setCropNodeId(shellNodes[0]?.id ?? null),
+                            },
+                        ...(shellNodes[0] && isCropped(shellNodes[0])
+                          ? [{ label: 'Reset Crop', action: actions.resetCrop }]
+                          : []),
+                      ]
+                    : []),
+                  selectionGrouped
+                    ? { label: 'Ungroup', shortcut: 'Ctrl+Shift+G', action: actions.ungroup }
+                    : {
+                        label: 'Group',
+                        shortcut: 'Ctrl+G',
+                        disabled: selectedItemIds.length < 2,
+                        action: actions.group,
+                      },
+                  {
+                    label: 'Opacity',
+                    action: () => undefined,
+                    choices: [1, 0.75, 0.5, 0.25].map((value) => ({
+                      label: `${value * 100}%`,
+                      active: shellNodes.every((node) => node.opacity === value),
+                      action: () => actions.setOpacity(value),
+                    })),
+                  },
+                  ...(selectionGrouped
+                    ? [
+                        selectionLocked
+                          ? { label: 'Unlock', action: () => actions.lock(false) }
+                          : { label: 'Lock', action: () => actions.lock(true) },
+                      ]
+                    : []),
+                  ...(selectionGrouped
+                    ? [
+                        {
+                          label: 'Group Color',
+                          action: () => undefined,
+                          choices: GROUP_COLORS.map(({ name, value }) => ({
+                            label: name,
+                            swatch: value,
+                            active: selectionGroupStyle?.bg_color === value,
+                            action: () =>
+                              actions.setGroupStyle(value, selectionGroupStyle?.opacity ?? 0.35),
+                          })),
+                        },
+                        ...(selectionGroupStyle?.bg_color
+                          ? [
+                              {
+                                label: 'Group Opacity',
+                                action: () => undefined,
+                                choices: [0.2, 0.35, 0.6, 1].map((value) => ({
+                                  label: `${Math.round(value * 100)}%`,
+                                  active: selectionGroupStyle.opacity === value,
+                                  action: () =>
+                                    actions.setGroupStyle(selectionGroupStyle.bg_color, value),
+                                })),
+                              },
+                            ]
+                          : []),
+                      ]
+                    : []),
+                  ...(selectedItemIds.length > 0
+                    ? [
+                        ...(snapshot?.tags.length
+                          ? [
+                              {
+                                label: 'Tags',
+                                action: () => undefined,
+                                choices: snapshot.tags.map((tag) => ({
+                                  label: tag.name,
+                                  active: selectedItemIds.every((id) =>
+                                    (snapshot.item_tags[id] ?? []).includes(tag.id),
+                                  ),
+                                  action: () => actions.toggleTag(tag.id),
+                                })),
+                              },
+                            ]
+                          : []),
+                        {
+                          label: 'Add Tag',
+                          action: () => undefined,
+                          input: { placeholder: 'Add tag…', onSubmit: actions.newTag },
+                        },
+                      ]
+                    : []),
+                  { label: 'Bring to Front', action: actions.bringToFront },
+                  { label: 'Send to Back', action: actions.sendToBack },
+                  { label: 'Delete', shortcut: 'Del', action: actions.delete },
+                ]
+              : canvasMenu
+          }
+        />
+      )}
+      {snapshotsOpen && activeBoardId && (
+        <SnapshotManager
+          boardId={activeBoardId}
+          onClose={() => setSnapshotsOpen(false)}
+          onRestored={() => openBoard(activeBoardId)}
+        />
+      )}
+      {settingsOpen && (
+        <SettingsSheet
+          tags={snapshot?.tags ?? null}
+          onRenameTag={renameTag}
+          onDeleteTag={deleteTag}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+      <Toasts toasts={toasts} />
+      <input
+        ref={fileInput}
+        className="visually-hidden"
+        type="file"
+        multiple
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={(event) => {
+          if (event.target.files) actions.addFiles(event.target.files);
+          event.target.value = '';
+        }}
+      />
       {import.meta.env.DEV && LazyFpsHud && (
         <Suspense fallback={null}>
           <LazyFpsHud />
@@ -1653,16 +1977,33 @@ function BoardApp() {
   );
 }
 
-async function sampleColor(): Promise<void> {
-  const picker = (
-    window as Window & {
-      EyeDropper?: new () => { open: () => Promise<{ sRGBHex: string }> };
-    }
-  ).EyeDropper;
-  if (!picker) return;
-  const result = await new picker().open();
-  window.dispatchEvent(new CustomEvent('refthing-color-sampled', { detail: result.sRGBHex }));
-}
+/** A right press that travels less than this (screen px) is a click: the
+ *  context menu. Further, and it's a right-drag (the window moves). */
+const RIGHT_CLICK_EPSILON_PX = 3;
+
+/** Note text colours (plus Automatic: the theme's flip, or contrast with a
+ *  fill). Board content, so fixed across themes. */
+const NOTE_TEXT_COLORS: { name: string; value: string }[] = [
+  { name: 'Ink', value: '#1f2622' },
+  { name: 'White', value: '#f4f6f4' },
+  { name: 'Gray', value: '#8d9891' },
+  { name: 'Red', value: '#d9534f' },
+  { name: 'Amber', value: '#e6a23c' },
+  { name: 'Green', value: '#4caf6a' },
+  { name: 'Blue', value: '#4a90d9' },
+  { name: 'Violet', value: '#9b6bd6' },
+];
+
+/** Note fills (plus No fill: text only, over the board). */
+const NOTE_FILLS: { name: string; value: string }[] = [
+  { name: 'Paper', value: '#f4f6f4' },
+  { name: 'Charcoal', value: '#2b2f2d' },
+  { name: 'Sticky', value: '#f5e7ad' },
+  { name: 'Rose', value: '#f3c9c3' },
+  { name: 'Mint', value: '#cde8d3' },
+  { name: 'Sky', value: '#c8ddf3' },
+  { name: 'Lavender', value: '#dfd3f3' },
+];
 
 const isCropped = (node: CanvasNode) =>
   node.crop.x > 0 || node.crop.y > 0 || node.crop.w < 1 || node.crop.h < 1;
@@ -1678,30 +2019,12 @@ const GROUP_COLORS: { name: string; value: string | null }[] = [
   { name: 'Violet', value: '#9b6bd6' },
 ];
 
-function asViewport(value: unknown): ViewportState {
-  if (typeof value !== 'object' || value === null) return { x: 0, y: 0, zoom: 1 };
-  const candidate = value as Record<string, unknown>;
-  return {
-    x: typeof candidate.x === 'number' ? candidate.x : 0,
-    y: typeof candidate.y === 'number' ? candidate.y : 0,
-    zoom: typeof candidate.zoom === 'number' ? candidate.zoom : 1,
-  };
+/** A board's saved camera, or null when it was never framed. */
+function savedViewport(value: unknown): ViewportState | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const { x, y, zoom } = value as Record<string, unknown>;
+  if (typeof x !== 'number' || typeof y !== 'number' || typeof zoom !== 'number') return null;
+  return { x, y, zoom };
 }
 
-function HealthPill({ state }: { state: HealthState }) {
-  const label =
-    state.kind === 'ok'
-      ? `API ${state.health.version}`
-      : state.kind === 'loading'
-        ? 'Connecting'
-        : 'Offline';
-  return (
-    <span
-      className={`health-pill ${state.kind}`}
-      title={state.kind === 'error' ? state.message : undefined}
-    >
-      <span />
-      {label}
-    </span>
-  );
-}
+const isFileDrag = (event: React.DragEvent) => event.dataTransfer.types.includes('Files');

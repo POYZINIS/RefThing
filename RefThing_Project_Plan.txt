@@ -362,7 +362,7 @@ Deferred [NEEDS SIGN-OFF]:
   Pixi paints; a worker-owned canvas reintroduces a frame of lag between
   them. Revisit only if a measured workload needs it.
 
-PHASE 10 — POLISH                                     [PARTIAL 3/4]
+PHASE 10 — POLISH                                     [COMPLETE 4/4]
 --------------------------------------------------------------------
 Done:
 1. anime.js UI-chrome transitions (ui/motion.ts): context menu, snapshot
@@ -376,9 +376,15 @@ Done:
    user-remappable via bindings.toml. [NEEDS SIGN-OFF] exact PureRef
    default keys could not be verified offline; any mismatch is a one-line
    bindings.toml change.
-Remaining:
-4. Best-effort .pur importer for PureRef 1.x — needs real .pur sample files
-   to reverse-engineer against (2.x format is closed — stretch, not v1).
+4. PureRef importer (refthing-core pureref.rs, POST /api/boards:import):
+   dropping or choosing a PureRef 2.x .pur makes a new board — every
+   embedded image with its position, scale, rotation, crop, mirror and
+   opacity, notes with their text size (content_json.scale), PureRef's
+   stacking order. Format per github.com/FyorDev/pur-2-file-format, checked
+   against a real 2.1.3 board. Not brought in (and listed to the user):
+   linked (non-embedded) images, drawings; groups are flattened.
+   PureRef 1.x files are refused with a plain message (re-save in 2.x).
+   The camera's minimum zoom went from 10% to 1% so boards that size fit.
 
 PHASE 11 — EXTENSIBILITY: MULTI-FORMAT ITEM TYPES   [PARTIAL: image/video/audio/gif/file done; 3D + web embeds open]
 --------------------------------------------------------------------
@@ -395,9 +401,14 @@ Done:
 - Frontend kinds video / audio / file in the node registry.
   CardTextureSource (pretext-wrapped filename, type, size, duration) is
   the poster for files, and for media until its poster is ready.
-- Live mode: double-click (bindings [double_click] media/file targets) or
-  the context menu. <video> sits over the item; <audio> is a mini-player.
-  One live item at a time. Escape or a press outside exits.
+- Media player (components/MediaPlayer.tsx): selecting a lone video/audio
+  item mounts its player with custom controls — play/pause, scrub bar with
+  times, volume, loop (videos loop by default), fullscreen (video) — each
+  fading in only when the pointer comes within 12px of it, never mid-drag.
+  The item still moves and resizes while it plays. Double-click (bindings
+  [double_click] media) or Play / Pause in the menu toggles playback,
+  selecting and starting an unselected item; deselecting stops it. Items
+  too small on screen get the controls as a strip under them.
 - Files: double-click opens the original, and Download is in the context
   menu. Drop, paste and Add files accept every file type.
 - Feature flags (src/features.ts). Restore Proportions un-squashes items

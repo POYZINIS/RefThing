@@ -226,3 +226,48 @@ test('copy → paste lands centred on the cursor, on top, into another board', (
     ids: [],
   });
 });
+
+test('arrangeDrop centres one file on the drop point', async () => {
+  const { arrangeDrop } = await import('../src/state/commands.ts');
+  assert.deepEqual(arrangeDrop([{ width: 200, height: 100 }], { x: 0, y: 0 }), [
+    { x: -100, y: -50 },
+  ]);
+});
+
+test('arrangeDrop packs several files into a centred block without overlap', async () => {
+  const { arrangeDrop, DROP_GAP } = await import('../src/state/commands.ts');
+  const sizes = Array.from({ length: 7 }, (_, i) => ({ width: 100 + i * 10, height: 80 }));
+  const at = arrangeDrop(sizes, { x: 500, y: 300 });
+  const rects = at.map((p, i) => ({
+    left: p.x,
+    top: p.y,
+    right: p.x + sizes[i].width,
+    bottom: p.y + sizes[i].height,
+  }));
+  for (let a = 0; a < rects.length; a += 1) {
+    for (let b = a + 1; b < rects.length; b += 1) {
+      const A = rects[a];
+      const B = rects[b];
+      const overlap =
+        A.left < B.right + DROP_GAP - 1 &&
+        B.left < A.right + DROP_GAP - 1 &&
+        A.top < B.bottom + DROP_GAP - 1 &&
+        B.top < A.bottom + DROP_GAP - 1;
+      assert.ok(!overlap, `rects ${a} and ${b} closer than the gap`);
+    }
+  }
+  const bounds = unionRect(rects);
+  assert.ok(Math.abs((bounds.left + bounds.right) / 2 - 500) < 1, 'centred on x');
+  assert.ok(Math.abs((bounds.top + bounds.bottom) / 2 - 300) < 1, 'centred on y');
+  assert.ok(bounds.right - bounds.left < 1000, 'wraps into rows instead of one long strip');
+});
+
+test('wheelZoomFactor: 25% a notch, normalised across delta modes, capped', async () => {
+  const { wheelZoomFactor } = await import('../src/canvas/coordinates.ts');
+  assert.ok(Math.abs(wheelZoomFactor(-100, 0, 1) - 1.25) < 1e-9, 'one notch in');
+  assert.ok(Math.abs(wheelZoomFactor(100, 0, 1) - 1 / 1.25) < 1e-9, 'one notch out');
+  assert.ok(Math.abs(wheelZoomFactor(-100, 0, 2) - 1.25 ** 2) < 1e-9, 'speed 2 = two notches');
+  assert.ok(Math.abs(wheelZoomFactor(-2.5, 1, 1) - 1.25) < 1e-9, 'line mode: 40 px a line');
+  assert.ok(Math.abs(wheelZoomFactor(-5000, 0, 1) - 1.25 ** 3) < 1e-9, 'a fling caps at 3');
+  assert.ok(Math.abs(wheelZoomFactor(-4, 0, 1) - 1.25 ** 0.04) < 1e-9, 'trackpad: proportional');
+});

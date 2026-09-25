@@ -51,6 +51,9 @@ test('Color filter keeps only images near the chosen color; Duplicates keeps onl
   const ids = Object.values(seeded.ids);
   assert.deepEqual(Object.values(await painted(page, ids)), [true, true, true]);
 
+  // The filters open with the search field.
+  // Search opens from Ctrl+F (or Search… in the context menu).
+  await page.keyboard.press('Control+f');
   await page.getByRole('button', { name: 'Color', exact: true }).click();
   await page.waitForTimeout(600);
   await settle(page);

@@ -11,7 +11,7 @@
 //! | `groups`  | `/api/boards/{id}/groups...`  | `TimeoutLayer`(30s) + `CompressionLayer` |
 //! | `notes`   | `/api/boards/{id}/notes...`   | `TimeoutLayer`(30s) + `CompressionLayer` |
 //! | `tags`    | `/api/tags...`                | `TimeoutLayer`(30s) + `CompressionLayer` |
-//! | `ingest`  | `/api/boards/{id}/items:ingest` | `DefaultBodyLimit` 1 GiB; NO timeout   |
+//! | `ingest`  | `/api/boards/{id}/items:ingest`, `/api/boards:import` | `DefaultBodyLimit` 1 GiB; NO timeout |
 //! | `ws`      | `/api/boards/{id}/ws`         | none (timeout would kill the socket)     |
 //! | `blobs`   | `/blob/{hash}/{level}`        | none (no compression on media bytes)     |
 //!

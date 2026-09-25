@@ -13,4 +13,8 @@ pub enum CoreError {
     Io(#[from] std::io::Error),
     #[error("database error: {0}")]
     Db(String),
+    /// Input the caller supplied that cannot be used (e.g. an unreadable
+    /// import file); the message is safe to show to the user.
+    #[error("{0}")]
+    InvalidInput(String),
 }

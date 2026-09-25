@@ -11,11 +11,13 @@ const LABEL_LINE_PX = 17;
 const DETAIL_PX = 11;
 const MAX_LABEL_LINES = 2;
 
-const CARD_BG = '#1b2027';
-const CARD_BORDER = '#394250';
-const CARD_TEXT = '#e4e8ee';
-const CARD_MUTED = '#8b95a3';
-const CARD_ACCENT = '#d6ff76';
+// Board content, so one fixed face in both themes (like a note's paper): the
+// dark charcoal-green of the palette, readable on either workspace.
+export const CARD_BG = '#2b2f2d';
+const CARD_BORDER = '#454c48';
+const CARD_TEXT = '#e2e8e2';
+const CARD_MUTED = '#a3ada5';
+const CARD_ACCENT = '#99bba3';
 
 const font = (px: number, weight = 400) => `${weight} ${px}px ${NOTE_FONT_FAMILY}`;
 

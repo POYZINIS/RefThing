@@ -35,10 +35,12 @@ core engine, schema, or sync protocol:
    - `CardTextureSource`: filename + detail card. This is the fallback for
      any type.
 
-   Live mode is optional. It is a DOM component positioned from the
-   rendered camera (see `components/LiveMedia.tsx`), entered through a
-   `[double_click]` binding target and a context-menu entry. While it is
-   mounted, the selection shell is inert.
+   A live view is optional. It is a DOM component positioned from the
+   rendered camera and mounted while the item is the lone selection (see
+   `components/MediaPlayer.tsx`); a `[double_click]` binding target and a
+   context-menu entry drive it. Keep the selection shell live under it:
+   the element takes no pointer events, and each control sits above the
+   shell and reveals on its own (`ui/useProximityReveal.ts`).
 3. **Nothing else.** The canvas engine, camera, spatial index, persistence
    schema and sync protocol don't depend on item type. If you find yourself
    editing any of them to add a type, stop: the handler/renderer extension

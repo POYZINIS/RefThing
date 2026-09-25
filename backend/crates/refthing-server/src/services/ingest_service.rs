@@ -118,7 +118,12 @@ pub async fn ingest(
         if used_cascade {
             cascade += CASCADE_STEP;
         }
-        let (new_seq, item) = commit_file(state, board_id, filename, &blob, x, y).await?;
+        let landing = Landing {
+            x,
+            y,
+            ..Landing::default()
+        };
+        let (new_seq, item) = commit_file(state, board_id, filename, &blob, &landing).await?;
         seq = new_seq;
         items.push(item);
     }
@@ -128,15 +133,29 @@ pub async fn ingest(
     Ok(IngestResponse { seq, items })
 }
 
+/// Where a committed file lands on its board.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Landing {
+    /// Top-left of the frame.
+    pub x: f64,
+    pub y: f64,
+    /// Frame size; `None` places it at the type handler's size (the file's
+    /// true proportions).
+    pub size: Option<(f64, f64)>,
+    /// Clockwise degrees about the frame's centre.
+    pub rotation: f64,
+    /// Item metadata keys (crop, flip, opacity) merged over the probe's.
+    pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
 /// One atomic commit per file: blob registry row (idempotent), item row,
 /// event row, and the `pyramid` job in the same transaction (true outbox).
-async fn commit_file(
+pub(crate) async fn commit_file(
     state: &AppState,
     board_id: Uuid,
     filename: Option<String>,
     blob: &BlobRef,
-    x: f64,
-    y: f64,
+    landing: &Landing,
 ) -> AppResult<(i64, IngestedItem)> {
     // Route by sniffed MIME (Phase 11 item type handlers). Probing reads the
     // stored file's header (or ffprobe for media) BEFORE the transaction, so
@@ -144,7 +163,9 @@ async fn commit_file(
     // and a fixed placeholder squashed every non-square image into a square.
     let handler = item_types::handler_for(&blob.mime);
     let probe = handler.probe(&state.blob_store.path(&blob.hash)).await;
-    let (width, height) = handler.placement(probe.as_ref());
+    let (width, height) = landing
+        .size
+        .unwrap_or_else(|| handler.placement(probe.as_ref()));
 
     let mut tx = state.pools.write.begin().await?;
 
@@ -170,22 +191,27 @@ async fn commit_file(
     let row = sqlx::query_as::<_, CoreItem>(
         "INSERT INTO items \
              (id, board_id, type, blob_id, x, y, width, height, rotation, z_index, group_id) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL) RETURNING *",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) RETURNING *",
     )
     .bind(item_id)
     .bind(board_id)
     .bind(handler.item_type())
     .bind(&blob.hash)
-    .bind(x)
-    .bind(y)
+    .bind(landing.x)
+    .bind(landing.y)
     .bind(width)
     .bind(height)
+    .bind(landing.rotation)
     .bind(z_index)
     .fetch_one(&mut *tx)
     .await?;
 
-    // Type metadata (e.g. media duration) rides in item_metadata.
-    let metadata = probe.map_or_else(|| json!({}), |probe| probe.metadata);
+    // Type metadata (e.g. media duration) rides in item_metadata, with the
+    // landing's own keys (an import's crop / flip / opacity) over it.
+    let mut metadata = probe.map_or_else(|| json!({}), |probe| probe.metadata);
+    if let (Some(extra), Some(fields)) = (&landing.metadata, metadata.as_object_mut()) {
+        fields.extend(extra.clone());
+    }
     if metadata
         .as_object()
         .is_some_and(|fields| !fields.is_empty())

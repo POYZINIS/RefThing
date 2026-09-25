@@ -6,7 +6,23 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use refthing_core::AppConfig;
+use tauri::ipc::CapabilityBuilder;
+use tauri::window::{Effect, EffectsBuilder};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+/// What the page may do with its own window. The page is served over HTTP
+/// (the embedded server, or Vite in dev), so Tauri treats it as a REMOTE
+/// origin: these grants are scoped to exactly that origin at runtime.
+const WINDOW_PERMISSIONS: &[&str] = &[
+    "core:default",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-position",
+    "core:window:allow-set-effects",
+];
 
 /// The machine-local link shim (`.cargo/config.toml` + `backend/target/`)
 /// replaces the MSVC CRT startup, so static initializers in the
@@ -108,14 +124,32 @@ fn main() {
             // The webview loads the app over HTTP from the server itself, so
             // the frontend's relative /api, /blob and WebSocket URLs work
             // unchanged. Dev goes through the Vite dev server instead.
-            let url = if cfg!(dev) {
-                WebviewUrl::External("http://localhost:5173".parse().expect("dev url"))
+            let origin = if cfg!(dev) {
+                "http://localhost:5173".to_string()
             } else {
-                WebviewUrl::External(format!("http://{addr}").parse().expect("server url"))
+                format!("http://{addr}")
             };
+            let capability = WINDOW_PERMISSIONS.iter().fold(
+                CapabilityBuilder::new("main-window")
+                    .remote(format!("{origin}/*"))
+                    .window("main"),
+                |capability, permission| capability.permission(*permission),
+            );
+            app.add_capability(capability)?;
+
+            // Frameless and transparent: the page draws its own window
+            // controls and drag strip (ui-design.md), and the workspace shows
+            // the Mica backdrop through it when glass is on (the page turns
+            // the effect off with the glass setting).
+            let url = WebviewUrl::External(origin.parse().expect("app url"));
             WebviewWindowBuilder::new(app, "main", url)
                 .title("RefThing")
                 .inner_size(1440.0, 900.0)
+                .min_inner_size(420.0, 320.0)
+                .decorations(false)
+                .shadow(true)
+                .transparent(true)
+                .effects(EffectsBuilder::new().effect(Effect::Mica).build())
                 .build()?;
 
             Ok(())

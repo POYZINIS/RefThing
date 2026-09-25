@@ -52,7 +52,11 @@ test('Group Color paints a background behind the group; undo removes it', async 
   await page.waitForTimeout(150);
   await settle(page);
   const red = await pixel(page, gap);
-  assert.ok(red[0] > before[0] + 30 && red[0] > red[2], `background not red: ${before} -> ${red}`);
+  // Redder than before, over either theme's workspace.
+  assert.ok(
+    red[0] - red[2] > before[0] - before[2] + 30,
+    `background not red: ${before} -> ${red}`,
+  );
   assert.equal((await hook(page, 'groups'))[0].members.length, 2);
   await page.keyboard.press('Control+z');
   await page.waitForTimeout(150);

@@ -13,7 +13,9 @@ RefThing/
 │   └── src/
 │       ├── main.tsx          # entry; mounts React shell
 │       ├── canvas/           # PixiJS engine: mounts once into #canvas-host, imperative
-│       ├── components/       # UI chrome only (toolbar, panels, dialogs)
+│       ├── components/       # UI chrome only (floating toolbars, popovers, sheets)
+│       ├── ui/               # chrome primitives: icons, popover, motion, appearance
+│       ├── shell/            # desktop (Tauri) window bridge — inert in a browser
 │       ├── state/            # zustand stores
 │       └── api/              # HTTP + WebSocket client for the backend
 ├── sidecar/                  # Node service for Node-only rendering (stub until Phase 11)
@@ -49,7 +51,11 @@ WebSocket (api/ws.ts) is receive-only: other clients' diffs and job events.
   scene graph and one paint order (`z_index` is a single space across items
   and notes; ties break by kind then id). Notes paint through
   `NoteTextureSource` from a `@chenglou/pretext` layout; only the note being
-  edited swaps to a DOM textarea (`NoteEditor`) with identical metrics.
+  edited swaps to a DOM textarea (`NoteEditor`) showing the raw text in the
+  note's font. Notes render markdown (`canvas/nodes/markdown.ts` → blocks,
+  laid out by pretext rich-inline in `noteText.ts`) and carry a style in
+  `content_json.style`; unfilled notes take the theme's flipped text colour,
+  so note textures key on the theme and repaint when it changes.
 - **DOM chrome positions from the rendered camera.** Pixi eases the camera;
   `BoardCanvas` publishes the camera it actually painted each frame
   (`onRenderedViewportChange`, committed synchronously) and every overlay
@@ -62,11 +68,51 @@ WebSocket (api/ws.ts) is receive-only: other clients' diffs and job events.
 - **Item types** (Phase 11): backend `item_types.rs` handlers pick type,
   placement and poster job per sniffed MIME; the frontend maps `type` to a
   node kind (`canvas/nodes/itemKind.ts`) drawn from a pyramid poster or a
-  `CardTextureSource` card, with optional live DOM players
-  (`components/LiveMedia.tsx`). See `docs/onboarding-new-item-type.md`.
+  `CardTextureSource` card. A lone selected video/audio item mounts
+  `components/MediaPlayer.tsx`: the media element on the editor rung and
+  custom controls above the selection shell (`--z-media-controls`), each
+  revealed by its own `useProximityReveal`. See `docs/onboarding-new-item-type.md`.
+- **Board import** (`refthing-core/src/pureref.rs`, `POST /api/boards:import`):
+  a PureRef 2 `.pur` is a displaced SQLite database of Qt-serialized items;
+  the core reads it into placements and the server commits them through the
+  same ingest / note paths as a drop. The frontend routes any dropped,
+  chosen or pasted `.pur` there (`isBoardFile` in `api/client.ts`).
 - **sidecar** — internal Node helper for three.js GLB poster snapshots and
   puppeteer embed screenshots (Phase 11+). See `sidecar/README.md` and
   `docs/onboarding-new-item-type.md`.
+
+## Chrome (UI around the board)
+
+The board takes the whole window and is clean at rest: the corner groups
+fade out until the pointer comes near (`ui/useProximityReveal.ts`, pinned
+by CSS while a panel they opened is up or they hold keyboard focus). See
+`DESIGN.md`.
+
+- **Top left** — the board switcher (`components/BoardSwitcher.tsx`: list,
+  new, rename, delete, snapshots), Add files, the theme toggle, Settings
+  (`SettingsSheet.tsx`: appearance, scroll zoom speed, tags, shortcut
+  reference).
+- **Search** (`SearchBar.tsx`) has no fixed place: Search… in the canvas
+  context menu (or Ctrl+F) opens it as a popover at that point. A filter
+  outlives the panel; while one holds, a pill top centre shows the match
+  count with Edit / Clear.
+- **Top right** — desktop window controls (`WindowControls.tsx`), absent in
+  the browser.
+- **Bottom centre** — nothing but a status line while a board opens, files
+  upload or a board imports. (The saved-views API remains server-side with
+  no UI; the canvas's grayscale shader has no toggle.)
+
+Popovers (`ui/Popover.tsx`) portal to `<body>`. Preferences (theme, glass,
+backdrop opacity, scroll zoom speed) live in `ui/appearance.ts` and applies as attributes on
+`<html>`; `index.html` sets the saved theme before first paint. The Pixi
+canvas is transparent, so the themed workspace (and, on desktop, the Mica
+backdrop) sits behind it and a theme switch never repaints the board.
+
+**Desktop shell** (`src-tauri`): a frameless, transparent window. The page
+reaches the window through the global Tauri API (`shell/desktop.ts`); the
+page is served over HTTP, so `main.rs` grants window permissions to exactly
+that origin at runtime. The top strip is the drag region, and a right-drag
+on the board moves the window (`move_window` in `canvas/bindings.ts`).
 
 ## Ports
 

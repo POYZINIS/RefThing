@@ -55,7 +55,7 @@ type SelectionOverlayProps = {
   /** Left press outside the box: the canvas controller hit-tests it. */
   onOutsidePress?: (event: PointerEvent) => void;
   /** A camera press on the shell (pan, drag-zoom) — handed to the canvas. */
-  onChromePress?: (event: PointerEvent, action: 'pan' | 'drag_zoom') => void;
+  onChromePress?: (event: PointerEvent, action: 'pan' | 'drag_zoom' | 'move_window') => void;
   /** A click (no drag) on the body: re-select / Shift-toggle the node under
    *  the pointer, exactly like a click on bare canvas would. */
   onBodyClick?: (event: MouseEvent) => void;
@@ -228,7 +228,7 @@ export function SelectionOverlay({
             heldModifiers(event, isHeld),
             zone === 'body' ? 'selection' : 'handle',
           );
-    if (action === 'pan' || action === 'drag_zoom') {
+    if (action === 'pan' || action === 'drag_zoom' || action === 'move_window') {
       onChromePress?.(native, action);
       return;
     }
