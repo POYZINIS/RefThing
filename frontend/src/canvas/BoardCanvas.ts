@@ -492,6 +492,7 @@ export class BoardCanvas {
   private readonly onTick = (): void => {
     const frame = performance.now();
     if (this.gifTextures.tick(frame)) this.renderVisible();
+    this.pyramidTextures.tick(); // frame clock for texture eviction
     const easing = 0.18;
     this.renderedViewport.x += (this.viewport.x - this.renderedViewport.x) * easing;
     this.renderedViewport.y += (this.viewport.y - this.renderedViewport.y) * easing;

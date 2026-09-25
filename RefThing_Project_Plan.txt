@@ -344,19 +344,23 @@ indicators, or CRDT conflict resolution. Consequences of the cut:
 - Undo/redo stays a plain linear local command stack (no need to
   reconcile against concurrent remote edits).
 
-PHASE 9 — PERFORMANCE VALIDATION & OFF-MAIN-THREAD   [PARTIAL 4/6]
+PHASE 9 — PERFORMANCE VALIDATION & OFF-MAIN-THREAD   [COMPLETE 5/6, 1 deferred]
 --------------------------------------------------------------------
 Done: synthetic board generator (/dev/board/N, src/dev/synthBoard.ts),
 dev-only FPS/latency HUD (src/dev/FpsHud.tsx), perf gate at 20k items
 (docs/perf-baseline.md).
 Done: bulk ingest load test (2000 files / 520 MB: 5.3s upload, all
 pyramids in 14s on a release server, 0 failures — docs/perf-baseline.md).
-Remaining:
-- Move image decode/resize into Web Workers.
-- Move the PixiJS render loop into OffscreenCanvas in a worker
-  (requires Cross-Origin-Opener-Policy / Cross-Origin-Embedder-Policy
-  headers on the Axum server if using SharedArrayBuffer). Weigh this
-  against the DOM chrome that must track the canvas every frame.
+Image decode off the main thread: fetch + createImageBitmap (the browser
+decodes on its own threads; a dedicated worker pool measured no extra
+benefit), no full-size placeholder downloads, LRU texture eviction
+(600-image sweep: 0 long tasks, 0 placeholder originals).
+Deferred [NEEDS SIGN-OFF]:
+- PixiJS render loop in an OffscreenCanvas worker. The app holds 60fps at
+  20k items on the main thread (docs/perf-baseline.md), and the DOM chrome
+  (selection shell, outlines, note editor) must commit in the SAME frame
+  Pixi paints; a worker-owned canvas reintroduces a frame of lag between
+  them. Revisit only if a measured workload needs it.
 
 PHASE 10 — POLISH                                          [NOT STARTED]
 --------------------------------------------------------------------

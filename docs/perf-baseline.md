@@ -128,3 +128,21 @@ server), uploads distinct PNGs through the real multipart ingest endpoint
 | release | 5.3s (374 files/s, 97 MB/s)| 14.0s             | 0           | 0                   |
 
 Debug-build image processing is ~30× slower; always judge ingest on release.
+
+## Texture streaming (2026-09-24)
+
+`npm run build -w frontend && E2E_RELEASE=1 GPU=1 node frontend/e2e/texture-load.mjs [n]`
+seeds n distinct 1600×1200 images, serves the production build and sweeps
+the camera (fit-all → zoom in through every pyramid level → pan).
+
+600 images:
+
+| Loader                                                   | Long tasks | Blocking | Frames p99 | Full originals fetched |
+|:---------------------------------------------------------|:-----------|:---------|:-----------|:-----------------------|
+| before: `<img>`, full original as placeholder             | 3          | 24ms     | 16.8ms     | 92                     |
+| after: fetch + createImageBitmap, nearest resident level | 0          | 0ms      | 16.8ms     | 0                      |
+| after, plus a dedicated decode-worker pool                | 0          | 0ms      | 16.8ms     | 0                      |
+
+`createImageBitmap` already decodes off the main thread, so a worker pool
+measured no additional benefit and was not kept. Textures idle for 120
+frames are evicted LRU beyond 1500 resident.
