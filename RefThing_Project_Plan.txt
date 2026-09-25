@@ -310,17 +310,15 @@ PHASE 4 — CANVAS RENDERING ENGINE                    [COMPLETE 8/8]
 Fixed: item drag delta math; note click-vs-edit (double-click only);
 rotated resize anchors; rotation accumulation past 360 degrees.
 
-PHASE 5 — CORE PUREREF FEATURE PARITY                [PARTIAL 6/8]
+PHASE 5 — CORE PUREREF FEATURE PARITY                [COMPLETE 8/8]
 --------------------------------------------------------------------
 Done: drag-and-drop/paste/browser-drag ingestion, grouping/ungrouping
 + move-as-unit, group lock + double-click drill-in, grayscale toggle
 (GPU shader), color sampler, GIF playback in canvas, flip
 (Alt+Shift+drag), opacity, pretext notes painted on the canvas in the
-same paint order as images (DOM editor only while editing).
-Remaining:
-- Group background color/opacity picker UI.
-- Smart alignment guides (snap-to-edge while dragging; Shift+Space).
-- Crop (context menu).
+same paint order as images (DOM editor only while editing), group
+background color/opacity (context menu), smart alignment guides with
+Shift+Space snap-move, crop (context menu crop mode).
 
 PHASE 6 — ORGANIZATION FEATURES BEYOND PUREREF        [COMPLETE 5/5]
 --------------------------------------------------------------------

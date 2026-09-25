@@ -30,6 +30,8 @@ export interface BoardNode {
   flipY: boolean;
   /** 0–1. */
   opacity: number;
+  /** Visible part of the source, normalized (§5B Crop). Full = 0,0,1,1. */
+  crop: { x: number; y: number; w: number; h: number };
   zIndex: number;
   groupId: string | null;
   /** Member of a locked group (§6 RULE 3): no group-level transforms. */
@@ -58,7 +60,10 @@ export type CanvasNode = SpriteNode | NoteNode;
 
 /** Geometry the interaction layer can patch on any node kind. */
 export type NodePatch = Partial<
-  Pick<BoardNode, 'x' | 'y' | 'width' | 'height' | 'rotation' | 'flipX' | 'flipY' | 'opacity'>
+  Pick<
+    BoardNode,
+    'x' | 'y' | 'width' | 'height' | 'rotation' | 'flipX' | 'flipY' | 'opacity' | 'crop'
+  >
 >;
 
 /**

@@ -22,6 +22,7 @@ import {
   type Modifiers,
   type Point,
   type Rect,
+  recrop,
   SNAP_DISTANCE_PX,
   snapTranslate,
   stepGesture,
@@ -62,6 +63,9 @@ type SelectionOverlayProps = {
   /** Alignment guides to draw while snapping ([] clears). */
   onGuides?: (guides: Guide[]) => void;
   editing?: boolean;
+  /** §5B Crop mode (one image): the 8 zones move the frame over fixed
+   *  content instead of scaling it; stretch only, no modifiers. */
+  cropping?: boolean;
   /** §6 RULE 3: a locked group — outline only; move, resize, rotate and flip
    *  are all rejected. Clicks, double-click (drill in) and the menu remain. */
   locked?: boolean;
@@ -161,6 +165,7 @@ export function SelectionOverlay({
   onGuides,
   editing,
   locked = false,
+  cropping = false,
   onDoubleClick,
 }: SelectionOverlayProps) {
   const box = selectionBox(nodes);
@@ -171,8 +176,16 @@ export function SelectionOverlay({
   const lockedPress = useRef<Point | null>(null);
   const element = useRef<HTMLDivElement>(null);
   // Latest props for the window listeners (registered once).
-  const latest = useRef({ viewport, onPreview, onCommit, onBodyClick, snapTargets, onGuides });
-  latest.current = { viewport, onPreview, onCommit, onBodyClick, snapTargets, onGuides };
+  const latest = useRef({
+    viewport,
+    onPreview,
+    onCommit,
+    onBodyClick,
+    snapTargets,
+    onGuides,
+    cropping,
+  });
+  latest.current = { viewport, onPreview, onCommit, onBodyClick, snapTargets, onGuides, cropping };
 
   const collapsed =
     locked || (box ? zonesCollapsed(box, viewport.zoom, MIN_SCREEN_SIZE_PX) : false);
@@ -280,14 +293,31 @@ export function SelectionOverlay({
         vp,
         hostRect(),
       );
+      const crop = latest.current.cropping && current.gesture.mode === 'resize';
       let transform = stepGesture(
         current.gesture,
         pointer,
-        current.modifiers,
+        // Crop is always a free stretch from the opposite edge.
+        crop ? { shift: false, alt: false } : current.modifiers,
         vp.zoom,
-        current.freeTransform,
+        crop || current.freeTransform,
       );
       if (!transform) return;
+      const only = current.origin[0];
+      if (crop && transform.kind === 'resize' && only) {
+        const next = recrop(
+          transform.from,
+          only.crop,
+          { x: only.flipX, y: only.flipY },
+          transform.to,
+        );
+        const { rotation: _rotation, ...frame } = next.box;
+        current.last = [
+          { id: only.id, kind: nodeChangeKind(only), patch: { ...frame, crop: next.crop } },
+        ];
+        latest.current.onPreview(current.last);
+        return;
+      }
       const { snapTargets: targetsOf, onGuides: showGuides } = latest.current;
       if (transform.kind === 'translate' && current.modifiers.snap && targetsOf) {
         current.targets ??= targetsOf(new Set(current.origin.map((node) => node.id)));
@@ -426,9 +456,10 @@ export function SelectionOverlay({
         // §4 RULE 3 — while editing, the shell is a pure visual: zones are
         // non-interactive, not merely hidden.
         pointerEvents: editing ? 'none' : 'auto',
-        outline: editing
-          ? `${SELECTED_OUTLINE_PX}px dashed ${ACCENT}`
-          : `${SELECTED_OUTLINE_PX}px solid ${ACCENT}`,
+        outline:
+          editing || cropping
+            ? `${SELECTED_OUTLINE_PX}px dashed ${ACCENT}`
+            : `${SELECTED_OUTLINE_PX}px solid ${ACCENT}`,
         transform: `rotate(${box.rotation}deg)`,
         transformOrigin: 'center',
       }}

@@ -45,10 +45,13 @@ conflict in this file; confirm or overrule them here.
    height, inset and wrap width, so no line ever reflows between the two.
    Text is a fixed world size and reflows to the note's width (Rule 5); it
    never scales with the note's height.
-7. Section 5B. Implemented entries: Duplicate, Group / Ungroup, Lock /
-   Unlock, Delete, Bring to Front / Send to Back, Adjust Opacity; empty
-   canvas: Add Note, Paste, Zoom to Fit. Not yet: Add Tag... (tags are
-   assigned from the sidebar today) and Crop.
+7. Section 5B. All minimum entries exist: Duplicate, Group / Ungroup,
+   Lock / Unlock, Delete, Bring to Front / Send to Back, Add Tag (a Tags
+   row plus an inline field), Crop (+ Reset Crop), Adjust Opacity; groups
+   also get Group Color / Group Opacity; empty canvas: Add Note, Paste,
+   Zoom to Fit. Crop mode reuses the 8 zones as a free stretch of the frame
+   over fixed content (outline dashed); Enter, Escape or selecting
+   anything else ends it.
 8. Selecting any node brings it to the front of ONE paint order shared by
    images and notes. This is a side effect of selecting, not an undoable
    command; Bring to Front / Send to Back from the menu are undoable.

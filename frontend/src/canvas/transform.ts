@@ -516,3 +516,61 @@ export function snapTranslate(
   }
   return { ...result, guides };
 }
+
+// ---------------------------------------------------------------------------
+// Crop (§5B): resize the FRAME while the image content stays put in the world
+// ---------------------------------------------------------------------------
+
+/** Visible part of the source image, normalized 0–1 (full image = 0,0,1,1). */
+export type Crop = { x: number; y: number; w: number; h: number };
+export const FULL_CROP: Crop = { x: 0, y: 0, w: 1, h: 1 };
+
+/**
+ * Re-derive the crop after the frame `from` became `to` (same rotation — a
+ * crop-mode resize). Content never moves in the world: each frame edge maps
+ * to a source coordinate through the current world-px-per-source scale, and
+ * the result is clamped to the image so the frame can't grow past it (the
+ * returned box shrinks to match any clamp). Flip mirrors the mapping.
+ */
+export function recrop(
+  from: Box,
+  crop: Crop,
+  flip: { x: boolean; y: boolean },
+  to: Box,
+): { box: Box; crop: Crop } {
+  // World px per unit of normalized source, per axis.
+  const scaleX = from.width / crop.w;
+  const scaleY = from.height / crop.h;
+  // `to`'s edges in `from`'s local frame (same rotation → axis-aligned).
+  const center = toLocal(boxCenter(to), from);
+  const edges = {
+    left: center.x - to.width / 2,
+    right: center.x + to.width / 2,
+    top: center.y - to.height / 2,
+    bottom: center.y + to.height / 2,
+  };
+  // Local offset → source coordinate (mirrored under flip).
+  const u = (local: number) =>
+    crop.x + (flip.x ? from.width / 2 - local : local + from.width / 2) / scaleX;
+  const v = (local: number) =>
+    crop.y + (flip.y ? from.height / 2 - local : local + from.height / 2) / scaleY;
+  const clamp = (value: number) => Math.min(1, Math.max(0, value));
+  const u0 = clamp(Math.min(u(edges.left), u(edges.right)));
+  const u1 = clamp(Math.max(u(edges.left), u(edges.right)));
+  const v0 = clamp(Math.min(v(edges.top), v(edges.bottom)));
+  const v1 = clamp(Math.max(v(edges.top), v(edges.bottom)));
+  // Back to local offsets from the clamped source range.
+  const local = (source: number, start: number, scale: number, size: number, mirrored: boolean) =>
+    mirrored ? size / 2 - (source - start) * scale : (source - start) * scale - size / 2;
+  const x0 = local(u0, crop.x, scaleX, from.width, flip.x);
+  const x1 = local(u1, crop.x, scaleX, from.width, flip.x);
+  const y0 = local(v0, crop.y, scaleY, from.height, flip.y);
+  const y1 = local(v1, crop.y, scaleY, from.height, flip.y);
+  const width = Math.abs(x1 - x0);
+  const height = Math.abs(y1 - y0);
+  const mid = toWorld({ x: (x0 + x1) / 2, y: (y0 + y1) / 2 }, from);
+  return {
+    box: { x: mid.x - width / 2, y: mid.y - height / 2, width, height, rotation: from.rotation },
+    crop: { x: u0, y: v0, w: u1 - u0, h: v1 - v0 },
+  };
+}

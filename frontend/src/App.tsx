@@ -25,7 +25,7 @@ import {
 import { noteText } from '@/canvas/nodes/noteText';
 import type { CanvasNode, NodeChange, NodePatch } from '@/canvas/nodes/types';
 import { CameraBound, renderedCamera } from '@/canvas/renderedCamera';
-import type { Guide } from '@/canvas/transform';
+import { type Guide, recrop } from '@/canvas/transform';
 import { BoardContextMenu } from '@/components/BoardContextMenu';
 import BoardViewManager from '@/components/BoardViewManager';
 import { DrawingOverlay } from '@/components/DrawingOverlay';
@@ -121,6 +121,8 @@ function BoardApp() {
   // §6 RULE 2: the group drilled into by double-click — its members select
   // and transform individually until Escape or an empty-canvas click.
   const [drillGroupId, setDrillGroupId] = useState<string | null>(null);
+  // §5B Crop mode: the image whose frame the 8 zones currently crop.
+  const [cropNodeId, setCropNodeId] = useState<string | null>(null);
   const drillRef = useRef(drillGroupId);
   drillRef.current = drillGroupId;
   const groupOfRef = useRef<(nodeId: string) => string | null>(() => null);
@@ -670,8 +672,12 @@ function BoardApp() {
 
   const clearSelectionRef = useRef<() => void>(() => undefined);
   clearSelectionRef.current = () => {
-    // §6 RULE 2: Escape first steps out of a drilled group, back to
-    // group-level selection; a second Escape deselects.
+    // Escape leaves a mode before it deselects: crop mode first, then a
+    // drilled group (§6 RULE 2, back to group level), then the selection.
+    if (cropNodeId) {
+      setCropNodeId(null);
+      return;
+    }
     if (drillGroupId) {
       setDrillGroupId(null);
       return;
@@ -792,6 +798,26 @@ function BoardApp() {
       // The tag lands in the store first; the next render's actions see it.
       void createTag(name).then((tag) => actionsRef.current.toggleTag(tag.id));
     },
+    resetCrop: () => {
+      const node = shellNodes[0];
+      if (!node || node.kind === 'note') return;
+      // Grow the frame far past the image: recrop clamps it to the full
+      // source, content staying where it is.
+      const reach = { x: node.width / node.crop.w, y: node.height / node.crop.h };
+      const huge = {
+        x: node.x - reach.x * 2,
+        y: node.y - reach.y * 2,
+        width: node.width + reach.x * 4,
+        height: node.height + reach.y * 4,
+        rotation: node.rotation,
+      };
+      const full = recrop(node, node.crop, { x: node.flipX, y: node.flipY }, huge);
+      const { rotation: _rotation, ...frame } = full.box;
+      commitNodeChanges.current(
+        [{ id: node.id, kind: 'item', patch: { ...frame, crop: full.crop } }],
+        'Reset crop',
+      );
+    },
     setOpacity: (opacity: number) => {
       const changes: NodeChange[] = shellNodes.map((node) => ({
         id: node.id,
@@ -872,6 +898,21 @@ function BoardApp() {
     canvas.flyTo(target);
   };
 
+  // Crop mode belongs to one selected image: any other selection ends it.
+  useEffect(() => {
+    if (cropNodeId && !(selectedNodeIds.length === 1 && selectedNodeIds[0] === cropNodeId)) {
+      setCropNodeId(null);
+    }
+  }, [cropNodeId, selectedNodeIds]);
+  useEffect(() => {
+    if (!cropNodeId) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') setCropNodeId(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [cropNodeId]);
+
   // Board keyboard map (canvas/controls.ts). Typing targets keep their keys.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -914,11 +955,13 @@ function BoardApp() {
       selection: selectedNodeIds,
       editing: noteEditingId,
       drillGroupId,
+      cropNodeId,
       get viewport() {
         return renderedCamera.get();
       },
       targetViewport: viewport,
-      nodes: boardNodes.map(({ id, kind, x, y, width, height, rotation, zIndex }) => ({
+      nodes: boardNodes.map(({ id, kind, x, y, width, height, rotation, zIndex, crop }) => ({
+        crop,
         id,
         kind,
         x,
@@ -1217,6 +1260,11 @@ function BoardApp() {
                   viewport={camera}
                   editing={noteEditing}
                   locked={shellLocked}
+                  cropping={
+                    cropNodeId !== null &&
+                    shellNodes.length === 1 &&
+                    shellNodes[0]?.id === cropNodeId
+                  }
                   onDoubleClick={(event) =>
                     doubleClickRef.current(
                       boardCanvas.current?.nodeIdAt(event.clientX, event.clientY) ?? null,
@@ -1265,6 +1313,23 @@ function BoardApp() {
               menu.kind === 'selection'
                 ? [
                     { label: 'Duplicate', action: actions.duplicate },
+                    ...(shellNodes.length === 1 && shellNodes[0]?.kind !== 'note'
+                      ? [
+                          cropNodeId === shellNodes[0]?.id
+                            ? {
+                                label: 'Done Cropping',
+                                shortcut: 'Enter',
+                                action: () => setCropNodeId(null),
+                              }
+                            : {
+                                label: 'Crop',
+                                action: () => setCropNodeId(shellNodes[0]?.id ?? null),
+                              },
+                          ...(shellNodes[0] && isCropped(shellNodes[0])
+                            ? [{ label: 'Reset Crop', action: actions.resetCrop }]
+                            : []),
+                        ]
+                      : []),
                     selectionGrouped
                       ? { label: 'Ungroup', shortcut: 'Ctrl+Shift+G', action: actions.ungroup }
                       : {
@@ -1406,6 +1471,9 @@ async function sampleColor(): Promise<void> {
   const result = await new picker().open();
   window.dispatchEvent(new CustomEvent('refthing-color-sampled', { detail: result.sRGBHex }));
 }
+
+const isCropped = (node: CanvasNode) =>
+  node.crop.x > 0 || node.crop.y > 0 || node.crop.w < 1 || node.crop.h < 1;
 
 /** Group background swatches (§5B). `null` = no background. */
 const GROUP_COLORS: { name: string; value: string | null }[] = [

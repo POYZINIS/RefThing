@@ -77,3 +77,63 @@ test('context menu Opacity 50% fades the image; undo restores full opacity', asy
   await page.waitForTimeout(150);
   assert.deepEqual(await pixel(page, leftSide), opaque);
 });
+
+test('Crop: dragging the right edge in hides the right half; content stays put', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, layout);
+  await openBoard(page, seeded);
+  const id = seeded.ids['split.png'];
+  const node = (await state(page)).nodes.find((candidate) => candidate.id === id);
+  const leftSide = await worldToClient(page, {
+    x: node.x + node.width * 0.2,
+    y: node.y + node.height / 2,
+  });
+  const rightSide = await worldToClient(page, {
+    x: node.x + node.width * 0.8,
+    y: node.y + node.height / 2,
+  });
+  assert.ok(isBlue(await pixel(page, rightSide)), 'right half starts blue');
+  await page.mouse.click(leftSide.x, leftSide.y, { button: 'right' });
+  await page.getByRole('menuitem', { name: 'Crop' }).click();
+  await settle(page);
+  assert.equal(await page.evaluate(() => window.__refthing.cropNodeId), id, 'crop mode on');
+  const edge = await worldToClient(page, {
+    x: node.x + node.width - 1,
+    y: node.y + node.height / 2,
+  });
+  const zoom = (await state(page)).viewport.zoom;
+  await drag(page, {
+    from: edge,
+    samples: Array.from({ length: 30 }, (_, i) => ({
+      index: i,
+      timeMs: i * 16,
+      x: edge.x - ((node.width / 2) * zoom * (i + 1)) / 30,
+      y: edge.y + 8 * Math.sin(i / 3), // along-edge wobble must not matter
+    })),
+  });
+  await page.waitForTimeout(150);
+  await settle(page);
+  const cropped = (await state(page)).nodes.find((candidate) => candidate.id === id);
+  assert.ok(Math.abs(cropped.width - node.width / 2) < 1, `width ${cropped.width}`);
+  assert.equal(cropped.height, node.height, 'a right-edge crop keeps the height');
+  assert.ok(Math.abs(cropped.crop.w - 0.5) < 0.01, JSON.stringify(cropped.crop));
+  assert.ok(isRed(await pixel(page, leftSide)), 'content did not move: left is still red');
+  assert.ok(!isBlue(await pixel(page, rightSide)), 'the blue half is cropped away');
+
+  await page.keyboard.press('Enter');
+  assert.equal(
+    await page.evaluate(() => window.__refthing.cropNodeId),
+    null,
+    'Enter ends cropping',
+  );
+  await page.mouse.click(leftSide.x, leftSide.y, { button: 'right' });
+  await page.getByRole('menuitem', { name: 'Reset Crop' }).click();
+  await page.waitForTimeout(150);
+  await settle(page);
+  const reset = (await state(page)).nodes.find((candidate) => candidate.id === id);
+  assert.deepEqual(
+    [reset.x, reset.y, reset.width, reset.height].map(Math.round),
+    [node.x, node.y, node.width, node.height].map(Math.round),
+  );
+  assert.ok(isBlue(await pixel(page, rightSide)), 'reset brings the blue half back');
+});

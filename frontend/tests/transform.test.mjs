@@ -13,8 +13,10 @@ import {
   beginResize,
   beginRotate,
   boxCenter,
+  FULL_CROP,
   finishAspectReset,
   hitZone,
+  recrop,
   snapTranslate,
   stepGesture,
   toLocal,
@@ -504,4 +506,44 @@ test('snap: the closest candidate wins over the first one found', () => {
     8,
   );
   assert.equal(result.dx, 3, 'right edge 10 → 13 (3px) beats 10 → 16 (6px)');
+});
+
+// ---------------------------------------------------------------- CROP --
+
+test('crop: pulling the right edge in trims the source; content stays put', () => {
+  const from = { x: 0, y: 0, width: 200, height: 100, rotation: 0 };
+  const to = { ...from, width: 150 };
+  const { box, crop } = recrop(from, FULL_CROP, { x: false, y: false }, to);
+  assert.deepEqual(box, to);
+  assert.ok(near(crop.w, 0.75) && near(crop.x, 0) && near(crop.h, 1));
+});
+
+test('crop: the frame cannot grow past the image; uncropping restores it', () => {
+  const from = { x: 50, y: 0, width: 150, height: 100, rotation: 0 };
+  const crop = { x: 0.25, y: 0, w: 0.75, h: 1 }; // left quarter trimmed
+  const grown = { x: -100, y: 0, width: 300, height: 100, rotation: 0 };
+  const result = recrop(from, crop, { x: false, y: false }, grown);
+  assert.ok(near(result.box.x, 0) && near(result.box.width, 200), JSON.stringify(result.box));
+  assert.ok(near(result.crop.x, 0) && near(result.crop.w, 1));
+});
+
+test('crop: a flipped image trims the mirrored side of the source', () => {
+  const from = { x: 0, y: 0, width: 200, height: 100, rotation: 0 };
+  // Frame's right edge in → on a horizontally flipped image that is the
+  // source's LEFT side.
+  const { crop } = recrop(from, FULL_CROP, { x: true, y: false }, { ...from, width: 150 });
+  assert.ok(near(crop.x, 0.25) && near(crop.w, 0.75), JSON.stringify(crop));
+});
+
+test('crop: rotated frames trim along their own axes', () => {
+  const from = { x: 0, y: 0, width: 200, height: 100, rotation: 90 };
+  const gesture = beginResize('bottom', from, toWorld({ x: 0, y: 50 }, from));
+  const target = toWorld({ x: 0, y: 25 }, from); // bottom edge up by 25 (local)
+  const resized = stepGesture(gesture, target, { shift: true, alt: false }, 1, false).to;
+  const { box, crop } = recrop(from, FULL_CROP, { x: false, y: false }, resized);
+  assert.ok(near(crop.h, 0.75) && near(crop.y, 0) && near(crop.w, 1), JSON.stringify(crop));
+  // The top edge (anchor) did not move in world space.
+  const topBefore = toWorld({ x: 0, y: -50 }, from);
+  const topAfter = toWorld({ x: 0, y: -box.height / 2 }, box);
+  assert.ok(near(topBefore.x, topAfter.x) && near(topBefore.y, topAfter.y));
 });
