@@ -1,4 +1,8 @@
-import { type BatchRequestOp, submitBatch } from '@/api/client';
+import { ApiError, type BatchRequestOp, submitBatch } from '@/api/client';
+
+/** Rebase attempts before a conflicting batch is given up. */
+const MAX_REBASES = 3;
+
 import { useBoardStore } from '@/state/boardStore';
 
 /**
@@ -18,12 +22,26 @@ import { useBoardStore } from '@/state/boardStore';
  */
 export class BatchQueue {
   private pending: BatchRequestOp[] = [];
+  /** The batch currently on the wire (not yet acknowledged). */
+  private sending: BatchRequestOp[] = [];
   private inFlight = false;
 
   constructor(
     private readonly boardId: string,
     private readonly clientId: string,
-  ) {}
+  ) {
+    useBoardStore.getState().setPendingOpsSource(() => this.unacknowledged());
+  }
+
+  dispose(): void {
+    useBoardStore.getState().setPendingOpsSource(null);
+  }
+
+  /** Optimistic ops the server hasn't confirmed yet: a refetch re-applies
+   *  them so a snapshot fetched mid-flight can't erase them from view. */
+  unacknowledged(): BatchRequestOp[] {
+    return [...this.sending, ...this.pending];
+  }
 
   submit(ops: BatchRequestOp[]): void {
     if (ops.length === 0) return;
@@ -35,6 +53,7 @@ export class BatchQueue {
     if (this.inFlight) return;
     this.inFlight = true;
     try {
+      let rebases = 0;
       while (this.pending.length > 0) {
         const store = useBoardStore.getState();
         if (store.activeBoardId !== this.boardId || !store.snapshot) {
@@ -44,17 +63,30 @@ export class BatchQueue {
         // Everything queued meanwhile rides in one request, in order.
         const ops = this.pending;
         this.pending = [];
+        this.sending = ops;
         try {
           const { seq } = await submitBatch(this.boardId, {
             base_seq: store.snapshot.seq,
             client_id: this.clientId,
             ops,
           });
+          this.sending = [];
+          rebases = 0;
           useBoardStore.getState().applyOps([], seq);
-        } catch {
-          // Rejected (another writer moved the board, or an op was invalid):
-          // the optimistic state may have diverged, and the REST snapshot is
-          // authoritative.
+        } catch (error) {
+          this.sending = [];
+          const conflict = error instanceof ApiError && error.code === 'seq_conflict';
+          if (conflict && rebases < MAX_REBASES) {
+            // Another writer moved the board first (docs/api.md: refetch and
+            // rebase). Our ops are absolute, so they re-apply cleanly on top
+            // of the fresh state: keep them pending, resync, and resend.
+            rebases += 1;
+            this.pending = [...ops, ...this.pending];
+            await useBoardStore.getState().openBoard(this.boardId);
+            continue;
+          }
+          // Invalid ops (or a conflict that won't settle): the REST snapshot
+          // is authoritative.
           this.pending = [];
           await useBoardStore.getState().openBoard(this.boardId);
         }

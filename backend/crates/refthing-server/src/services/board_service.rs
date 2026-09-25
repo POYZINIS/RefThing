@@ -208,9 +208,18 @@ pub struct BoardPatch {
     pub name: Option<String>,
     #[serde(deserialize_with = "services::double_option")]
     pub viewport_state: Option<Option<Value>>,
+    /// Echo-suppression token, like a batch's `client_id`: the sender
+    /// recognises its own viewport saves instead of refetching the board.
+    pub client_id: Option<String>,
 }
 
 impl BoardPatch {
+    /// The event/diff origin: the sender's client id, if it sent one.
+    #[must_use]
+    pub fn origin(&self) -> Option<&str> {
+        self.client_id.as_deref().filter(|id| !id.is_empty())
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.name.is_none() && self.viewport_state.is_none()
@@ -382,7 +391,7 @@ pub async fn update_board(
         );
     }
     let ops = json!([op]);
-    let seq = events::append_event(tx, board_id, None, &ops).await?;
+    let seq = events::append_event(tx, board_id, patch.origin(), &ops).await?;
 
     let board = fetch_board(tx, board_id).await?;
     Ok(Some((seq, ops, board_dto(board))))

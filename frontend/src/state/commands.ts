@@ -101,6 +101,48 @@ export function lockOps(
   }));
 }
 
+/** Group background colour/opacity (§5B / plan Phase 5) for every group the
+ *  selection touches. `bgColor` null removes the background. */
+export function groupStyleOps(
+  snapshot: Snapshot,
+  ids: readonly string[],
+  bgColor: string | null,
+  opacity: number,
+  newId: NewId = opId,
+): BatchRequestOp[] {
+  return selectedGroupIds(snapshot, ids).map((groupId) => ({
+    kind: 'set_group_style',
+    op_id: newId(),
+    group_id: groupId,
+    bg_color: bgColor,
+    opacity,
+  }));
+}
+
+/**
+ * Toggle one tag across the selected items as a single command: if every
+ * selected item already has it, remove it from all; otherwise add it to the
+ * ones missing it. Notes carry no tags.
+ */
+export function toggleTagOps(
+  snapshot: Snapshot,
+  ids: readonly string[],
+  tagId: string,
+  newId: NewId = opId,
+): BatchRequestOp[] {
+  const items = snapshot.items.filter((item) => ids.includes(item.id));
+  const has = (itemId: string) => (snapshot.item_tags[itemId] ?? []).includes(tagId);
+  const everyHas = items.length > 0 && items.every((item) => has(item.id));
+  return items
+    .filter((item) => everyHas || !has(item.id))
+    .map((item) => ({
+      kind: 'update',
+      op_id: newId(),
+      item_id: item.id,
+      fields: everyHas ? { remove_tag_ids: [tagId] } : { add_tag_ids: [tagId] },
+    }));
+}
+
 /** Highest z across items AND notes — they share one paint order. */
 export function topZ(snapshot: Pick<Snapshot, 'items' | 'notes'>): number {
   let max = 0;

@@ -109,7 +109,11 @@ export class BoardSync {
         const current = useBoardStore.getState();
         if (current.activeBoardId !== boardId) return;
         if ((current.snapshot?.seq ?? 0) !== since) continue; // raced; retry fresh
-        if (events.some((event) => event.ops.length === 0)) break; // needs full refetch
+        // Our own op-less events (viewport saves) need nothing; anyone else's
+        // (creates, note/group edits) can only be reconciled by a refetch.
+        if (events.some((event) => event.ops.length === 0 && event.origin !== this.clientId)) {
+          break;
+        }
         current.applyChanges(seq, events);
         return;
       }

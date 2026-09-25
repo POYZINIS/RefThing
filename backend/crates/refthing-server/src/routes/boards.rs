@@ -84,7 +84,7 @@ async fn update_board(
         ServerMsg::Diff {
             board_id: id,
             seq,
-            origin: None,
+            origin: patch.origin().map(str::to_string),
             ops: vec![],
         },
     );

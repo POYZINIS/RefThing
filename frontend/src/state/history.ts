@@ -179,6 +179,14 @@ export function prepareCommand(
         groups.delete(group.id);
         break;
       }
+      case 'set_group_style': {
+        const group = groups.get(op.group_id);
+        if (!group) throw new Error('This group no longer exists');
+        if (group.bg_color === op.bg_color && group.opacity === op.opacity) continue;
+        undo.push({ ...op, op_id: opId(), bg_color: group.bg_color, opacity: group.opacity });
+        groups.set(group.id, { ...group, bg_color: op.bg_color, opacity: op.opacity });
+        break;
+      }
       case 'set_group_locked': {
         const group = groups.get(op.group_id);
         if (!group) throw new Error('This group no longer exists');
@@ -273,6 +281,11 @@ export function applyBoardOps(
       case 'set_group_locked': {
         const group = groups.get(op.group_id);
         if (group) groups.set(group.id, { ...group, locked: op.locked });
+        break;
+      }
+      case 'set_group_style': {
+        const group = groups.get(op.group_id);
+        if (group) groups.set(group.id, { ...group, bg_color: op.bg_color, opacity: op.opacity });
         break;
       }
       case 'delete_group': {

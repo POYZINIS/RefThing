@@ -929,6 +929,8 @@ button:disabled {
 
 .board-context-menu .menu-choices {
   display: flex;
+  flex-wrap: wrap;
+  max-width: 280px;
   align-items: center;
   gap: 2px;
   margin: 0;
@@ -967,4 +969,32 @@ button:disabled {
 
 .snap-guide--y {
   height: 1px;
+}
+
+.board-context-menu .menu-swatch {
+  width: 16px;
+  height: 16px;
+  margin: 0 1px;
+  padding: 0;
+  border: 1px solid #5d6773;
+  border-radius: 50%;
+}
+
+.board-context-menu .menu-swatch[aria-checked="true"] {
+  outline: 2px solid #d6ff76;
+  outline-offset: 1px;
+}
+
+.board-context-menu .menu-input {
+  padding: 4px 6px;
+}
+
+.board-context-menu .menu-input input {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid #333c47;
+  border-radius: 5px;
+  color: #e9edf2;
+  background: #0d1014;
+  font-size: 12px;
 }

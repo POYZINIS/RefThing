@@ -767,17 +767,60 @@ async fn group_lock_is_a_batch_op() {
     let snapshot = get_json(&app, &format!("/api/boards/{board_id}")).await;
     assert_eq!(snapshot["groups"][0]["locked"], true);
 
+    // Group background style rides the same batch path; bad opacity rejects.
+    let styled: Value = client()
+        .post(format!("{}/api/boards/{board_id}/items/batch", app.base))
+        .json(&json!({
+            "base_seq": locked["seq"],
+            "client_id": "t",
+            "ops": [
+                {"kind": "set_group_style", "op_id": Uuid::now_v7(), "group_id": group_id,
+                 "bg_color": "#223344", "opacity": 0.4},
+                {"kind": "set_group_style", "op_id": Uuid::now_v7(), "group_id": group_id,
+                 "bg_color": null, "opacity": 7.0},
+            ],
+        }))
+        .send()
+        .await
+        .expect("style")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(styled["rejected"][0]["reason"], "invalid_opacity");
+    let snapshot = get_json(&app, &format!("/api/boards/{board_id}")).await;
+    assert_eq!(snapshot["groups"][0]["bg_color"], "#223344");
+    assert_eq!(snapshot["groups"][0]["opacity"], 0.4);
+
     let missing = batch(
-        locked["seq"].as_i64().expect("seq"),
+        styled["seq"].as_i64().expect("seq"),
         &Uuid::now_v7().to_string(),
         true,
     )
     .await;
     assert_eq!(missing["rejected"][0]["reason"], "group_not_found");
     assert_eq!(
-        missing["seq"], locked["seq"],
+        missing["seq"], styled["seq"],
         "an all-rejected batch bumps nothing"
     );
+}
+
+/// A viewport save carries the sender's client id as the event origin, so
+/// the sender's WebSocket recognises its own echo instead of refetching.
+#[tokio::test]
+async fn board_patch_records_client_origin() {
+    let app = spawn_app().await;
+    let board = create_board(&app, "origin").await;
+    let board_id = id_of(&board);
+    let response = client()
+        .patch(format!("{}/api/boards/{board_id}", app.base))
+        .json(&json!({"viewport_state": {"x": 1.0, "y": 2.0, "zoom": 1.0}, "client_id": "me"}))
+        .send()
+        .await
+        .expect("patch");
+    assert_eq!(response.status(), 200);
+    let changes = get_json(&app, &format!("/api/boards/{board_id}/changes?since=0")).await;
+    let events = changes["events"].as_array().expect("events");
+    assert_eq!(events.last().expect("event")["origin"], "me");
 }
 
 #[tokio::test]

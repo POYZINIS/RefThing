@@ -126,7 +126,9 @@ work.
   `{board, seq, items, groups, notes, tags, item_tags, blobs}`. `items` are in
   paint order (ascending `z_index`); `item_tags` maps `item_id → [tag_id]`;
   `seq` is where the WS `since` cursor starts. 404 on unknown board.
-- **PATCH** body `{ "name"?, "viewport_state"? }` — `viewport_state` is a
+- **PATCH** body `{ "name"?, "viewport_state"?, "client_id"? }` — `client_id`
+  becomes the event/diff `origin` (echo suppression, like a batch's) so the
+  sender's socket ignores its own viewport saves. `viewport_state` is a
   double option: explicit `null` resets the view, absent leaves it unchanged.
   400 on empty patch or blank name; 404 on unknown board.
 - **DELETE** — 204; cascades items/groups/notes/events. 404 on unknown board.
@@ -202,6 +204,7 @@ single-item writes pass an empty client id and record `origin: null`.
 | `restore_group` | `group` (full `Group`)          | Insert a group with a client-chosen id            |
 | `remove_group` | `group_id`                       | Delete an EMPTY leaf group (`group_not_empty` otherwise) |
 | `set_group_locked` | `group_id`, `locked`         | Lock / unlock a group (§6 RULE 3)                 |
+| `set_group_style` | `group_id`, `bg_color` (nullable), `opacity` | Group background (`invalid_opacity` outside 0–1) |
 
 Response (`BatchResponse`):
 
@@ -404,7 +407,10 @@ announced by the machinery's own broadcast `diff` (no separate ack); failure
 comes back as an `error` frame.
 
 The bundled frontend does **not** write over the socket: its `BatchQueue`
-posts one REST batch at a time with the seq returned by the previous one.
+posts one REST batch at a time with the seq returned by the previous one. On
+`seq_conflict` it refetches and resends the same ops (they are absolute, so
+they rebase cleanly; up to 3 tries), and any refetch re-applies ops still in
+flight so the screen never shows a write being undone.
 Pipelining several batches against the same `base_seq` gets every one after
 the first rejected as `seq_conflict`, and an all-rejected batch broadcasts
 no diff, so a WS writer can't tell when to send next. Malformed JSON → `bad_request` error frame;

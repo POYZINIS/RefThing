@@ -369,6 +369,29 @@ async fn apply_op(
             Ok(Ok(()))
         }
         BatchOp::RestoreGroup { group, .. } => restore_group(tx, board_id, group).await,
+        BatchOp::SetGroupStyle {
+            group_id,
+            bg_color,
+            opacity,
+            ..
+        } => {
+            if !opacity.is_finite() || !(0.0..=1.0).contains(opacity) {
+                return Ok(Err("invalid_opacity".to_string()));
+            }
+            let updated = sqlx::query(
+                "UPDATE groups SET bg_color = ?, opacity = ? WHERE id = ? AND board_id = ?",
+            )
+            .bind(bg_color)
+            .bind(opacity)
+            .bind(group_id)
+            .bind(board_id)
+            .execute(&mut **tx)
+            .await?;
+            if updated.rows_affected() == 0 {
+                return Ok(Err(GROUP_NOT_FOUND.to_string()));
+            }
+            Ok(Ok(()))
+        }
         BatchOp::SetGroupLocked {
             group_id, locked, ..
         } => {

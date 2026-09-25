@@ -103,6 +103,13 @@ pub enum BatchOp {
         group_id: Uuid,
         locked: bool,
     },
+    /// Group background: `bg_color` `null` = no background; `opacity` 0–1.
+    SetGroupStyle {
+        op_id: Uuid,
+        group_id: Uuid,
+        bg_color: Option<String>,
+        opacity: f64,
+    },
 }
 
 impl BatchOp {
@@ -119,7 +126,8 @@ impl BatchOp {
             | Self::DeleteNotes { op_id, .. }
             | Self::RestoreGroup { op_id, .. }
             | Self::RemoveGroup { op_id, .. }
-            | Self::SetGroupLocked { op_id, .. } => *op_id,
+            | Self::SetGroupLocked { op_id, .. }
+            | Self::SetGroupStyle { op_id, .. } => *op_id,
         }
     }
 }
@@ -233,6 +241,12 @@ mod tests {
                 op_id: id(),
                 group_id: id(),
                 locked: true,
+            },
+            BatchOp::SetGroupStyle {
+                op_id: id(),
+                group_id: id(),
+                bg_color: Some("#334455".to_string()),
+                opacity: 0.5,
             },
         ];
         for op in &ops {

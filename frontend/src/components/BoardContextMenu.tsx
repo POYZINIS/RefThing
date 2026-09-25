@@ -1,6 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
-type Choice = { label: string; active?: boolean; action: () => void };
+type Choice = {
+  label: string;
+  active?: boolean;
+  action: () => void;
+  /** Render as a colour swatch (the label becomes its accessible name). */
+  swatch?: string | null;
+};
 type Entry = {
   label: string;
   shortcut?: string;
@@ -9,6 +15,8 @@ type Entry = {
   /** Renders the entry as a labelled row of inline choices (e.g. opacity
    *  presets) instead of a single command. */
   choices?: Choice[];
+  /** Renders an inline text field; Enter submits (e.g. "New tag…"). */
+  input?: { placeholder: string; onSubmit: (value: string) => void };
 };
 
 export function BoardContextMenu({
@@ -41,6 +49,8 @@ export function BoardContextMenu({
         onClose();
       }
       if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      // A text field keeps its own keys (the tag name being typed).
+      if (event.target instanceof HTMLInputElement) return;
       event.preventDefault();
       event.stopPropagation();
       const buttons = [
@@ -68,7 +78,21 @@ export function BoardContextMenu({
       style={{ left: location.x, top: location.y }}
     >
       {entries.map((entry) =>
-        entry.choices ? (
+        entry.input ? (
+          <form
+            key={entry.label}
+            className="menu-input"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const value = new FormData(event.currentTarget).get('value')?.toString().trim();
+              if (!value) return;
+              onClose();
+              entry.input?.onSubmit(value);
+            }}
+          >
+            <input name="value" aria-label={entry.label} placeholder={entry.input.placeholder} />
+          </form>
+        ) : entry.choices ? (
           <fieldset key={entry.label} className="menu-choices">
             <legend>{entry.label}</legend>
             {entry.choices.map((choice) => (
@@ -77,12 +101,19 @@ export function BoardContextMenu({
                 type="button"
                 role="menuitemradio"
                 aria-checked={choice.active ?? false}
+                aria-label={choice.swatch === undefined ? undefined : choice.label}
+                className={choice.swatch === undefined ? undefined : 'menu-swatch'}
+                style={
+                  choice.swatch === undefined
+                    ? undefined
+                    : { background: choice.swatch ?? 'transparent' }
+                }
                 onClick={() => {
                   onClose();
                   choice.action();
                 }}
               >
-                {choice.label}
+                {choice.swatch === undefined ? choice.label : null}
               </button>
             ))}
           </fieldset>

@@ -5,8 +5,10 @@ import {
   duplicateOps,
   fitViewport,
   groupOps,
+  groupStyleOps,
   lockOps,
   restackOps,
+  toggleTagOps,
   ungroupOps,
   unionRect,
   withGroupMates,
@@ -176,4 +178,24 @@ test('lock: touches every selected group once and undoes exactly', () => {
   const after = roundTrip(snapshot, ops);
   assert.equal(after.groups[0].locked, true);
   assert.deepEqual(lockOps(snapshot, ['a'], true, newId), [], 'ungrouped selection: nothing');
+});
+
+test('group style and tag toggles are single undoable commands', () => {
+  const snapshot = board();
+  const style = groupStyleOps(snapshot, ['b'], '#ff0000', 0.5, newId);
+  const styled = roundTrip(snapshot, style);
+  assert.deepEqual([styled.groups[0].bg_color, styled.groups[0].opacity], ['#ff0000', 0.5]);
+
+  // 'a' has red, 'b' doesn't → add to b only; then all have it → remove all.
+  const add = toggleTagOps(snapshot, ['a', 'b', 'n'], 'red', newId);
+  assert.deepEqual(
+    add.map((op) => [op.item_id, op.fields]),
+    [['b', { add_tag_ids: ['red'] }]],
+  );
+  const tagged = applyBoardOps(snapshot, prepareCommand(snapshot, add, 't').forward);
+  const remove = toggleTagOps(tagged, ['a', 'b'], 'red', newId);
+  assert.deepEqual(
+    remove.map((op) => op.fields),
+    [{ remove_tag_ids: ['red'] }, { remove_tag_ids: ['red'] }],
+  );
 });

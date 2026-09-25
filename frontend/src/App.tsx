@@ -10,6 +10,7 @@ import {
   type ItemPatch,
   type Note,
 } from '@/api/client';
+import { CLIENT_ID } from '@/api/clientId';
 import { BoardSync } from '@/api/ws';
 import { BoardCanvas, type ViewportState } from '@/canvas/BoardCanvas';
 import { keyboardAction } from '@/canvas/controls';
@@ -38,9 +39,11 @@ import {
   duplicateOps,
   fitViewport,
   groupOps,
+  groupStyleOps,
   lockOps,
   restackOps,
   selectedGroupIds,
+  toggleTagOps,
   topZ,
   ungroupOps,
   unionRect,
@@ -153,7 +156,6 @@ function BoardApp() {
   const socket = useRef<BoardSync | null>(null);
   const batchQueue = useRef<BatchQueue | null>(null);
   const viewportSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const clientId = useRef(crypto.randomUUID());
   const commitItemChange = useRef<(itemId: string, patch: ItemPatch) => void>(() => undefined);
   const commitItemChanges = useRef<(changes: NodeChange[]) => void>(() => undefined);
   // Kind-routing commit: items go through batch update ops, notes through
@@ -298,15 +300,16 @@ function BoardApp() {
     if (!activeBoardId) return;
     const sync = new BoardSync({
       boardId: activeBoardId,
-      clientId: clientId.current,
+      clientId: CLIENT_ID,
       onPosterReady: () => boardCanvas.current?.clearTextureFailures(),
     });
     socket.current = sync;
-    const queue = new BatchQueue(activeBoardId, clientId.current);
+    const queue = new BatchQueue(activeBoardId, CLIENT_ID);
     batchQueue.current = queue;
     return () => {
       sync.close();
       if (socket.current === sync) socket.current = null;
+      queue.dispose();
       if (batchQueue.current === queue) batchQueue.current = null;
     };
   }, [activeBoardId]);
@@ -446,8 +449,8 @@ function BoardApp() {
   useEffect(() => {
     // Notes go in as geometry-only nodes (hit-testing, box select); they
     // keep rendering through the DOM NoteOverlay.
-    boardCanvas.current?.update(renderedItems, gifHashes, canvasNotes, lockedGroupIds);
-  }, [renderedItems, gifHashes, canvasNotes, lockedGroupIds]);
+    boardCanvas.current?.update(renderedItems, gifHashes, canvasNotes, snapshot?.groups);
+  }, [renderedItems, gifHashes, canvasNotes, snapshot?.groups]);
 
   useEffect(() => {
     boardCanvas.current?.setDrillGroup(drillGroupId);
@@ -700,6 +703,7 @@ function BoardApp() {
   const selectedItemIds = selectedNodeIds.filter((id) => !noteIds.has(id));
   const selectionGroupIds = snapshot ? selectedGroupIds(snapshot, selectedNodeIds) : [];
   const selectionGrouped = selectionGroupIds.length > 0;
+  const selectionGroupStyle = snapshot?.groups.find((group) => group.id === selectionGroupIds[0]);
   const selectionLocked =
     selectionGrouped && selectionGroupIds.every((groupId) => lockedGroupIds.has(groupId));
   const actions = {
@@ -764,6 +768,29 @@ function BoardApp() {
           locked ? 'Lock group' : 'Unlock group',
         );
       }
+    },
+    setGroupStyle: (bgColor: string | null, opacity: number) => {
+      if (snapshot) {
+        commitBoardOps.current(
+          groupStyleOps(snapshot, selectedNodeIds, bgColor, opacity),
+          'Group colour',
+        );
+      }
+    },
+    toggleTag: (tagId: string) => {
+      if (snapshot) {
+        const ids = shellNodes.map((node) => node.id);
+        commitBoardOps.current(toggleTagOps(snapshot, ids, tagId), 'Tag');
+      }
+    },
+    newTag: (name: string) => {
+      const existing = snapshot?.tags.find((tag) => tag.name.toLowerCase() === name.toLowerCase());
+      if (existing) {
+        actionsRef.current.toggleTag(existing.id);
+        return;
+      }
+      // The tag lands in the store first; the next render's actions see it.
+      void createTag(name).then((tag) => actionsRef.current.toggleTag(tag.id));
     },
     setOpacity: (opacity: number) => {
       const changes: NodeChange[] = shellNodes.map((node) => ({
@@ -907,6 +934,8 @@ function BoardApp() {
         locked: group.locked,
         members: snapshot.items.filter((item) => item.group_id === group.id).map((i) => i.id),
       })),
+      tags: snapshot?.tags.map((tag) => ({ id: tag.id, name: tag.name })),
+      itemTags: snapshot?.item_tags,
       undoDepth: undoStack.current.length,
       painted: (id: string) => boardCanvas.current?.paintedClientRect(id) ?? null,
     };
@@ -1260,6 +1289,59 @@ function BoardApp() {
                             : { label: 'Lock', action: () => actions.lock(true) },
                         ]
                       : []),
+                    ...(selectionGrouped
+                      ? [
+                          {
+                            label: 'Group Color',
+                            action: () => undefined,
+                            choices: GROUP_COLORS.map(({ name, value }) => ({
+                              label: name,
+                              swatch: value,
+                              active: selectionGroupStyle?.bg_color === value,
+                              action: () =>
+                                actions.setGroupStyle(value, selectionGroupStyle?.opacity ?? 0.35),
+                            })),
+                          },
+                          ...(selectionGroupStyle?.bg_color
+                            ? [
+                                {
+                                  label: 'Group Opacity',
+                                  action: () => undefined,
+                                  choices: [0.2, 0.35, 0.6, 1].map((value) => ({
+                                    label: `${Math.round(value * 100)}%`,
+                                    active: selectionGroupStyle.opacity === value,
+                                    action: () =>
+                                      actions.setGroupStyle(selectionGroupStyle.bg_color, value),
+                                  })),
+                                },
+                              ]
+                            : []),
+                        ]
+                      : []),
+                    ...(selectedItemIds.length > 0
+                      ? [
+                          ...(snapshot?.tags.length
+                            ? [
+                                {
+                                  label: 'Tags',
+                                  action: () => undefined,
+                                  choices: snapshot.tags.map((tag) => ({
+                                    label: tag.name,
+                                    active: selectedItemIds.every((id) =>
+                                      (snapshot.item_tags[id] ?? []).includes(tag.id),
+                                    ),
+                                    action: () => actions.toggleTag(tag.id),
+                                  })),
+                                },
+                              ]
+                            : []),
+                          {
+                            label: 'Add Tag',
+                            action: () => undefined,
+                            input: { placeholder: 'Add tag…', onSubmit: actions.newTag },
+                          },
+                        ]
+                      : []),
                     { label: 'Bring to Front', action: actions.bringToFront },
                     { label: 'Send to Back', action: actions.sendToBack },
                     { label: 'Delete', shortcut: 'Del', action: actions.delete },
@@ -1324,6 +1406,17 @@ async function sampleColor(): Promise<void> {
   const result = await new picker().open();
   window.dispatchEvent(new CustomEvent('refthing-color-sampled', { detail: result.sRGBHex }));
 }
+
+/** Group background swatches (§5B). `null` = no background. */
+const GROUP_COLORS: { name: string; value: string | null }[] = [
+  { name: 'No background', value: null },
+  { name: 'Slate', value: '#5b6572' },
+  { name: 'Red', value: '#d9534f' },
+  { name: 'Amber', value: '#e6a23c' },
+  { name: 'Green', value: '#5cb85c' },
+  { name: 'Blue', value: '#4a90d9' },
+  { name: 'Violet', value: '#9b6bd6' },
+];
 
 function asViewport(value: unknown): ViewportState {
   if (typeof value !== 'object' || value === null) return { x: 0, y: 0, zoom: 1 };

@@ -1,3 +1,4 @@
+import { CLIENT_ID } from '@/api/clientId';
 export interface HealthStatus {
   status: string;
   version: string;
@@ -140,6 +141,13 @@ export type BatchOp =
   | { kind: 'restore_group'; op_id: string; group: Group }
   | { kind: 'remove_group'; op_id: string; group_id: string }
   | { kind: 'set_group_locked'; op_id: string; group_id: string; locked: boolean }
+  | {
+      kind: 'set_group_style';
+      op_id: string;
+      group_id: string;
+      bg_color: string | null;
+      opacity: number;
+    }
   | { kind: 'create'; item: Item }
   | { kind: 'create_note'; note: Note }
   | { kind: 'update_note'; note: Note }
@@ -169,17 +177,31 @@ export interface ChangesResponse {
   events: BoardEvent[];
 }
 
+/** A non-2xx API response: HTTP status plus the error envelope's `code`
+ *  (docs/api.md → Error envelope), e.g. `seq_conflict`. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string | null,
+  ) {
+    super(message);
+  }
+}
+
 async function request<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const response = await fetch(input, init);
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
+    let code: string | null = null;
     try {
-      const body = (await response.json()) as { error?: { message?: string } };
+      const body = (await response.json()) as { error?: { message?: string; code?: string } };
       message = body.error?.message ?? message;
+      code = body.error?.code ?? null;
     } catch {
       // Keep the HTTP status when the response is not JSON.
     }
-    throw new Error(message);
+    throw new ApiError(message, response.status, code);
   }
   if (response.status === 204) {
     return undefined as T;
@@ -341,7 +363,8 @@ export function updateBoardViewport(boardId: string, viewportState: unknown): Pr
   return request<{ board: Board }>(`/api/boards/${boardId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ viewport_state: viewportState }),
+    // client_id: our own echo on the WebSocket is recognised, not refetched.
+    body: JSON.stringify({ viewport_state: viewportState, client_id: CLIENT_ID }),
   }).then((result) => result.board);
 }
 

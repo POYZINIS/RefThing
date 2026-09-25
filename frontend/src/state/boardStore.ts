@@ -47,11 +47,19 @@ type BoardState = {
   addTagLocal: (tag: Tag) => void;
   applySnapshot: (snapshot: BoardSnapshot) => void;
   applyOps: (ops: BatchOp[], seq?: number) => void;
+  setPendingOpsSource: (source: (() => BatchOp[]) | null) => void;
   applyChanges: (seq: number, events: BoardEvent[]) => void;
   markPosterReady: (itemId: string, sizes: number[]) => void;
 };
 
+/** Unacknowledged optimistic ops (registered by the active BatchQueue). */
+let pendingOpsSource: (() => BatchOp[]) | null = null;
+
 export const useBoardStore = create<BoardState>((set, get) => ({
+  setPendingOpsSource(source) {
+    pendingOpsSource = source;
+  },
+
   boards: [],
   activeBoardId: null,
   snapshot: null,
@@ -80,8 +88,14 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   async openBoard(activeBoardId) {
     set({ loading: true, error: null, activeBoardId });
     try {
-      const snapshot = await fetchBoard(activeBoardId);
-      get().applySnapshot(snapshot);
+      const fetched = await fetchBoard(activeBoardId);
+      // Writes still on their way to the server are missing from a fetch
+      // taken mid-flight; re-apply them (client ops are absolute/idempotent)
+      // or a refetch would visibly undo the user's last action.
+      const pending = get().activeBoardId === activeBoardId ? (pendingOpsSource?.() ?? []) : [];
+      get().applySnapshot(
+        pending.length > 0 ? applyBoardOps(fetched, pending, fetched.seq) : fetched,
+      );
       set({ loading: false });
     } catch (error: unknown) {
       set({

@@ -1,5 +1,5 @@
 import { Application, Container, Graphics, type Texture } from 'pixi.js';
-import type { Item, Note } from '@/api/client';
+import type { Group, Item, Note } from '@/api/client';
 import { screenToWorld } from './coordinates';
 import { NodeInteractionController } from './NodeInteractionController';
 import { itemToNode, noteToNode } from './nodes/adapters';
@@ -57,6 +57,10 @@ export class BoardCanvas {
   private readonly controller: NodeInteractionController;
   private readonly grid = new Map<string, CanvasNode[]>();
   private nodes: CanvasNode[] = [];
+  /** Group backgrounds (plan Phase 5): drawn under every node. */
+  private readonly groupBackdrop = new Graphics();
+  private styledGroups = new Map<string, { color: string; opacity: number }>();
+  private groupMembers = new Map<string, CanvasNode[]>();
   /** The note being edited: its DOM editor stands in for the sprite. */
   private hiddenNodeId: string | null = null;
   private panning = false;
@@ -115,6 +119,9 @@ export class BoardCanvas {
     this.initialized = true;
     host.appendChild(this.app.canvas);
     this.app.stage.addChild(this.scene);
+    // Paint ranks are 0…n, so -1 keeps every group background under all nodes.
+    this.groupBackdrop.zIndex = -1;
+    this.scene.addChild(this.groupBackdrop);
     this.applyViewport();
     this.app.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.app.canvas.addEventListener('pointermove', this.onPointerMove);
@@ -130,8 +137,14 @@ export class BoardCanvas {
     items: Item[],
     gifHashes: ReadonlySet<string> = new Set(),
     notes: Note[] = [],
-    lockedGroups: ReadonlySet<string> = new Set(),
+    groups: readonly Group[] = [],
   ): void {
+    const lockedGroups = new Set(groups.filter((group) => group.locked).map((group) => group.id));
+    this.styledGroups = new Map(
+      groups
+        .filter((group) => group.bg_color)
+        .map((group) => [group.id, { color: group.bg_color as string, opacity: group.opacity }]),
+    );
     // If a node is mid-drag, React re-renders (selection change etc.) with
     // the *server* snapshot which still has the pre-drag position. Merge the
     // in-flight drag position back in so the node doesn't snap to the old
@@ -180,6 +193,13 @@ export class BoardCanvas {
     rank.forEach((node, index) => {
       node.zIndex = index;
     });
+    this.groupMembers = new Map();
+    for (const node of this.nodes) {
+      if (!node.groupId || !this.styledGroups.has(node.groupId)) continue;
+      const members = this.groupMembers.get(node.groupId) ?? [];
+      members.push(node);
+      this.groupMembers.set(node.groupId, members);
+    }
     this.grid.clear();
     for (const node of this.nodes) {
       for (const key of this.coveredCells(node)) {
@@ -372,7 +392,27 @@ export class BoardCanvas {
       });
     }
     this.noteTextures.retain(visibleNotes);
+    this.drawGroupBackdrops();
     this.scene.sortableChildren = true;
+  }
+
+  /** Padded rounded rect behind each styled group, from its members' live
+   *  (possibly mid-drag) bounds. */
+  private drawGroupBackdrops(): void {
+    const backdrop = this.groupBackdrop;
+    backdrop.clear();
+    const pad = 12;
+    for (const [groupId, style] of this.styledGroups) {
+      const members = this.groupMembers.get(groupId);
+      if (!members || members.length === 0) continue;
+      const bounds = members.map((node) => node.rotatedBounds());
+      const left = Math.min(...bounds.map((rect) => rect.left)) - pad;
+      const top = Math.min(...bounds.map((rect) => rect.top)) - pad;
+      const right = Math.max(...bounds.map((rect) => rect.right)) + pad;
+      const bottom = Math.max(...bounds.map((rect) => rect.bottom)) + pad;
+      backdrop.roundRect(left, top, right - left, bottom - top, 10);
+      backdrop.fill({ color: style.color, alpha: style.opacity });
+    }
   }
 
   private levelFor(node: CanvasNode): string {
