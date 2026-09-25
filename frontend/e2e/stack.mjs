@@ -58,7 +58,16 @@ export async function globalSetup() {
   const env = { ...process.env, REFTHING_PORT: String(API_PORT), REFTHING_DATA_DIR: dataDir };
   start(
     'cargo',
-    ['run', '--quiet', '--manifest-path', 'backend/Cargo.toml', '-p', 'refthing-server'],
+    [
+      'run',
+      '--quiet',
+      // E2E_RELEASE=1: an optimized server, for load/perf measurements.
+      ...(process.env.E2E_RELEASE === '1' ? ['--release'] : []),
+      '--manifest-path',
+      'backend/Cargo.toml',
+      '-p',
+      'refthing-server',
+    ],
     {
       cwd: repo,
       env,

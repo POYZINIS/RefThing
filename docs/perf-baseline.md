@@ -112,3 +112,19 @@ In the PRODUCTION build (what the desktop app ships), 10 presses on a
 20k board: before 2/10 dropped one frame, after 1/10 (worst 33ms). Dev-mode
 numbers overstate this cost several times over — measure production with
 `vite build` + `vite preview` before optimizing further.
+
+## Bulk ingest load test (2026-09-24)
+
+`node frontend/e2e/ingest-load.mjs [files] [perRequest] [concurrency]`
+boots the isolated stack (temp data dir; `E2E_RELEASE=1` for an optimized
+server), uploads distinct PNGs through the real multipart ingest endpoint
+(90% 400×300, 10% 3000×2000) and waits for every pyramid job.
+
+2000 files / 520 MB, 50 per request × 4 parallel:
+
+| Server  | Upload                     | All pyramids done | Failed jobs | Missing derivatives |
+|:--------|:---------------------------|:------------------|:------------|:--------------------|
+| debug   | 17.2s (116 files/s)        | 445.6s            | 0           | 0                   |
+| release | 5.3s (374 files/s, 97 MB/s)| 14.0s             | 0           | 0                   |
+
+Debug-build image processing is ~30× slower; always judge ingest on release.
