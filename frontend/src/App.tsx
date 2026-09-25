@@ -3,6 +3,8 @@ import { flushSync } from 'react-dom';
 import { BatchQueue } from '@/api/batchQueue';
 import {
   type BatchRequestOp,
+  type BlobInfo,
+  blobUrl,
   createSession,
   fetchBindingsOverride,
   fetchHealth,
@@ -24,12 +26,13 @@ import {
   noteWithPatch,
 } from '@/canvas/nodes/adapters';
 import { noteText } from '@/canvas/nodes/noteText';
-import type { CanvasNode, NodeChange, NodePatch } from '@/canvas/nodes/types';
+import type { CanvasNode, NodeChange, NodePatch, SpriteNode } from '@/canvas/nodes/types';
 import { CameraBound, renderedCamera } from '@/canvas/renderedCamera';
 import { type Guide, recrop } from '@/canvas/transform';
 import { BoardContextMenu } from '@/components/BoardContextMenu';
 import BoardViewManager from '@/components/BoardViewManager';
 import { DrawingOverlay } from '@/components/DrawingOverlay';
+import { LiveMedia } from '@/components/LiveMedia';
 import { NoteEditor } from '@/components/NoteEditor';
 import SearchBar, { emptyFilter, type FilterState } from '@/components/SearchBar';
 import { SelectionOverlay } from '@/components/SelectionOverlay';
@@ -46,6 +49,7 @@ import {
   lockOps,
   pasteOps,
   restackOps,
+  restoreProportionsChanges,
   toggleTagOps,
   topZ,
   ungroupOps,
@@ -122,6 +126,8 @@ function BoardApp() {
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   // The note currently in text-edit mode (§4 RULE 2 — double-click only).
   const [noteEditingId, setNoteEditingId] = useState<string | null>(null);
+  /** Phase 11 live mode: the video/audio item whose player is mounted. */
+  const [liveNodeId, setLiveNodeId] = useState<string | null>(null);
   // §6 RULE 2: the group drilled into by double-click — its members select
   // and transform individually until Escape or an empty-canvas click.
   const [drillGroupId, setDrillGroupId] = useState<string | null>(null);
@@ -441,9 +447,8 @@ function BoardApp() {
         actionsRef.current.pasteClipboard(null);
         return;
       }
-      const files = Array.from(event.clipboardData?.files ?? []).filter((file) =>
-        file.type.startsWith('image/'),
-      );
+      // Phase 11: any file lands on the board (media, documents as cards).
+      const files = Array.from(event.clipboardData?.files ?? []);
       if (files.length > 0) {
         event.preventDefault();
         void ingest(files);
@@ -473,29 +478,24 @@ function BoardApp() {
     setViewport(saved);
   }, [openedBoard]);
 
-  // Phase 5: animated GIF playback. The pyramid pipeline only makes a
-  // first-frame poster, so the canvas animates GIF blobs from the original
-  // bytes. Only blobs whose mime type is `image/gif` participate.
+  // Blobs by hash: a node's kind (GIF playback, media posters, file cards)
+  // and card text come from its blob.
   const lockedGroupIds = useMemo(
     () => new Set(snapshot?.groups.filter((group) => group.locked).map((group) => group.id) ?? []),
     [snapshot?.groups],
   );
   groupOfRef.current = (nodeId) =>
     snapshot?.items.find((item) => item.id === nodeId)?.group_id ?? null;
-  const gifHashes = useMemo(
-    () =>
-      new Set(
-        snapshot?.blobs.filter((blob) => blob.mime_type === 'image/gif').map((blob) => blob.hash) ??
-          [],
-      ),
+  const blobsByHash = useMemo(
+    () => new Map((snapshot?.blobs ?? []).map((blob) => [blob.hash, blob])),
     [snapshot?.blobs],
   );
 
   useEffect(() => {
     // Notes go in as geometry-only nodes (hit-testing, box select); they
     // keep rendering through the DOM NoteOverlay.
-    boardCanvas.current?.update(renderedItems, gifHashes, canvasNotes, snapshot?.groups);
-  }, [renderedItems, gifHashes, canvasNotes, snapshot?.groups]);
+    boardCanvas.current?.update(renderedItems, blobsByHash, canvasNotes, snapshot?.groups);
+  }, [renderedItems, blobsByHash, canvasNotes, snapshot?.groups]);
 
   useEffect(() => {
     boardCanvas.current?.setDrillGroup(drillGroupId);
@@ -514,24 +514,24 @@ function BoardApp() {
   // Nodes are cached per item object: applyBoardOps keeps unchanged items
   // identical, so a one-item change rebuilds one node, not 20k.
   const nodeCache = useRef(
-    new WeakMap<Item, { node: CanvasNode; gif: boolean; locked: boolean }>(),
+    new WeakMap<Item, { node: CanvasNode; blob: BlobInfo | undefined; locked: boolean }>(),
   );
   const baseItemNodes = useMemo(() => {
     const byId = new Map<string, { item: Item & { blob_hash: string }; node: CanvasNode }>();
     for (const item of snapshotItems ?? []) {
-      if (item.type !== 'image' || !item.blob_hash) continue;
-      const image = item as Item & { blob_hash: string };
-      const gif = gifHashes.has(image.blob_hash);
-      const locked = image.group_id !== null && lockedGroupIds.has(image.group_id);
-      let hit = nodeCache.current.get(image);
-      if (!hit || hit.gif !== gif || hit.locked !== locked) {
-        hit = { node: itemToNode(image, gif, locked), gif, locked };
-        nodeCache.current.set(image, hit);
+      if (!item.blob_hash) continue;
+      const withBlob = item as Item & { blob_hash: string };
+      const blob = blobsByHash.get(withBlob.blob_hash);
+      const locked = withBlob.group_id !== null && lockedGroupIds.has(withBlob.group_id);
+      let hit = nodeCache.current.get(withBlob);
+      if (!hit || hit.blob !== blob || hit.locked !== locked) {
+        hit = { node: itemToNode(withBlob, blob, locked), blob, locked };
+        nodeCache.current.set(withBlob, hit);
       }
-      byId.set(image.id, { item: image, node: hit.node });
+      byId.set(withBlob.id, { item: withBlob, node: hit.node });
     }
     return byId;
-  }, [snapshotItems, gifHashes, lockedGroupIds]);
+  }, [snapshotItems, blobsByHash, lockedGroupIds]);
   const boardNodesById = useMemo(() => {
     const byId = new Map<string, CanvasNode>();
     for (const [id, { node }] of baseItemNodes) byId.set(id, node);
@@ -541,13 +541,29 @@ function BoardApp() {
       const preview = previewPatches[id] ?? dragPreview[id];
       byId.set(
         id,
-        itemToNode(itemWithPatch(base.item, preview), base.node.kind === 'gif', base.node.locked),
+        itemToNode(
+          itemWithPatch(base.item, preview),
+          blobsByHash.get(base.item.blob_hash),
+          base.node.locked,
+        ),
       );
     }
     for (const note of renderedNotes) byId.set(note.id, noteToNode(note));
     return byId;
-  }, [baseItemNodes, previewPatches, dragPreview, renderedNotes]);
+  }, [baseItemNodes, blobsByHash, previewPatches, dragPreview, renderedNotes]);
   const boardNodes = useMemo(() => [...boardNodesById.values()], [boardNodesById]);
+  // Live mode lasts while its item stays the one selected node.
+  const liveCandidate =
+    liveNodeId !== null && selectedNodeIds.length === 1 && selectedNodeIds[0] === liveNodeId
+      ? boardNodesById.get(liveNodeId)
+      : undefined;
+  const liveNode =
+    liveCandidate && (liveCandidate.kind === 'video' || liveCandidate.kind === 'audio')
+      ? liveCandidate
+      : null;
+  useEffect(() => {
+    if (liveNodeId !== null && liveNode === null) setLiveNodeId(null);
+  }, [liveNodeId, liveNode]);
   const selectedNodes = useMemo(
     () =>
       selectedNodeIds
@@ -863,6 +879,25 @@ function BoardApp() {
         'Reset crop',
       );
     },
+    /** Open a file item's original in a new tab (the browser shows what it
+     *  can — PDFs, text, media — and downloads the rest). */
+    openFile: (node: SpriteNode) => {
+      window.open(blobUrl(node.blobHash, 'full'), '_blank', 'noopener');
+    },
+    download: (node: SpriteNode) => {
+      const link = document.createElement('a');
+      link.href = blobUrl(node.blobHash, 'full');
+      link.download = node.label;
+      link.click();
+    },
+    restoreProportions: () => {
+      const changes = restoreProportionsChanges(shellNodes, ({ id }) => {
+        const item = snapshot?.items.find((candidate) => candidate.id === id);
+        const blob = item?.blob_hash ? blobsByHash.get(item.blob_hash) : undefined;
+        return blob?.width && blob.height ? { width: blob.width, height: blob.height } : null;
+      });
+      if (changes.length > 0) commitNodeChanges.current(changes, 'Restore Proportions');
+    },
     setOpacity: (opacity: number) => {
       const changes: NodeChange[] = shellNodes.map((node) => ({
         id: node.id,
@@ -966,7 +1001,11 @@ function BoardApp() {
           ? 'note'
           : node.groupId && node.groupId !== drillGroupId
             ? 'group'
-            : 'item';
+            : node.kind === 'video' || node.kind === 'audio'
+              ? 'media'
+              : node.kind === 'file'
+                ? 'file'
+                : 'item';
     const action = bindings().doubleClick[target];
     if (action === 'zoom_to_fit') {
       actions.zoomToFit();
@@ -983,6 +1022,15 @@ function BoardApp() {
     if (action === 'drill_into_group' && node.groupId) {
       setDrillGroupId(node.groupId);
       setSelectedNodeIds([nodeId]);
+      return;
+    }
+    if (action === 'play_media' && (node.kind === 'video' || node.kind === 'audio')) {
+      setSelectedNodeIds([nodeId]);
+      setLiveNodeId(nodeId);
+      return;
+    }
+    if (action === 'open_file' && node.kind !== 'note') {
+      actions.openFile(node);
       return;
     }
     if (action !== 'zoom_to_item') return;
@@ -1059,16 +1107,17 @@ function BoardApp() {
       // A getter: building 20k plain objects on every render was a real cost
       // on big boards even in dev; tests read it on demand.
       get nodes() {
-        return boardNodes.map(({ id, kind, x, y, width, height, rotation, zIndex, crop }) => ({
-          crop,
-          id,
-          kind,
-          x,
-          y,
-          width,
-          height,
-          rotation,
-          zIndex,
+        return boardNodes.map((node) => ({
+          crop: node.crop,
+          id: node.id,
+          kind: node.kind,
+          x: node.x,
+          y: node.y,
+          width: node.width,
+          height: node.height,
+          rotation: node.rotation,
+          zIndex: node.zIndex,
+          poster: node.kind === 'note' ? undefined : node.poster,
         }));
       },
       notes: snapshot?.notes.map((note) => ({ id: note.id, text: noteText(note.content_json) })),
@@ -1107,8 +1156,10 @@ function BoardApp() {
   }
 
   function acceptFiles(files: FileList | File[]) {
-    const images = Array.from(files).filter((file) => file.type.startsWith('image/'));
-    if (images.length > 0) void ingest(images);
+    // Phase 11: every file type lands (the server's type handlers decide how
+    // it draws). Empty entries — dropped folders — are skipped.
+    const accepted = Array.from(files).filter((file) => file.size > 0);
+    if (accepted.length > 0) void ingest(accepted);
   }
 
   return (
@@ -1129,7 +1180,7 @@ function BoardApp() {
             onClick={() => fileInput.current?.click()}
             disabled={!activeBoardId}
           >
-            Add images
+            Add files
           </button>
           <button
             className={`ghost-button ${grayscale ? 'active' : ''}`}
@@ -1169,7 +1220,6 @@ function BoardApp() {
             ref={fileInput}
             className="visually-hidden"
             type="file"
-            accept="image/*"
             multiple
             onChange={(event) => {
               if (event.target.files) acceptFiles(event.target.files);
@@ -1336,6 +1386,14 @@ function BoardApp() {
                   onExit={() => setNoteEditingId(null)}
                 />
               )}
+              {liveNode && (
+                <LiveMedia
+                  key={liveNode.id}
+                  node={liveNode}
+                  viewport={camera}
+                  onExit={() => setLiveNodeId(null)}
+                />
+              )}
               {/* §1 HOVERED — 1px 40% outline on an unselected node (any kind).
                     Replaced by the selection outline the moment that node is
                     selected. rotatedBounds() keeps the outline tight on rotated
@@ -1366,7 +1424,7 @@ function BoardApp() {
                 <SelectionOverlay
                   nodes={shellNodes}
                   viewport={camera}
-                  editing={noteEditing}
+                  editing={noteEditing || liveNode !== null}
                   locked={shellLocked}
                   cropping={
                     cropNodeId !== null &&
@@ -1423,6 +1481,21 @@ function BoardApp() {
               menu.kind === 'selection'
                 ? [
                     { label: 'Duplicate', action: actions.duplicate },
+                    ...(() => {
+                      // Phase 11: play / open / download a lone media or file item.
+                      const lone = shellNodes.length === 1 ? shellNodes[0] : undefined;
+                      if (!lone || lone.kind === 'note') return [];
+                      return [
+                        ...(lone.kind === 'video' || lone.kind === 'audio'
+                          ? [{ label: 'Play', action: () => setLiveNodeId(lone.id) }]
+                          : []),
+                        ...(lone.kind === 'file'
+                          ? [{ label: 'Open', action: () => actions.openFile(lone) }]
+                          : []),
+                        { label: 'Download', action: () => actions.download(lone) },
+                      ];
+                    })(),
+                    { label: 'Restore Proportions', action: actions.restoreProportions },
                     ...(shellNodes.length === 1 && shellNodes[0]?.kind !== 'note'
                       ? [
                           cropNodeId === shellNodes[0]?.id
@@ -1551,7 +1624,7 @@ function BoardApp() {
           <div className="empty-state empty-state-board">
             <div className="empty-glyph">↗</div>
             <h2>{snapshot.board.name} is ready</h2>
-            <p>Drop images here or use Add images to build your board.</p>
+            <p>Drop images, video, audio or any file here, or use Add files.</p>
           </div>
         )}
         {loading && <div className="canvas-status">Syncing board…</div>}

@@ -49,7 +49,17 @@ type BoardState = {
   applyOps: (ops: BatchOp[], seq?: number) => void;
   setPendingOpsSource: (source: (() => BatchOp[]) | null) => void;
   applyChanges: (seq: number, events: BoardEvent[]) => void;
-  markPosterReady: (itemId: string, sizes: number[]) => void;
+  /** A poster job finished: record its levels on the item's blob (by name,
+   *  e.g. ['thumb', 'small', 'medium', 'full']; legacy edge sizes accepted). */
+  markPosterReady: (itemId: string, ready: (string | number)[]) => void;
+};
+
+/** Longest edge per pyramid level (px); `full` is native. */
+const LEVEL_EDGES: Record<string, number> = {
+  thumb: 64,
+  small: 256,
+  medium: 1024,
+  full: Number.POSITIVE_INFINITY,
 };
 
 /** Unacknowledged optimistic ops (registered by the active BatchQueue). */
@@ -179,10 +189,10 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     );
   },
 
-  markPosterReady(itemId, sizes) {
+  markPosterReady(itemId, ready) {
     set((state) => {
       const snapshot = state.snapshot;
-      if (!snapshot || sizes.length === 0) return state;
+      if (!snapshot || ready.length === 0) return state;
       const item = snapshot.items.find((candidate) => candidate.id === itemId);
       const hash = item?.blob_hash;
       if (!hash) return state;
@@ -191,13 +201,25 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         if (blob.hash !== hash) return blob;
         touched = true;
         const levels = { ...blob.levels };
-        const full = levels.full;
-        for (const size of sizes) {
-          const name = size <= 64 ? 'thumb' : size <= 256 ? 'small' : 'medium';
-          levels[name] = {
-            width: size,
-            height: full && full.width > 0 ? Math.round((size * full.height) / full.width) : size,
-          };
+        const native =
+          levels.full ??
+          (blob.width && blob.height ? { width: blob.width, height: blob.height } : null);
+        for (const entry of ready) {
+          // Level names (what the server sends) or legacy edge sizes.
+          const name =
+            typeof entry === 'string'
+              ? entry
+              : entry <= 64
+                ? 'thumb'
+                : entry <= 256
+                  ? 'small'
+                  : 'medium';
+          const edge = LEVEL_EDGES[name];
+          if (edge === undefined || name in levels) continue;
+          const scale = native ? Math.min(1, edge / Math.max(native.width, native.height, 1)) : 1;
+          levels[name] = native
+            ? { width: Math.round(native.width * scale), height: Math.round(native.height * scale) }
+            : { width: edge, height: edge };
         }
         return { ...blob, levels };
       });

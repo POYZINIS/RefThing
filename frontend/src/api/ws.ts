@@ -1,7 +1,9 @@
 import { BoardSocket, type BoardSocketEvent, fetchChanges } from '@/api/client';
 import { useBoardStore } from '@/state/boardStore';
 
-type PosterReadyPayload = { item_id?: string; sizes?: number[] };
+/** `levels` are level names (what the server sends); `sizes` is the older
+ *  documented shape, still accepted. */
+type PosterReadyPayload = { item_id?: string; levels?: string[]; sizes?: number[] };
 
 export type BoardSyncOptions = {
   boardId: string;
@@ -73,7 +75,11 @@ export class BoardSync {
           if (typeof payload.item_id === 'string') {
             store.markPosterReady(
               payload.item_id,
-              Array.isArray(payload.sizes) ? payload.sizes : [],
+              Array.isArray(payload.levels)
+                ? payload.levels
+                : Array.isArray(payload.sizes)
+                  ? payload.sizes
+                  : [],
             );
           }
           this.onPosterReady?.();

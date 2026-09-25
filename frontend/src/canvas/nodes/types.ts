@@ -1,4 +1,7 @@
-export type NodeKind = 'image' | 'gif' | 'note';
+export type NodeKind = 'image' | 'gif' | 'video' | 'audio' | 'file' | 'note';
+
+/** Kinds backed by an item + blob (everything but notes). */
+export type SpriteKind = Exclude<NodeKind, 'note'>;
 
 export type NodeCapabilities = {
   resizable: boolean;
@@ -44,8 +47,15 @@ export interface BoardNode {
 export interface SpriteNode extends BoardNode {
   // Mutable: the live-drag merge re-adopts it each update() — a blob's MIME
   // (hence the kind) can arrive after the node was created.
-  kind: 'image' | 'gif';
+  kind: SpriteKind;
   readonly blobHash: string;
+  /** Card text for kinds drawn as a card (files; media without a poster):
+   *  the original filename and a detail line (type · size · duration). */
+  readonly label: string;
+  readonly detail: string;
+  /** Video/audio: the server made a poster pyramid (thumb…medium) to draw.
+   *  Their `full` level is the media itself, never an image. */
+  readonly poster: boolean;
 }
 
 /** A note: painted by the NoteTextureSource from its text (pretext layout). */

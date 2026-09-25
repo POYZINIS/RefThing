@@ -35,6 +35,30 @@ pub fn generate_pyramid(
     blob_hash: &str,
     deriv_root: &Path,
 ) -> Result<Vec<DerivativeRecord>, PipelineError> {
+    generate_levels(original_path, blob_hash, deriv_root, false)
+}
+
+/// [`generate_pyramid`] for a media poster still (video frame, audio
+/// waveform). The blob's `full` is the media itself, not this still, so no
+/// level may alias it: levels at or above the still's size get the still
+/// encoded at its native size instead of being skipped.
+///
+/// # Errors
+/// As [`generate_pyramid`].
+pub fn generate_poster_pyramid(
+    still_path: &Path,
+    blob_hash: &str,
+    deriv_root: &Path,
+) -> Result<Vec<DerivativeRecord>, PipelineError> {
+    generate_levels(still_path, blob_hash, deriv_root, true)
+}
+
+fn generate_levels(
+    original_path: &Path,
+    blob_hash: &str,
+    deriv_root: &Path,
+    every_level: bool,
+) -> Result<Vec<DerivativeRecord>, PipelineError> {
     let decoded = decode_normalized(original_path)?;
     let (orig_w, orig_h) = (decoded.width(), decoded.height());
     let orig_max = orig_w.max(orig_h);
@@ -43,12 +67,20 @@ pub fn generate_pyramid(
     // Produced level images, descending by size, as downscale sources.
     let mut produced: Vec<RgbaImage> = Vec::new();
     for level in PyramidLevel::ALL.into_iter().rev() {
-        if orig_max <= level.max_edge() {
+        let native = orig_max <= level.max_edge();
+        if native && !every_level {
             continue; // never upscale; this level aliases `full`
         }
         let (dst_w, dst_h) = fit_within(orig_w, orig_h, level.max_edge());
-        let source = best_source(&decoded, &produced, dst_w.max(dst_h));
-        let resized = resize_level(source, dst_w, dst_h)?;
+        let resized = if native {
+            decoded.clone() // never upscale: the still itself, re-encoded
+        } else {
+            resize_level(
+                best_source(&decoded, &produced, dst_w.max(dst_h)),
+                dst_w,
+                dst_h,
+            )?
+        };
         let bytes = encode_webp(&resized, level.quality())?;
         let rel_path = derivative_rel_path(blob_hash, level);
         write_atomic(&deriv_root.join(&rel_path), &bytes)?;
@@ -327,6 +359,19 @@ mod tests {
         let records = generate_pyramid(&source, HASH, dir.path()).expect("generate");
         assert_eq!(records.len(), 1);
         assert_record(&records[0], dir.path(), PyramidLevel::Thumb, 32, 64);
+    }
+
+    #[test]
+    fn poster_pyramid_fills_every_level_without_upscaling() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("still.png");
+        gradient_rgb(320, 240).save(&source).expect("write png");
+
+        let records = generate_poster_pyramid(&source, HASH, dir.path()).expect("generate");
+        assert_eq!(records.len(), 3, "no level may alias the media original");
+        assert_record(&records[0], dir.path(), PyramidLevel::Thumb, 64, 48);
+        assert_record(&records[1], dir.path(), PyramidLevel::Small, 256, 192);
+        assert_record(&records[2], dir.path(), PyramidLevel::Medium, 320, 240);
     }
 
     #[test]

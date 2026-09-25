@@ -63,9 +63,10 @@ export function splitPng(width, height, left, right) {
 
 /**
  * Create an isolated board: `images` [{name, x, y, width, height, color}],
- * `notes` [{x, y, width, height, text}]. Returns { boardId, name }.
+ * `notes` [{x, y, width, height, text}], `files` [{name, x, y, buffer}].
+ * Returns { boardId, name, ids }.
  */
-export async function seedBoard(request, { images = [], notes = [] } = {}) {
+export async function seedBoard(request, { images = [], notes = [], files = [] } = {}) {
   await request.post(`${BASE_URL}/api/auth/session`);
   const name = `e2e ${Date.now()} ${Math.random().toString(36).slice(2, 7)}`;
   const board = await (await request.post(`${BASE_URL}/api/boards`, { data: { name } })).json();
@@ -85,6 +86,18 @@ export async function seedBoard(request, { images = [], notes = [] } = {}) {
     });
     const body = await response.json();
     ids[image.name] = body.items[0].item_id;
+  }
+  // Any other file type (Phase 11): [{ name, x, y, buffer }]; the server
+  // sniffs the MIME and picks the item type.
+  for (const file of files) {
+    const response = await request.post(`${BASE_URL}/api/boards/${board.id}/items:ingest`, {
+      multipart: {
+        meta: JSON.stringify({ [file.name]: { x: file.x, y: file.y } }),
+        file: { name: file.name, mimeType: 'application/octet-stream', buffer: file.buffer },
+      },
+    });
+    const body = await response.json();
+    ids[file.name] = body.items[0].item_id;
   }
   for (const note of notes) {
     const response = await request.post(`${BASE_URL}/api/boards/${board.id}/notes`, {

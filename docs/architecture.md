@@ -59,6 +59,11 @@ WebSocket (api/ws.ts) is receive-only: other clients' diffs and job events.
 - **Commands** (`state/commands.ts`) are pure snapshot+selection → ops
   functions shared by the keyboard map (`canvas/controls.ts`) and the
   context menu.
+- **Item types** (Phase 11): backend `item_types.rs` handlers pick type,
+  placement and poster job per sniffed MIME; the frontend maps `type` to a
+  node kind (`canvas/nodes/itemKind.ts`) drawn from a pyramid poster or a
+  `CardTextureSource` card, with optional live DOM players
+  (`components/LiveMedia.tsx`). See `docs/onboarding-new-item-type.md`.
 - **sidecar** — internal Node helper for three.js GLB poster snapshots and
   puppeteer embed screenshots (Phase 11+). See `sidecar/README.md` and
   `docs/onboarding-new-item-type.md`.

@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use async_trait::async_trait;
-use refthing_core::pipeline::generate_pyramid;
+use refthing_core::pipeline::generate_poster_pyramid;
 
 use super::pyramid::{
     PyramidPayload, broadcast_ready, commit_ready, mark_failed, mark_pending, probe_dimensions,
@@ -51,7 +51,7 @@ impl JobHandler for MediaPosterJob {
                 &[
                     "-filter_complex",
                     &format!(
-                        "aformat=channel_layouts=mono,showwavespic=s={WAVEFORM}:colors=0xd6ff76"
+                        "aformat=channel_layouts=mono,showwavespic=s={WAVEFORM}:colors=0xd6ff76:scale=sqrt"
                     ),
                     "-frames:v",
                     "1",
@@ -72,7 +72,7 @@ impl JobHandler for MediaPosterJob {
             .resize_pool
             .run(move || {
                 let dims = probe_dimensions(&source)?;
-                let records = generate_pyramid(&source, &blob_hash, &deriv_root)?;
+                let records = generate_poster_pyramid(&source, &blob_hash, &deriv_root)?;
                 Ok::<_, refthing_core::pipeline::PipelineError>((dims, records))
             })
             .await;

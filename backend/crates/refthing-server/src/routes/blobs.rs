@@ -11,6 +11,9 @@
 //! frontend learns available levels from the `BoardSnapshot` and the
 //! `poster_ready` WS message — no probing loop.
 //!
+//! Originals honor a single `Range: bytes=…` request (206 / 416) so video
+//! and audio items can seek in live mode (Phase 11).
+//!
 //! All responses carry immutable caching and a strong `ETag`
 //! (`"{hash}-{level}"`): every URL is content-addressed, so bytes never
 //! change. No compression layer touches these bytes (see `router.rs`).
@@ -23,7 +26,7 @@ use axum::{Router, routing::get};
 use futures_util::stream;
 use refthing_core::db::blobs;
 use refthing_core::models::Blob;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::error::{AppError, AppResult};
 use crate::jobs::pyramid::PyramidPayload;
@@ -97,19 +100,101 @@ async fn serve_original(
     if if_none_match_matches(headers, &etag) {
         return Ok(not_modified(&etag));
     }
-    let file = state.blob_store.open(hash).await.map_err(|error| {
+    let mut file = state.blob_store.open(hash).await.map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             AppError::NotFound("blob")
         } else {
             AppError::Io(error)
         }
     })?;
-    Ok(stream_response(
-        file,
-        &etag,
-        &blob.mime_type,
-        blob.byte_size,
-    ))
+    let size = u64::try_from(blob.byte_size).unwrap_or(0);
+    match requested_range(headers, size) {
+        RangeRequest::Whole => Ok(stream_response(
+            file,
+            &etag,
+            &blob.mime_type,
+            blob.byte_size,
+        )),
+        RangeRequest::Unsatisfiable => {
+            let mut response = StatusCode::RANGE_NOT_SATISFIABLE.into_response();
+            if let Ok(value) = HeaderValue::from_str(&format!("bytes */{size}")) {
+                response.headers_mut().insert(header::CONTENT_RANGE, value);
+            }
+            Ok(response)
+        }
+        RangeRequest::Part { start, end } => {
+            file.seek(std::io::SeekFrom::Start(start)).await?;
+            let length = end - start + 1;
+            let mut response = stream_response(
+                file.take(length),
+                &etag,
+                &blob.mime_type,
+                i64::try_from(length).unwrap_or(i64::MAX),
+            );
+            *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+            if let Ok(value) = HeaderValue::from_str(&format!("bytes {start}-{end}/{size}")) {
+                response.headers_mut().insert(header::CONTENT_RANGE, value);
+            }
+            Ok(response)
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RangeRequest {
+    Whole,
+    /// Inclusive byte offsets.
+    Part {
+        start: u64,
+        end: u64,
+    },
+    Unsatisfiable,
+}
+
+/// One `bytes=` range (`a-b`, `a-`, `-suffix`). Anything else — no header,
+/// multiple ranges, another unit, malformed — is served whole (RFC 9110
+/// lets a server ignore Range).
+fn requested_range(headers: &HeaderMap, size: u64) -> RangeRequest {
+    let Some(spec) = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().strip_prefix("bytes="))
+    else {
+        return RangeRequest::Whole;
+    };
+    if spec.contains(',') {
+        return RangeRequest::Whole;
+    }
+    let Some((first, last)) = spec.trim().split_once('-') else {
+        return RangeRequest::Whole;
+    };
+    let (first, last) = (first.trim(), last.trim());
+    let parsed = if first.is_empty() {
+        // Suffix: the final N bytes.
+        match last.parse::<u64>() {
+            Ok(0) => return RangeRequest::Unsatisfiable,
+            Ok(suffix) => (size.saturating_sub(suffix), size.saturating_sub(1)),
+            Err(_) => return RangeRequest::Whole,
+        }
+    } else {
+        let Ok(start) = first.parse::<u64>() else {
+            return RangeRequest::Whole;
+        };
+        let end = if last.is_empty() {
+            size.saturating_sub(1)
+        } else {
+            match last.parse::<u64>() {
+                Ok(end) if end >= start => end.min(size.saturating_sub(1)),
+                _ => return RangeRequest::Whole,
+            }
+        };
+        (start, end)
+    };
+    let (start, end) = parsed;
+    if size == 0 || start >= size {
+        return RangeRequest::Unsatisfiable;
+    }
+    RangeRequest::Part { start, end }
 }
 
 /// Streams a generated WebP derivative from the deriv shard.
@@ -206,7 +291,10 @@ async fn reenqueue_pyramid(state: &AppState, hash: &str, blob: &Blob) {
 
 /// Streams the blob in [`READ_CHUNK`] pieces; the file handle travels with the
 /// stream so the whole file is never resident in memory.
-fn stream_response(file: tokio::fs::File, etag: &str, mime_type: &str, byte_size: i64) -> Response {
+fn stream_response<R>(file: R, etag: &str, mime_type: &str, byte_size: i64) -> Response
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
     let chunks = stream::try_unfold((file, vec![0u8; READ_CHUNK]), |(mut file, mut buf)| async {
         match file.read(&mut buf).await {
             Ok(0) => Ok(None),
@@ -235,6 +323,7 @@ fn stream_response(file: tokio::fs::File, etag: &str, mime_type: &str, byte_size
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     // `hash` comes from a registered blob row, so it is always 64-char hex.
     if let Ok(value) = HeaderValue::from_str(etag) {
         headers.insert(header::ETAG, value);
@@ -284,4 +373,52 @@ fn if_none_match_matches(headers: &HeaderMap, etag: &str) -> bool {
                 .map(str::trim)
                 .any(|candidate| candidate == "*" || candidate == etag)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn range(value: &str, size: u64) -> RangeRequest {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RANGE, HeaderValue::from_str(value).expect("header"));
+        requested_range(&headers, size)
+    }
+
+    #[test]
+    fn parses_single_byte_ranges() {
+        assert_eq!(
+            range("bytes=0-99", 1000),
+            RangeRequest::Part { start: 0, end: 99 }
+        );
+        assert_eq!(
+            range("bytes=900-", 1000),
+            RangeRequest::Part {
+                start: 900,
+                end: 999
+            }
+        );
+        assert_eq!(
+            range("bytes=-100", 1000),
+            RangeRequest::Part {
+                start: 900,
+                end: 999
+            }
+        );
+        assert_eq!(
+            range("bytes=990-5000", 1000),
+            RangeRequest::Part {
+                start: 990,
+                end: 999
+            }
+        );
+        assert_eq!(range("bytes=1000-", 1000), RangeRequest::Unsatisfiable);
+        assert_eq!(range("bytes=0-1,5-9", 1000), RangeRequest::Whole);
+        assert_eq!(range("items=0-1", 1000), RangeRequest::Whole);
+        assert_eq!(range("bytes=9-2", 1000), RangeRequest::Whole);
+        assert_eq!(
+            requested_range(&HeaderMap::new(), 1000),
+            RangeRequest::Whole
+        );
+    }
 }

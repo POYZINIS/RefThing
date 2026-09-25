@@ -1,15 +1,22 @@
 import { registerHooks } from 'node:module';
 
-// Node's native TypeScript runner resolves the extensionless imports used by Vite.
+const srcRoot = new URL('../src/', import.meta.url);
+
+// Node's native TypeScript runner resolves the extensionless imports used by
+// Vite, and Vite's `@/` alias (= src/).
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (specifier.startsWith('.') && !/\.[cm]?[jt]s$/.test(specifier)) {
+    const aliased = specifier.startsWith('@/')
+      ? new URL(specifier.slice(2), srcRoot).href
+      : specifier;
+    const relative = aliased !== specifier || specifier.startsWith('.');
+    if (relative && !/\.[cm]?[jt]sx?$/.test(aliased)) {
       try {
-        return nextResolve(`${specifier}.ts`, context);
+        return nextResolve(`${aliased}.ts`, context);
       } catch {
         /* Try normal resolution. */
       }
     }
-    return nextResolve(specifier, context);
+    return nextResolve(aliased, context);
   },
 });

@@ -1,16 +1,17 @@
-import type { Item, ItemPatch, Note } from '@/api/client';
+import type { BlobInfo, Item, ItemPatch, Note } from '@/api/client';
 import { type Crop, FULL_CROP } from '../transform';
+import { cardDetail, itemKind, POSTER_LEVELS } from './itemKind';
 import { noteText } from './noteText';
 import { nodeKindRegistry } from './registry';
 import { type NodePatch, type NoteNode, nodeGeometry, type SpriteNode } from './types';
 
-/** Item → node. `isGif` comes from the blob's MIME (image/gif), not the item. */
+/** Item → node. The blob supplies gif-ness, card text and poster presence. */
 export function itemToNode(
   item: Item & { blob_hash: string },
-  isGif: boolean,
+  blob: BlobInfo | undefined,
   locked = false,
 ): SpriteNode {
-  const kind = isGif ? 'gif' : 'image';
+  const kind = itemKind(item, blob);
   return {
     id: item.id,
     kind,
@@ -27,6 +28,9 @@ export function itemToNode(
     groupId: item.group_id,
     locked,
     blobHash: item.blob_hash,
+    label: blob?.original_filename ?? item.blob_hash.slice(0, 12),
+    detail: blob ? cardDetail(blob, item.metadata.duration) : '',
+    poster: !!blob && POSTER_LEVELS.some((level) => level in blob.levels),
     capabilities: nodeKindRegistry[kind].capabilities,
     ...nodeGeometry,
   };

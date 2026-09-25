@@ -313,15 +313,28 @@ be killed).
 
 - One entry per file, in multipart order. `seq` is the board seq after the
   last committed file (each file commits its own transaction: blob row +
-  item + event + `pyramid` job, atomically — a true outbox).
+  item + event + poster job, atomically — a true outbox).
 - `dedup: true` when the same content hash was already in the store; the new
   item still points at the existing blob.
 - `poster` is **`"pending"`** in the immediate 202 response and becomes ready
-  asynchronously when the pyramid job completes.
-- `width`/`height` are initial placement dimensions; the pyramid job measures
-  and backfills the registered blob's intrinsic dimensions.
-- Item `type` derives from the sniffed MIME: `image/…` → `image`,
-  `video/…` → `video`, `audio/…` → `audio`, anything else → `file`.
+  asynchronously when the poster job completes.
+- Every file is routed by its sniffed MIME to one **item type handler**
+  (`src/item_types.rs`), which sets the item `type`, probes the intrinsic
+  size and names the poster job:
+
+  | MIME        | `type`  | Placement (world px)                          | Poster job     |
+  |:------------|:--------|:----------------------------------------------|:---------------|
+  | `image/…`   | `image` | true size, long edge capped at 1600 (else 256²) | `pyramid`      |
+  | `video/…`   | `video` | frame size via ffprobe, capped at 1600 (else 480×270) | `media_poster` |
+  | `audio/…`   | `audio` | 480×120 (a waveform strip)                    | `media_poster` |
+  | anything    | `file`  | 200×240 card                                  | none           |
+
+  Video/audio also get `metadata.duration` (seconds) from ffprobe.
+  `media_poster` renders a frame (1 s in) or a waveform with ffmpeg and runs
+  it through the pyramid — every scaled level is a real WebP, never an alias
+  of the media bytes. ffmpeg/ffprobe come from `PATH` or
+  `REFTHING_FFMPEG` / `REFTHING_FFPROBE`; without them media still ingests
+  (default placement, no poster) and the client draws a card.
 - Errors: 404 unknown board, 400 invalid `meta` part, 413 over the 1 GiB
   limit. A crash between store and commit leaves at worst an unreferenced
   blob, which the GC sweeps.
@@ -333,15 +346,19 @@ compressed). `hash` is the 64-char lowercase hex SHA-256 from ingest.
 
 | Level                    | Phase 3 behavior                                             |
 |:-------------------------|:-------------------------------------------------------------|
-| `full`                   | 200 — original bytes, streamed (never buffered whole)        |
+| `full`                   | 200 — original bytes, streamed (never buffered whole); a single `Range: bytes=…` gets 206 / 416 |
 | `thumb` `small` `medium` | 200 generated WebP or ready original-byte alias; pending jobs return 404 + `X-Derivative: pending` |
 | anything else            | 404 (plain)                                                  |
 | unknown hash             | 404 `not_found`                                              |
 
 Successful `full` responses carry:
 
-- `Content-Type`: the blob's sniffed MIME; `Content-Length`; and
-  `X-Content-Type-Options: nosniff`.
+- `Content-Type`: the blob's sniffed MIME; `Content-Length`;
+  `Accept-Ranges: bytes`; and `X-Content-Type-Options: nosniff`.
+- Range: one `bytes=a-b`, `a-` or `-suffix` range answers **206** with
+  `Content-Range` (live video/audio seeking). A start past the end is
+  **416** with `Content-Range: bytes */size`. Multiple ranges, other units or
+  malformed headers are served whole (200).
 - `Cache-Control: public, max-age=31536000, immutable` — the URL is
   content-addressed, so bytes never change.
 - `ETag: "{hash}-full"` (strong). A matching `If-None-Match` (exact member or
@@ -385,9 +402,12 @@ All are JSON text frames, tagged by `type` (snake_case):
   current seq **instead of dropping the socket**. The client then refetches
   `/changes?since=<its cursor>`.
 - **`job`:** forward-extensible envelope, e.g.
-  `{ "type": "job", "kind": "poster_ready", "payload": { "item_id": "…",
-  "sizes": [64, 256, 1024] } }`. `payload` is per-kind. The Phase 3
-  pyramid job emits `poster_ready` after derivative rows and files are ready.
+  `{ "type": "job", "kind": "poster_ready", "payload": { "blob_hash": "…",
+  "item_id": "…", "levels": ["thumb", "small", "medium", "full"] } }`.
+  `payload` is per-kind. The `pyramid` and `media_poster` jobs emit
+  `poster_ready` after derivative rows and files are ready; `levels` names
+  every ready level. (Clients also accept the older `sizes: [64, 256, 1024]`
+  shape.)
 - **`error`:** mirrors the REST envelope (`code` ∈ `not_found`,
   `seq_conflict`, `bad_request`, `too_large`, `unsupported_media`,
   `internal`). A stale `base_seq` over WS arrives as `seq_conflict`, same as
@@ -421,5 +441,5 @@ automatically by axum.
 
 The image pyramid is implemented in Phase 3. The frontend selects levels by
 on-screen size and falls back to `full` while a requested derivative is
-pending. Remaining future work includes canvas polish, broader item types, and
-performance tooling.
+pending — for images only: a video/audio blob's `full` is the media itself,
+so media posters clamp to `medium` and show a card until one is ready.

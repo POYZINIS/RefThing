@@ -252,17 +252,48 @@ async fn media_items_are_probed_and_get_posters() {
         (Some(480.0), Some(120.0))
     );
 
-    // Both blobs got a poster pyramid the canvas can draw.
+    // Both blobs got a poster pyramid the canvas can draw — at EVERY scaled
+    // level: one at/above the poster's size must not alias the original
+    // (that would serve the mp4 as an "image").
     for hash in [&video["blob_hash"], &audio["blob_hash"]] {
         let hash = hash.as_str().expect("hash");
-        let response = reqwest::get(format!("{}/blob/{hash}/small", app.base))
-            .await
-            .expect("get");
-        assert_eq!(response.status(), 200, "poster derivative for {hash}");
-        let bytes = response.bytes().await.expect("bytes");
-        assert!(
-            image::load_from_memory(&bytes).is_ok(),
-            "poster decodes as an image"
-        );
+        for level in ["thumb", "small", "medium"] {
+            let response = reqwest::get(format!("{}/blob/{hash}/{level}", app.base))
+                .await
+                .expect("get");
+            assert_eq!(response.status(), 200, "{level} poster for {hash}");
+            let bytes = response.bytes().await.expect("bytes");
+            assert!(
+                image::load_from_memory(&bytes).is_ok(),
+                "{level} poster decodes as an image"
+            );
+        }
     }
+
+    // Live mode seeks: the original honors byte ranges.
+    let hash = video["blob_hash"].as_str().expect("hash");
+    let response = reqwest::Client::new()
+        .get(format!("{}/blob/{hash}/full", app.base))
+        .header("Range", "bytes=10-19")
+        .send()
+        .await
+        .expect("range get");
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.headers()["accept-ranges"], "bytes");
+    let total = video_len(&app, hash).await;
+    assert_eq!(
+        response.headers()["content-range"],
+        format!("bytes 10-19/{total}").as_str()
+    );
+    assert_eq!(response.bytes().await.expect("bytes").len(), 10);
+}
+
+async fn video_len(app: &TestApp, hash: &str) -> u64 {
+    reqwest::get(format!("{}/blob/{hash}/full", app.base))
+        .await
+        .expect("get")
+        .bytes()
+        .await
+        .expect("bytes")
+        .len() as u64
 }

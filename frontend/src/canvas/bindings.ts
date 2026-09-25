@@ -79,6 +79,9 @@ note = "enter_note_edit"
 group = "drill_into_group"
 item = "zoom_to_item"
 empty = "zoom_to_fit"
+# Phase 11: video/audio go Live (a player over the item); files open.
+media = "play_media"
+file = "open_file"
 
 # Keyboard. "primary" = Ctrl/Cmd. "optional" keys may be held too (e.g.
 # Shift = larger nudge step).
@@ -152,7 +155,7 @@ export type KeyAction =
   | 'nudge_up'
   | 'nudge_down'
   | 'escape';
-export type DoubleClickTarget = 'note' | 'group' | 'item' | 'empty';
+export type DoubleClickTarget = 'note' | 'group' | 'item' | 'media' | 'file' | 'empty';
 
 type PressBinding = {
   button: 'left' | 'middle' | 'right';

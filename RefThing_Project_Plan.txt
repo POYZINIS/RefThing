@@ -380,8 +380,39 @@ Remaining:
 4. Best-effort .pur importer for PureRef 1.x — needs real .pur sample files
    to reverse-engineer against (2.x format is closed — stretch, not v1).
 
-PHASE 11 — EXTENSIBILITY: MULTI-FORMAT ITEM TYPES          [NOT STARTED]
+PHASE 11 — EXTENSIBILITY: MULTI-FORMAT ITEM TYPES   [PARTIAL: image/video/audio/gif/file done; 3D + web embeds open]
 --------------------------------------------------------------------
+Status (2026-09-25):
+Done:
+- Backend ItemTypeHandler registry (item_types.rs): image / video / audio
+  / file. Probes intrinsic size (image header, ffprobe), so items land at
+  their true proportions (long edge capped at 1600). Duration goes into
+  item_metadata.
+- media_poster job: ffmpeg frame (video) or waveform (audio) -> poster
+  pyramid. Every level is a real WebP, never an alias of the media bytes.
+  Without ffmpeg, media still ingests and draws as a card.
+- /blob/{hash}/full honors Range (206/416), so live media can seek.
+- Frontend kinds video / audio / file in the node registry.
+  CardTextureSource (pretext-wrapped filename, type, size, duration) is
+  the poster for files, and for media until its poster is ready.
+- Live mode: double-click (bindings [double_click] media/file targets) or
+  the context menu. <video> sits over the item; <audio> is a mini-player.
+  One live item at a time. Escape or a press outside exits.
+- Files: double-click opens the original, and Download is in the context
+  menu. Drop, paste and Add files accept every file type.
+- Feature flags (src/features.ts). Restore Proportions un-squashes items
+  placed square by the old ingest.
+- poster_ready now updates blob levels live. The client read `sizes`
+  while the server sent `levels`.
+Differences from the plan text: the audio mini-player is the native
+<audio> element, not a custom Web Audio transport. The waveform comes
+from ffmpeg, not symphonia.
+Open:
+- 3D models (sidecar three.js poster + model-viewer live).
+- Web embeds (URL paste -> sidecar screenshot poster + sandboxed iframe).
+Until then, .glb and similar files land as file cards (the plan's
+"stub early" rule).
+
 Goal: 3D viewports, video, audio (mp3 mini-player), gifs, web embeds,
 and arbitrary file formats — without touching core engine code per
 new type.

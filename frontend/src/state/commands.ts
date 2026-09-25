@@ -1,4 +1,5 @@
 import type { BatchRequestOp, BoardSnapshot, Group, Item, Note } from '../api/client';
+import type { BoardNode, NodeChange } from '../canvas/nodes/types';
 
 /**
  * Board commands as pure functions: snapshot + selection → batch ops. Every
@@ -254,6 +255,41 @@ export function fitViewport(
   const centerX = (bounds.left + bounds.right) / 2;
   const centerY = (bounds.top + bounds.bottom) / 2;
   return { x: width / 2 - centerX * zoom, y: height / 2 - centerY * zoom, zoom };
+}
+
+/**
+ * "Restore Proportions": give items their source's aspect ratio back (items
+ * ingested before Phase 11 were all placed square). The new rect keeps the
+ * node's center and its longer edge, so it stays inside its old footprint;
+ * the ratio is the VISIBLE one (a crop's share of the source). Nodes without
+ * an intrinsic size (file cards) or already in proportion are left alone.
+ */
+export function restoreProportionsChanges(
+  nodes: readonly Pick<BoardNode, 'id' | 'kind' | 'x' | 'y' | 'width' | 'height' | 'crop'>[],
+  intrinsic: (node: { id: string }) => { width: number; height: number } | null,
+): NodeChange[] {
+  const changes: NodeChange[] = [];
+  for (const node of nodes) {
+    if (node.kind === 'note') continue;
+    const source = intrinsic(node);
+    if (!source || source.width <= 0 || source.height <= 0) continue;
+    const ratio = (source.width * node.crop.w) / (source.height * node.crop.h);
+    if (Math.abs(node.width / node.height / ratio - 1) < 0.005) continue;
+    const edge = Math.max(node.width, node.height);
+    const width = ratio >= 1 ? edge : edge * ratio;
+    const height = ratio >= 1 ? edge / ratio : edge;
+    changes.push({
+      id: node.id,
+      kind: 'item',
+      patch: {
+        x: node.x + (node.width - width) / 2,
+        y: node.y + (node.height - height) / 2,
+        width,
+        height,
+      },
+    });
+  }
+  return changes;
 }
 
 /** Union of rects, or null for none. */

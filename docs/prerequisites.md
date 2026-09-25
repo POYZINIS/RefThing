@@ -99,6 +99,15 @@ automatically when you `cd` into the repo. Node **24+** is required (Node
 
 ## Optional but recommended
 
+- **ffmpeg** (with ffprobe): video frame posters, audio waveforms and
+  media durations (Phase 11). Without it, video and audio still import;
+  they just draw as cards. If it isn't on `PATH`, point
+  `REFTHING_FFMPEG` / `REFTHING_FFPROBE` at the binaries.
+
+  ```powershell
+  winget install Gyan.FFmpeg
+  ```
+
 - **cargo-watch** — backend hot reload during development:
 
   ```bash

@@ -1,14 +1,15 @@
 import { Application, Container, Graphics, type Texture } from 'pixi.js';
-import type { Group, Item, Note } from '@/api/client';
+import type { BlobInfo, Group, Item, Note } from '@/api/client';
 import { screenToWorld } from './coordinates';
 import { NodeInteractionController } from './NodeInteractionController';
 import { itemToNode, noteToNode } from './nodes/adapters';
+import type { CardTextureSource } from './nodes/CardTextureSource';
 import type { GifTextureSource } from './nodes/GifTextureSource';
 import type { NodeRenderer } from './nodes/NodeRenderer';
 import { type NoteTextureSource, noteTextureScale } from './nodes/NoteTextureSource';
 import { type PyramidTextureSource, pyramidLevel } from './nodes/PyramidTextureSource';
 import { nodeKindRegistry } from './nodes/registry';
-import type { CanvasNode, NodeChange } from './nodes/types';
+import type { CanvasNode, NodeChange, SpriteNode } from './nodes/types';
 import { themeColor } from './theme';
 import type { Guide, Rect } from './transform';
 
@@ -57,6 +58,7 @@ export class BoardCanvas {
     fallback: this.pyramidTextures,
   });
   private readonly noteTextures: NoteTextureSource = nodeKindRegistry.note.textureSourceFactory();
+  private readonly cardTextures: CardTextureSource = nodeKindRegistry.file.textureSourceFactory();
   private readonly options: CanvasOptions;
   private readonly controller: NodeInteractionController;
   private readonly grid = new Map<number, CanvasNode[]>();
@@ -65,7 +67,7 @@ export class BoardCanvas {
    *  20k. Flags that live outside the item are part of the cache check. */
   private readonly nodeCache = new WeakMap<
     object,
-    { node: CanvasNode; gif: boolean; locked: boolean }
+    { node: CanvasNode; blob: BlobInfo | undefined; locked: boolean }
   >();
   private nodes: CanvasNode[] = [];
   /** Group backgrounds (plan Phase 5): drawn under every node. */
@@ -146,7 +148,7 @@ export class BoardCanvas {
 
   update(
     items: Item[],
-    gifHashes: ReadonlySet<string> = new Set(),
+    blobs: ReadonlyMap<string, BlobInfo> = new Map(),
     notes: Note[] = [],
     groups: readonly Group[] = [],
   ): void {
@@ -174,26 +176,26 @@ export class BoardCanvas {
     const modelZ = new Map<string, number>();
     const cached = (
       source: Item | Note,
-      gif: boolean,
+      blob: BlobInfo | undefined,
       locked: boolean,
       build: () => CanvasNode,
     ) => {
       modelZ.set(source.id, source.z_index);
       const hit = this.nodeCache.get(source);
-      if (hit && hit.gif === gif && hit.locked === locked) return hit.node;
+      if (hit && hit.blob === blob && hit.locked === locked) return hit.node;
       const node = build();
-      this.nodeCache.set(source, { node, gif, locked });
+      this.nodeCache.set(source, { node, blob, locked });
       return node;
     };
     const next: CanvasNode[] = [];
     for (const item of items) {
-      if (item.type !== 'image' || !item.blob_hash) continue;
-      const image = item as Item & { blob_hash: string };
-      const gif = gifHashes.has(image.blob_hash);
-      const locked = image.group_id !== null && lockedGroups.has(image.group_id);
-      next.push(cached(image, gif, locked, () => itemToNode(image, gif, locked)));
+      if (!item.blob_hash) continue;
+      const withBlob = item as Item & { blob_hash: string };
+      const blob = blobs.get(withBlob.blob_hash);
+      const locked = withBlob.group_id !== null && lockedGroups.has(withBlob.group_id);
+      next.push(cached(withBlob, blob, locked, () => itemToNode(withBlob, blob, locked)));
     }
-    for (const note of notes) next.push(cached(note, false, false, () => noteToNode(note)));
+    for (const note of notes) next.push(cached(note, undefined, false, () => noteToNode(note)));
     this.nodes = liveById
       ? next.map((node) => {
           const inFlight = liveById.get(node.id);
@@ -231,6 +233,8 @@ export class BoardCanvas {
     }
     this.grid.clear();
     for (const node of this.nodes) this.addToGrid(node);
+    const gifHashes = new Set<string>();
+    for (const blob of blobs.values()) if (blob.mime_type === 'image/gif') gifHashes.add(blob.hash);
     this.gifTextures.sync(
       gifHashes,
       new Set(this.nodes.flatMap((node) => (node.kind === 'gif' ? [node.blobHash] : []))),
@@ -396,6 +400,7 @@ export class BoardCanvas {
     this.gifTextures.dispose();
     this.pyramidTextures.dispose();
     this.noteTextures.dispose();
+    this.cardTextures.dispose();
     this.app.destroy(true, { children: true, texture: false });
   }
 
@@ -410,6 +415,12 @@ export class BoardCanvas {
       }
     }
     const visibleNotes = new Set<string>();
+    const visibleCards = new Set<string>();
+    const cardScale = String(noteTextureScale(this.renderedViewport.zoom, window.devicePixelRatio));
+    const card = (node: SpriteNode) => {
+      visibleCards.add(node.id);
+      return this.cardTextures.texture(node, cardScale);
+    };
     for (const node of visibleNodes) {
       let renderer = this.renderers.get(node.id);
       if (!renderer) {
@@ -421,6 +432,13 @@ export class BoardCanvas {
       if (node.kind === 'note') {
         visibleNotes.add(node.id);
         texture = this.noteTextures.texture(node, this.levelFor(node));
+      } else if (node.kind === 'file') {
+        texture = card(node);
+      } else if (node.kind === 'video' || node.kind === 'audio') {
+        // The poster once it's resident; the card until then (or forever
+        // without ffmpeg).
+        const poster = node.poster ? this.pyramidTextures.poster(node, this.levelFor(node)) : null;
+        texture = poster ?? card(node);
       } else {
         const source = node.kind === 'gif' ? this.gifTextures : this.pyramidTextures;
         texture = source.texture(node, this.levelFor(node));
@@ -432,6 +450,7 @@ export class BoardCanvas {
       });
     }
     this.noteTextures.retain(visibleNotes);
+    this.cardTextures.retain(visibleCards);
     this.drawGroupBackdrops();
     this.scene.sortableChildren = true;
   }

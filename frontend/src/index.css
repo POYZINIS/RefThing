@@ -361,6 +361,22 @@ button:disabled {
   outline-offset: 0;
 }
 
+/* Phase 11 live mode: a real player over a video/audio item. Shares the
+   editor rung — the shell above it is inert while it plays. */
+.live-media {
+  position: absolute;
+  z-index: var(--z-note-editor);
+  box-sizing: border-box;
+  margin: 0;
+  outline: 0;
+  transform-origin: center;
+}
+
+.live-media--video {
+  background: #000;
+  object-fit: contain;
+}
+
 /* §4 Editing surface. Geometry, font and colors come inline from the shared
    note metrics (canvas/nodes/noteText.ts) so it matches the painted note. */
 .note-editor {

@@ -11,7 +11,7 @@ mod pool;
 
 use std::path::PathBuf;
 
-pub use generate::generate_pyramid;
+pub use generate::{generate_poster_pyramid, generate_pyramid};
 pub use palette::{
     ImageMetadata, dominant_colors, extract_image_metadata, hamming_distance, phash,
 };

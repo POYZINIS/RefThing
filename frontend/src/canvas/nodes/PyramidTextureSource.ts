@@ -51,23 +51,37 @@ export class PyramidTextureSource implements TextureSource {
   constructor(private readonly onChange: () => void) {}
 
   texture(node: SpriteNode, level: string): Texture {
-    const wanted = this.failed.has(`${node.blobHash}-${level}`) ? 'full' : level;
-    const key = `${node.blobHash}-${wanted}`;
+    return this.resolve(node.blobHash, level, true) ?? Texture.WHITE;
+  }
+
+  /**
+   * A media poster (video frame / audio waveform) at `level`, clamped to
+   * `medium`: a media blob's `full` is the video/audio itself, so it is never
+   * fetched as an image. Null while no level is resident — the caller draws
+   * a card instead of a blank placeholder.
+   */
+  poster(node: SpriteNode, level: string): Texture | null {
+    return this.resolve(node.blobHash, level === 'full' ? 'medium' : level, false);
+  }
+
+  private resolve(hash: string, level: string, allowFull: boolean): Texture | null {
+    const wanted = allowFull && this.failed.has(`${hash}-${level}`) ? 'full' : level;
+    const key = `${hash}-${wanted}`;
     const existing = this.textures.get(key);
     if (existing) {
       existing.lastUsed = this.frame;
       return existing.texture;
     }
-    if (this.failed.has(key)) return this.nearestResident(node.blobHash, wanted);
-    if (!this.loading.has(key)) this.load(key, blobUrl(node.blobHash, wanted));
-    return this.nearestResident(node.blobHash, wanted);
+    if (!this.failed.has(key) && !this.loading.has(key)) this.load(key, blobUrl(hash, wanted));
+    return this.nearestResident(hash, wanted, allowFull);
   }
 
   /** The closest level of this blob already on the GPU (smaller first), or
-   *  a blank placeholder while nothing is. */
-  private nearestResident(hash: string, level: string): Texture {
+   *  null while nothing is. */
+  private nearestResident(hash: string, level: string, allowFull: boolean): Texture | null {
+    const levels = allowFull ? LEVELS : LEVELS.slice(0, -1);
     const index = LEVELS.indexOf(level as (typeof LEVELS)[number]);
-    const order = [...LEVELS.slice(0, index).reverse(), ...LEVELS.slice(index + 1)];
+    const order = [...levels.slice(0, index).reverse(), ...levels.slice(index + 1)];
     for (const candidate of order) {
       const entry = this.textures.get(`${hash}-${candidate}`);
       if (entry) {
@@ -75,7 +89,7 @@ export class PyramidTextureSource implements TextureSource {
         return entry.texture;
       }
     }
-    return Texture.WHITE;
+    return null;
   }
 
   private load(key: string, url: string): void {

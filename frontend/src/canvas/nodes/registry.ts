@@ -1,4 +1,5 @@
 import { MIN_SCREEN_SIZE_PX } from '@/components/interactionConstants';
+import { CardTextureSource } from './CardTextureSource';
 import { GifTextureSource } from './GifTextureSource';
 import type { NodeRenderer } from './NodeRenderer';
 import { NoteTextureSource } from './NoteTextureSource';
@@ -45,6 +46,27 @@ export const nodeKindRegistry = {
     },
     defaults: { freeTransform: false, minSize: MIN_SCREEN_SIZE_PX },
     capabilities: spriteCapabilities,
+  },
+  // Phase 11 kinds. Media draw their server-made poster through the image
+  // pyramid (clamped to `medium`) and fall back to a card until it exists;
+  // files are always cards. Cards carry text, so they don't mirror.
+  video: {
+    rendererFactory: () => new SpriteRenderer(),
+    textureSourceFactory: (deps: TextureSourceDeps) => new PyramidTextureSource(deps.onChange),
+    defaults: { freeTransform: false, minSize: MIN_SCREEN_SIZE_PX },
+    capabilities: spriteCapabilities,
+  },
+  audio: {
+    rendererFactory: () => new SpriteRenderer(),
+    textureSourceFactory: (deps: TextureSourceDeps) => new PyramidTextureSource(deps.onChange),
+    defaults: { freeTransform: false, minSize: MIN_SCREEN_SIZE_PX },
+    capabilities: { ...spriteCapabilities, flippable: false },
+  },
+  file: {
+    rendererFactory: () => new SpriteRenderer(),
+    textureSourceFactory: () => new CardTextureSource(),
+    defaults: { freeTransform: false, minSize: MIN_SCREEN_SIZE_PX },
+    capabilities: { ...spriteCapabilities, flippable: false },
   },
   note: {
     // Notes are sprites like images — same renderer, same z-order — whose
