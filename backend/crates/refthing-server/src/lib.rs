@@ -10,6 +10,7 @@ pub mod auth;
 pub mod dto;
 pub mod error;
 pub mod events;
+pub mod item_types;
 pub mod jobs;
 pub mod router;
 pub mod routes;
@@ -65,6 +66,7 @@ pub async fn run_with_shutdown(
 
     let jobs = JobQueue::new(pools.write.clone());
     jobs.register("pyramid", PyramidJob);
+    jobs.register("media_poster", jobs::media_poster::MediaPosterJob);
     let recovered = jobs.recover_running().await?;
     if recovered > 0 {
         tracing::warn!(recovered, "reset interrupted jobs to pending");

@@ -98,7 +98,7 @@ impl JobHandler for PyramidJob {
 /// applied (orientations 5–8 swap the axes, matching the pipeline's
 /// decode-then-orient). `DerivativeRecord`s only cover generated levels, so
 /// the `full` row's dimensions have to come from here.
-fn probe_dimensions(path: &Path) -> Result<(u32, u32), PipelineError> {
+pub(crate) fn probe_dimensions(path: &Path) -> Result<(u32, u32), PipelineError> {
     use image::ImageDecoder as _;
     use image::metadata::Orientation;
 
@@ -125,7 +125,7 @@ fn probe_dimensions(path: &Path) -> Result<(u32, u32), PipelineError> {
 /// `/blob` reads answer `X-Derivative: pending` instead of re-enqueueing.
 /// Dimensions are placeholders until the ready rows replace them (the columns
 /// are `NOT NULL`, hence the zeroes).
-async fn mark_pending(ctx: &JobContext, hash: &str) -> anyhow::Result<()> {
+pub(crate) async fn mark_pending(ctx: &JobContext, hash: &str) -> anyhow::Result<()> {
     for level in ALL_LEVELS {
         sqlx::query(
             "INSERT OR REPLACE INTO blob_derivatives \
@@ -163,7 +163,7 @@ async fn commit_metadata(ctx: &JobContext, item_id: &uuid::Uuid, meta: &ImageMet
 /// backfills `blobs.width`/`height` when the ingest sniffer left them NULL.
 ///
 /// Returns the ready level names for the `poster_ready` broadcast.
-async fn commit_ready(
+pub(crate) async fn commit_ready(
     ctx: &JobContext,
     payload: &PyramidPayload,
     full_dims: (u32, u32),
@@ -261,7 +261,7 @@ async fn insert_ready(
 
 /// Marks every derivative row `failed`. Best-effort: the job error is the
 /// authoritative failure signal, so a DB hiccup here is only logged.
-async fn mark_failed(ctx: &JobContext, hash: &str) {
+pub(crate) async fn mark_failed(ctx: &JobContext, hash: &str) {
     let result = sqlx::query("UPDATE blob_derivatives SET status = 'failed' WHERE blob_hash = ?")
         .bind(hash)
         .execute(&ctx.pools.write)
@@ -274,7 +274,7 @@ async fn mark_failed(ctx: &JobContext, hash: &str) {
 /// Hot-swap notification for open boards. The item may have been deleted
 /// between ingest and job completion — then there is no room to notify and
 /// the broadcast is skipped.
-async fn broadcast_ready(ctx: &JobContext, payload: &PyramidPayload, levels: &[String]) {
+pub(crate) async fn broadcast_ready(ctx: &JobContext, payload: &PyramidPayload, levels: &[String]) {
     let row: Option<(Uuid,)> = sqlx::query_as("SELECT board_id FROM items WHERE id = ?")
         .bind(payload.item_id)
         .fetch_optional(&ctx.pools.read)

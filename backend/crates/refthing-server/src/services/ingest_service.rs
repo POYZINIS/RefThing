@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::events::append_event;
+use crate::item_types;
 use crate::jobs::pyramid::PyramidPayload;
 use crate::services::item_service::{
     broadcast_gap, create_event_ops, json_codec_error, next_z_index, to_dto,
@@ -33,9 +34,6 @@ use crate::state::AppState;
 
 /// Files without a `meta` position cascade down-right from the origin.
 const CASCADE_STEP: f64 = 24.0;
-/// Placeholder edge until the Phase 3 pyramid pipeline measures real
-/// dimensions (`infer` sniffs no sizes, so `BlobRef::width/height` are `None`).
-const DEFAULT_EDGE: f64 = 256.0;
 
 /// Optional per-file placement from the `meta` part: `{x, y}`, either axis
 /// independently optional (the missing axis cascades).
@@ -140,6 +138,14 @@ async fn commit_file(
     x: f64,
     y: f64,
 ) -> AppResult<(i64, IngestedItem)> {
+    // Route by sniffed MIME (Phase 11 item type handlers). Probing reads the
+    // stored file's header (or ffprobe for media) BEFORE the transaction, so
+    // the item is placed at its true proportions — `infer` sniffs no sizes,
+    // and a fixed placeholder squashed every non-square image into a square.
+    let handler = item_types::handler_for(&blob.mime);
+    let probe = handler.probe(&state.blob_store.path(&blob.hash)).await;
+    let (width, height) = handler.placement(probe.as_ref());
+
     let mut tx = state.pools.write.begin().await?;
 
     let byte_size = i64::try_from(blob.byte_size)
@@ -153,14 +159,12 @@ async fn commit_file(
     .bind(filename.as_deref())
     .bind(&blob.mime)
     .bind(byte_size)
-    .bind(blob.width.map(i64::from))
-    .bind(blob.height.map(i64::from))
+    .bind(probe.as_ref().map(|probe| i64::from(probe.width)))
+    .bind(probe.as_ref().map(|probe| i64::from(probe.height)))
     .execute(&mut *tx)
     .await?;
     let dedup = inserted.rows_affected() == 0;
 
-    let width = blob.width.map_or(DEFAULT_EDGE, f64::from);
-    let height = blob.height.map_or(DEFAULT_EDGE, f64::from);
     let z_index = next_z_index(&mut tx, board_id).await?;
     let item_id = Uuid::now_v7();
     let row = sqlx::query_as::<_, CoreItem>(
@@ -170,7 +174,7 @@ async fn commit_file(
     )
     .bind(item_id)
     .bind(board_id)
-    .bind(item_type_for(&blob.mime))
+    .bind(handler.item_type())
     .bind(&blob.hash)
     .bind(x)
     .bind(y)
@@ -180,23 +184,37 @@ async fn commit_file(
     .fetch_one(&mut *tx)
     .await?;
 
-    let item = to_dto(row, json!({}));
+    // Type metadata (e.g. media duration) rides in item_metadata.
+    let metadata = probe.map_or_else(|| json!({}), |probe| probe.metadata);
+    if metadata
+        .as_object()
+        .is_some_and(|fields| !fields.is_empty())
+    {
+        sqlx::query("INSERT INTO item_metadata (item_id, json) VALUES (?, ?)")
+            .bind(item_id)
+            .bind(metadata.to_string())
+            .execute(&mut *tx)
+            .await?;
+    }
+    let item = to_dto(row, metadata);
     let ops = create_event_ops(&item)?;
     let seq = append_event(&mut tx, board_id, None, &ops).await?;
 
-    let payload = PyramidPayload {
-        blob_hash: blob.hash.clone(),
-        mime: blob.mime.clone(),
-        item_id,
-    };
-    state
-        .jobs
-        .enqueue_tx(
-            &mut tx,
-            "pyramid",
-            serde_json::to_value(&payload).map_err(json_codec_error)?,
-        )
-        .await?;
+    if let Some(job) = handler.poster_job() {
+        let payload = PyramidPayload {
+            blob_hash: blob.hash.clone(),
+            mime: blob.mime.clone(),
+            item_id,
+        };
+        state
+            .jobs
+            .enqueue_tx(
+                &mut tx,
+                job,
+                serde_json::to_value(&payload).map_err(json_codec_error)?,
+            )
+            .await?;
+    }
 
     tx.commit().await?;
     broadcast_gap(state, board_id, seq);
@@ -213,20 +231,6 @@ async fn commit_file(
             poster: "pending",
         },
     ))
-}
-
-/// Coarse item type from the sniffed MIME; unknown types land as `file` and
-/// get the generic-file poster (see `docs/data-model.md`).
-fn item_type_for(mime: &str) -> &'static str {
-    if mime.starts_with("image/") {
-        "image"
-    } else if mime.starts_with("video/") {
-        "video"
-    } else if mime.starts_with("audio/") {
-        "audio"
-    } else {
-        "file"
-    }
 }
 
 /// Maps a multipart failure onto the error enum, preserving axum's 413.

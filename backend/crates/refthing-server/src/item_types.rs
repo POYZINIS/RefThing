@@ -1,0 +1,252 @@
+//! Item type handlers (plan Phase 11, docs/onboarding-new-item-type.md).
+//!
+//! Every ingested file is routed by its sniffed MIME to exactly one handler,
+//! which decides the item `type`, reads the intrinsic size (so the item is
+//! placed at its true proportions) plus type metadata, and names the job that
+//! makes its poster. Adding a type = one handler here + one frontend renderer;
+//! nothing in the engine, schema or sync protocol changes.
+
+use std::path::Path;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use serde_json::{Value, json};
+
+/// Longest edge a new item is placed at, in world px. Images keep their
+/// native size below this; larger ones scale down, proportions preserved.
+pub const MAX_PLACED_EDGE: f64 = 1600.0;
+
+/// What a handler learned about a file at ingest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Probe {
+    /// Intrinsic pixel size (a media frame's, for video).
+    pub width: u32,
+    pub height: u32,
+    /// Type metadata merged into `item_metadata` (e.g. `duration`).
+    pub metadata: Value,
+}
+
+#[async_trait]
+pub trait ItemTypeHandler: Send + Sync {
+    /// The `items.type` this handler owns.
+    fn item_type(&self) -> &'static str;
+    /// Whether this handler takes a sniffed MIME type.
+    fn accepts(&self, mime: &str) -> bool;
+    /// Fast intrinsic probe of the stored file (header / ffprobe), or `None`
+    /// when it can't be read.
+    async fn probe(&self, path: &Path) -> Option<Probe>;
+    /// The placement size for a probe (world px).
+    fn placement(&self, probe: Option<&Probe>) -> (f64, f64);
+    /// Job kind that generates the poster derivatives, if any.
+    fn poster_job(&self) -> Option<&'static str>;
+}
+
+/// Fit a pixel size under [`MAX_PLACED_EDGE`], keeping proportions.
+fn fit(width: u32, height: u32) -> (f64, f64) {
+    let (w, h) = (f64::from(width.max(1)), f64::from(height.max(1)));
+    let scale = (MAX_PLACED_EDGE / w.max(h)).min(1.0);
+    (w * scale, h * scale)
+}
+
+pub struct ImageHandler;
+pub struct VideoHandler;
+pub struct AudioHandler;
+/// Catch-all: any file lands on the board as a card (poster drawn by the
+/// client) and stays downloadable.
+pub struct FileHandler;
+
+#[async_trait]
+impl ItemTypeHandler for ImageHandler {
+    fn item_type(&self) -> &'static str {
+        "image"
+    }
+    fn accepts(&self, mime: &str) -> bool {
+        mime.starts_with("image/")
+    }
+    async fn probe(&self, path: &Path) -> Option<Probe> {
+        let path = path.to_path_buf();
+        let (width, height) =
+            tokio::task::spawn_blocking(move || crate::jobs::pyramid::probe_dimensions(&path).ok())
+                .await
+                .ok()??;
+        Some(Probe {
+            width,
+            height,
+            metadata: json!({}),
+        })
+    }
+    fn placement(&self, probe: Option<&Probe>) -> (f64, f64) {
+        probe.map_or((256.0, 256.0), |probe| fit(probe.width, probe.height))
+    }
+    fn poster_job(&self) -> Option<&'static str> {
+        Some("pyramid")
+    }
+}
+
+#[async_trait]
+impl ItemTypeHandler for VideoHandler {
+    fn item_type(&self) -> &'static str {
+        "video"
+    }
+    fn accepts(&self, mime: &str) -> bool {
+        mime.starts_with("video/")
+    }
+    async fn probe(&self, path: &Path) -> Option<Probe> {
+        let info = ffprobe(path).await?;
+        let stream = info["streams"]
+            .as_array()?
+            .iter()
+            .find(|stream| stream["width"].is_u64())?;
+        let width = u32::try_from(stream["width"].as_u64()?).ok()?;
+        let height = u32::try_from(stream["height"].as_u64()?).ok()?;
+        Some(Probe {
+            width,
+            height,
+            metadata: duration_of(&info),
+        })
+    }
+    fn placement(&self, probe: Option<&Probe>) -> (f64, f64) {
+        probe.map_or((480.0, 270.0), |probe| fit(probe.width, probe.height))
+    }
+    fn poster_job(&self) -> Option<&'static str> {
+        Some("media_poster")
+    }
+}
+
+#[async_trait]
+impl ItemTypeHandler for AudioHandler {
+    fn item_type(&self) -> &'static str {
+        "audio"
+    }
+    fn accepts(&self, mime: &str) -> bool {
+        mime.starts_with("audio/")
+    }
+    async fn probe(&self, path: &Path) -> Option<Probe> {
+        let info = ffprobe(path).await?;
+        // A waveform strip: the poster job renders it at this shape.
+        Some(Probe {
+            width: 1600,
+            height: 400,
+            metadata: duration_of(&info),
+        })
+    }
+    fn placement(&self, _probe: Option<&Probe>) -> (f64, f64) {
+        (480.0, 120.0)
+    }
+    fn poster_job(&self) -> Option<&'static str> {
+        Some("media_poster")
+    }
+}
+
+#[async_trait]
+impl ItemTypeHandler for FileHandler {
+    fn item_type(&self) -> &'static str {
+        "file"
+    }
+    fn accepts(&self, _mime: &str) -> bool {
+        true
+    }
+    async fn probe(&self, _path: &Path) -> Option<Probe> {
+        None
+    }
+    fn placement(&self, _probe: Option<&Probe>) -> (f64, f64) {
+        (200.0, 240.0)
+    }
+    fn poster_job(&self) -> Option<&'static str> {
+        None
+    }
+}
+
+/// Registry, most specific first; [`FileHandler`] catches everything else.
+static HANDLERS: [&dyn ItemTypeHandler; 4] =
+    [&ImageHandler, &VideoHandler, &AudioHandler, &FileHandler];
+
+/// The handler for a sniffed MIME type (always one: files are the fallback).
+#[must_use]
+pub fn handler_for(mime: &str) -> &'static dyn ItemTypeHandler {
+    HANDLERS
+        .iter()
+        .copied()
+        .find(|handler| handler.accepts(mime))
+        .unwrap_or(&FileHandler)
+}
+
+// ------------------------------------------------------------------ ffmpeg
+
+/// The ffmpeg tool binary: `REFTHING_FFMPEG` / `REFTHING_FFPROBE`, else the
+/// name on PATH. Media posters are best-effort: without ffmpeg, items still
+/// ingest and the client draws a card poster.
+#[must_use]
+pub fn tool(name: &str) -> String {
+    let key = format!("REFTHING_{}", name.to_ascii_uppercase());
+    std::env::var(key).unwrap_or_else(|_| name.to_string())
+}
+
+async fn ffprobe(path: &Path) -> Option<Value> {
+    let output = tokio::time::timeout(
+        Duration::from_secs(15),
+        tokio::process::Command::new(tool("ffprobe"))
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=width,height:format=duration",
+            ])
+            .args(["-of", "json"])
+            .arg(path)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&output.stdout).ok()
+}
+
+fn duration_of(info: &Value) -> Value {
+    info["format"]["duration"]
+        .as_str()
+        .and_then(|seconds| seconds.parse::<f64>().ok())
+        .map_or_else(|| json!({}), |duration| json!({ "duration": duration }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routes_by_mime_with_files_as_the_fallback() {
+        assert_eq!(handler_for("image/png").item_type(), "image");
+        assert_eq!(handler_for("video/mp4").item_type(), "video");
+        assert_eq!(handler_for("audio/mpeg").item_type(), "audio");
+        assert_eq!(handler_for("application/zip").item_type(), "file");
+        assert_eq!(handler_for("application/octet-stream").poster_job(), None);
+        assert_eq!(handler_for("image/gif").poster_job(), Some("pyramid"));
+        assert_eq!(handler_for("video/webm").poster_job(), Some("media_poster"));
+    }
+
+    #[test]
+    fn placement_keeps_proportions_and_caps_the_long_edge() {
+        let probe = |width, height| Probe {
+            width,
+            height,
+            metadata: json!({}),
+        };
+        assert_eq!(
+            ImageHandler.placement(Some(&probe(400, 100))),
+            (400.0, 100.0)
+        );
+        assert_eq!(
+            ImageHandler.placement(Some(&probe(3200, 1600))),
+            (1600.0, 800.0)
+        );
+        assert_eq!(ImageHandler.placement(None), (256.0, 256.0));
+        assert_eq!(
+            VideoHandler.placement(Some(&probe(1920, 1080))),
+            (1600.0, 900.0)
+        );
+    }
+}

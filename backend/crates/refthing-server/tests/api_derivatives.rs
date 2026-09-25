@@ -160,29 +160,6 @@ async fn wait_for_derivatives(app: &TestApp, hash: &str) -> Vec<(String, String)
     panic!("derivatives for {hash} never became ready");
 }
 
-/// Waits until the pyramid job for `hash` is `done` (or leaves it failed).
-async fn wait_for_job(app: &TestApp, hash: &str) -> String {
-    for _ in 0..POLL_ATTEMPTS {
-        let row = sqlx::query(
-            "SELECT status FROM jobs WHERE kind = 'pyramid' \
-             AND json_extract(payload_json, '$.blob_hash') = ? \
-             ORDER BY id DESC LIMIT 1",
-        )
-        .bind(hash)
-        .fetch_optional(&app.state.pools.read)
-        .await
-        .expect("job row");
-        if let Some(row) = row {
-            let status: String = row.try_get("status").expect("status");
-            if status == "done" || status == "failed" {
-                return status;
-            }
-        }
-        tokio::time::sleep(POLL_INTERVAL).await;
-    }
-    panic!("pyramid job for {hash} never finished");
-}
-
 async fn count_pyramid_jobs(app: &TestApp, hash: &str) -> i64 {
     let (count,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM jobs WHERE kind = 'pyramid' \
@@ -595,7 +572,9 @@ async fn non_image_ingest_drains_without_derivatives() {
         .to_string();
     assert_eq!(body["items"][0]["mime_type"], "application/octet-stream");
 
-    assert_eq!(wait_for_job(&app, &hash).await, "done");
+    // Generic files are routed to the file handler, which has no poster job
+    // (the client draws a card), so nothing is even enqueued.
+    assert_eq!(count_pyramid_jobs(&app, &hash).await, 0);
     let (count,): (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM blob_derivatives WHERE blob_hash = ?")
             .bind(&hash)

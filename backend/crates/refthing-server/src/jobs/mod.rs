@@ -13,6 +13,7 @@
 //!
 //! All SQL is runtime (`sqlx::query`) to keep the `.sqlx` cache stable.
 
+pub mod media_poster;
 pub mod pyramid;
 
 pub use pyramid::{PyramidJob, PyramidPayload};
