@@ -12,7 +12,9 @@ RECONCILIATION NOTES (2026-09-24)
    frontend/tests/gesture-paths.mjs and shared by the unit suite
    (frontend/tests/*.test.mjs, `npm test`) and the browser suite
    (frontend/e2e/*.e2e.mjs, `npm run test:e2e`, Playwright driving real
-   PointerEvents through CDP; needs the dev stack running).
+   PointerEvents through CDP). The browser suite boots its own isolated
+   stack (e2e/stack.mjs: temp data dir, ports 7191/5191) so it can never
+   write into a real board database.
 2. Edge zones (Section 1 SINE-WAVE, "never affect the perpendicular
    axis") apply to STRETCH mode only (images with Shift, notes without).
    In proportional mode the perpendicular axis follows the aspect ratio

@@ -9,13 +9,14 @@
  * - Assertions read `window.__refthing` (dev-only hook in App.tsx), which
  *   exposes the model next to where Pixi actually PAINTED each node.
  *
- * Needs the dev stack running (`npm run dev`, ideally with REFTHING_DATA_DIR
- * pointed at a scratch directory). BASE_URL overrides http://localhost:5173.
+ * `npm run test:e2e` boots its own isolated stack (e2e/stack.mjs: temp data
+ * dir, ports 7191/5191), so tests never see real boards.
  */
 import { deflateSync } from 'node:zlib';
 import { chromium } from 'playwright';
 
-export const BASE_URL = process.env.BASE_URL ?? 'http://localhost:5173';
+// Set by e2e/stack.mjs (isolated stack) — or by you, to target a running one.
+export const BASE_URL = process.env.BASE_URL ?? 'http://localhost:5191';
 
 // ------------------------------------------------------------ fixtures --
 

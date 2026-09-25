@@ -15,7 +15,7 @@ product spec and `docs/architecture.md` for the module map.
 | Run desktop app (Tauri window) | `npm run dev:app` |
 | Build desktop app (installer) | `npm run build:app` |
 | Frontend unit tests (transform math, commands, history, filters) | `npm test` |
-| Browser gesture tests (needs `npm run dev` running; point `REFTHING_DATA_DIR` at a scratch dir) | `npm run test:e2e` |
+| Browser gesture tests (boots its own isolated stack on 7191/5191 with a temp data dir; set `BASE_URL` to target a running one) | `npm run test:e2e` |
 | Lint frontend (Biome) | `npm run lint` |
 | Format frontend (Biome) | `npm run fmt` |
 | Backend tests | `cargo test --manifest-path backend/Cargo.toml --workspace` |
