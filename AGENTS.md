@@ -9,6 +9,8 @@ product spec and `docs/architecture.md` for the module map.
 
 | Task | Command |
 |:-----|:--------|
+| **Start the desktop app** (double-click; rebuilds first if sources changed) | `RefThing.bat` |
+| **Start the Tauri dev window** (double-click; hot reload, repo `data/`) | `RefThing Dev.bat` |
 | Run frontend dev server | `npm run dev` |
 | Run desktop app (Tauri window) | `npm run dev:app` |
 | Build desktop app (installer) | `npm run build:app` |
