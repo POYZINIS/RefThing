@@ -272,7 +272,7 @@ export class BoardCanvas {
    * button is left to the contextmenu event.
    */
   chromePointerDown(event: PointerEvent): void {
-    if (event.button !== 1) return;
+    // The shell already resolved this press to `pan` via the bindings.
     this.capturePress(event);
     this.startPan();
   }
@@ -498,18 +498,15 @@ export class BoardCanvas {
   }
 
   private readonly onPointerDown = (event: PointerEvent): void => {
-    // Ignore right-click (context menu reserved for §14).
-    if (event.button === 2) return;
-
+    // The bindings table decides what this press means.
+    const action = this.controller.resolve(event);
+    if (action === null) return; // e.g. right button: the context menu
     this.capturePress(event);
-
-    // §0.4 MIDDLE-CLICK PAN: middle button always pans, even over items.
-    if (event.button === 1) {
+    if (action === 'pan') {
       this.startPan();
       return;
     }
-
-    this.controller.press(event);
+    this.controller.press(event, action);
   };
 
   // Native dblclick only — no hand-rolled timing (§7).

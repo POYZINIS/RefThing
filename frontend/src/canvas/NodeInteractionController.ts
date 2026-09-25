@@ -1,3 +1,4 @@
+import { gestureRoles, heldModifiers, type PressAction, resolvePress } from './bindings';
 import { isHeld } from './heldKeys';
 import { type BoardNode, type NodeChange, nodeChangeKind } from './nodes/types';
 import { type Guide, type Rect, SNAP_DISTANCE_PX, snapTranslate } from './transform';
@@ -81,10 +82,31 @@ export class NodeInteractionController {
     return this.dragging !== null;
   }
 
-  /** Canvas press: hit-test, then the same path as a DOM-forwarded press. */
-  press(event: PointerEvent): void {
+  /** What a canvas press means (bindings table), from what it lands on. */
+  resolve(event: PointerEvent): PressAction | null {
+    const node = this.hitTest(this.host.worldPoint(event.clientX, event.clientY));
+    return resolvePress(
+      event.button,
+      heldModifiers(event, isHeld('Space')),
+      node ? 'item' : 'empty',
+    );
+  }
+
+  /** Canvas press, already resolved to an action. */
+  press(event: PointerEvent, action: PressAction | null = this.resolve(event)): void {
     const point = this.host.worldPoint(event.clientX, event.clientY);
-    this.beginPress(this.hitTest(point), point, event);
+    const node = this.hitTest(point);
+    if (action === 'toggle_select' && node) {
+      // Toggles membership without disturbing the rest of the selection —
+      // and never starts a drag.
+      this.callbacks.onSelectionToggle?.(node.id);
+      return;
+    }
+    if (action === 'move_item' && node) {
+      this.beginPress(node, point, event);
+      return;
+    }
+    if (action === 'box_select' && !node) this.beginPress(null, point, event);
   }
 
   move(event: PointerEvent): void {
@@ -105,7 +127,7 @@ export class NodeInteractionController {
       const moving = this.moveSet(node);
       // Plan: Shift+Space + drag snaps the moving set to other nodes' edges
       // and centers (Shift pressed after the press — a Shift press toggles).
-      if (event.shiftKey && isHeld('Space')) {
+      if (gestureRoles(event, isHeld('Space')).snap) {
         const ids = new Set(moving.map((candidate) => candidate.id));
         const offsetX = node.x - originX;
         const offsetY = node.y - originY;
@@ -193,12 +215,6 @@ export class NodeInteractionController {
     point: { x: number; y: number },
     event: PointerEvent,
   ): void {
-    if (node && event.shiftKey) {
-      // Shift-click toggles membership without disturbing the rest of the
-      // selection — and never starts a drag.
-      this.callbacks.onSelectionToggle?.(node.id);
-      return;
-    }
     if (node) {
       // Select + drag node. Selecting happens on press, not release.
       this.callbacks.onSelectionChange?.(node.id);

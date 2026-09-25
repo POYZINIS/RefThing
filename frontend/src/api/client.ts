@@ -436,3 +436,12 @@ export class BoardSocket {
     this.socket.close();
   }
 }
+
+/** The user's `bindings.toml` override from the data folder, or null. */
+export async function fetchBindingsOverride(): Promise<string | null> {
+  const response = await fetch('/api/settings/bindings');
+  if (response.status === 204 || response.status === 404) return null;
+  if (!response.ok)
+    throw new ApiError(`${response.status} ${response.statusText}`, response.status, null);
+  return response.text();
+}

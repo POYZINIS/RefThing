@@ -105,3 +105,25 @@ async fn no_static_dir_still_404s_unknown_paths() {
     let response = reqwest::get(format!("{base}/anything")).await.expect("GET");
     assert_eq!(response.status(), 404);
 }
+
+/// The bindings override is read from the data folder on every request, so
+/// editing the file takes effect on the next app load; absent file = 204.
+#[tokio::test]
+async fn bindings_override_is_served_from_the_data_dir() {
+    let (base, dir) = spawn_app(None).await;
+    let url = format!("{base}/api/settings/bindings");
+    let none = reqwest::get(&url).await.expect("get");
+    assert_eq!(none.status(), 204);
+
+    std::fs::write(
+        dir.path().join("bindings.toml"),
+        "[keys.undo]\nkey = \"u\"\n",
+    )
+    .expect("write");
+    let some = reqwest::get(&url).await.expect("get");
+    assert_eq!(some.status(), 200);
+    assert_eq!(
+        some.text().await.expect("text"),
+        "[keys.undo]\nkey = \"u\"\n"
+    );
+}

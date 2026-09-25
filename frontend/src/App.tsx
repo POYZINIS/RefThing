@@ -4,6 +4,7 @@ import { BatchQueue } from '@/api/batchQueue';
 import {
   type BatchRequestOp,
   createSession,
+  fetchBindingsOverride,
   fetchHealth,
   type HealthStatus,
   type Item,
@@ -13,7 +14,7 @@ import {
 import { CLIENT_ID } from '@/api/clientId';
 import { BoardSync } from '@/api/ws';
 import { BoardCanvas, type ViewportState } from '@/canvas/BoardCanvas';
-import { keyboardAction } from '@/canvas/controls';
+import { applyBindingsOverride, bindings, resolveKey } from '@/canvas/bindings';
 import { screenToWorld } from '@/canvas/coordinates';
 import {
   itemFields,
@@ -285,6 +286,15 @@ function BoardApp() {
     () => renderedNotes.filter((note) => filteredNoteIds.has(note.id)),
     [renderedNotes, filteredNoteIds],
   );
+
+  // The control scheme is data: apply the user's bindings.toml (if any)
+  // over the defaults before any input arrives.
+  const [bindingsError, setBindingsError] = useState<string | null>(null);
+  useEffect(() => {
+    fetchBindingsOverride()
+      .then((toml) => setBindingsError(applyBindingsOverride(toml)))
+      .catch(() => undefined); // no override reachable: defaults stand
+  }, []);
 
   useEffect(() => {
     void createSession().then(() => loadBoards());
@@ -868,34 +878,45 @@ function BoardApp() {
   doubleClickRef.current = (nodeId) => {
     const canvas = boardCanvas.current;
     if (!canvas) return;
-    if (nodeId === null) {
+    const node = nodeId ? boardNodesById.get(nodeId) : undefined;
+    // What is under the pointer picks the action from the bindings table.
+    const target =
+      !nodeId || !node
+        ? 'empty'
+        : noteIds.has(nodeId)
+          ? 'note'
+          : node.groupId && node.groupId !== drillGroupId
+            ? 'group'
+            : 'item';
+    const action = bindings().doubleClick[target];
+    if (action === 'zoom_to_fit') {
       actions.zoomToFit();
       return;
     }
-    if (noteIds.has(nodeId)) {
+    if (!nodeId || !node) return;
+    if (action === 'enter_note_edit' && target === 'note') {
       setSelectedNodeIds([nodeId]);
       setNoteEditingId(nodeId);
       return;
     }
-    const node = boardNodesById.get(nodeId);
-    if (!node) return;
-    // §6 RULE 2: double-click on a group drills in and selects the child
-    // under the cursor (locked or not — drilling never alters the group).
-    if (node.groupId && node.groupId !== drillGroupId) {
+    // §6 RULE 2: drill in and select the child under the cursor (locked or
+    // not — drilling never alters the group).
+    if (action === 'drill_into_group' && node.groupId) {
       setDrillGroupId(node.groupId);
       setSelectedNodeIds([nodeId]);
       return;
     }
+    if (action !== 'zoom_to_item') return;
     if (zoomReturn.current?.nodeId === nodeId) {
       canvas.flyTo(zoomReturn.current.viewport);
       zoomReturn.current = null;
       return;
     }
     const { width, height } = canvas.size();
-    const target = fitViewport(node.rotatedBounds(), width, height, 24);
-    if (!target) return;
+    const camera = fitViewport(node.rotatedBounds(), width, height, 24);
+    if (!camera) return;
     zoomReturn.current = { nodeId, viewport: canvas.getViewport() };
-    canvas.flyTo(target);
+    canvas.flyTo(camera);
   };
 
   // Crop mode belongs to one selected image: any other selection ends it.
@@ -918,26 +939,22 @@ function BoardApp() {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target?.closest('input, textarea, [contenteditable="true"], dialog')) return;
-      const action = keyboardAction(event);
+      const action = resolveKey(event);
       if (!action) return;
       event.preventDefault();
       const run = actionsRef.current;
       switch (action) {
-        case 'nudgeLeft':
+        case 'nudge_left':
           return run.nudge(-1, 0, event.shiftKey);
-        case 'nudgeRight':
+        case 'nudge_right':
           return run.nudge(1, 0, event.shiftKey);
-        case 'nudgeUp':
+        case 'nudge_up':
           return run.nudge(0, -1, event.shiftKey);
-        case 'nudgeDown':
+        case 'nudge_down':
           return run.nudge(0, 1, event.shiftKey);
-        case 'escape':
-        case 'delete':
-        case 'undo':
-        case 'redo':
-        case 'selectAll':
-        case 'group':
-        case 'ungroup':
+        case 'select_all':
+          return run.selectAll();
+        default:
           return run[action]();
       }
     };
@@ -1446,6 +1463,11 @@ function BoardApp() {
         )}
         {loading && <div className="canvas-status">Syncing board…</div>}
         {error && <div className="error-banner">{error}</div>}
+        {bindingsError && (
+          <div className="error-banner">
+            bindings.toml ignored (using the defaults): {bindingsError}
+          </div>
+        )}
         {snapshot && (
           <div className="canvas-meta">
             {snapshot.items.length} items · seq {snapshot.seq}

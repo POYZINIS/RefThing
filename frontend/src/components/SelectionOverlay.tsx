@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ViewportState } from '@/canvas/BoardCanvas';
+import { gestureRoles, heldModifiers, resolvePress } from '@/canvas/bindings';
 import { screenToWorld } from '@/canvas/coordinates';
 import { isHeld } from '@/canvas/heldKeys';
 import { type BoardNode, type NodeChange, nodeChangeKind } from '@/canvas/nodes/types';
@@ -102,8 +103,14 @@ function selectionBox(nodes: BoardNode[]): Box | null {
 }
 
 /** Live modifiers: Shift+Space is snap-move (plan), plain Shift is axis lock. */
-function modifiersOf(event: { shiftKey: boolean; altKey: boolean }): Modifiers {
-  return { shift: event.shiftKey, alt: event.altKey, snap: event.shiftKey && isHeld('Space') };
+/** Live gesture roles from the bindings table (constrain / center / snap). */
+function modifiersOf(event: {
+  shiftKey: boolean;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+}): Modifiers {
+  return gestureRoles(event, isHeld('Space'));
 }
 
 function unionOf(rects: Rect[]): Rect {
@@ -210,38 +217,43 @@ export function SelectionOverlay({
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (editing || !box || active.current) return;
     const native = event.nativeEvent;
-    if (event.button !== 0) {
-      // Middle pans, right is the context menu — never a transform.
+    const zone = zoneAt(event.clientX, event.clientY);
+    // What this press means comes from the bindings table (canvas/bindings.ts),
+    // never from hard-coded buttons or modifiers.
+    const action =
+      zone === null
+        ? null
+        : resolvePress(
+            event.button,
+            heldModifiers(event, isHeld('Space')),
+            zone === 'body' ? 'selection' : 'handle',
+          );
+    if (action === 'pan') {
       onChromePress?.(native);
       return;
     }
-    const zone = zoneAt(event.clientX, event.clientY);
     if (zone === null) {
-      onOutsidePress?.(native);
+      if (event.button === 0) onOutsidePress?.(native);
       return;
     }
+    if (action === null) return; // e.g. the right button: the menu follows
     // Locked: no gesture at all — the click itself is handled on release.
     if (locked) {
       lockedPress.current = { x: event.clientX, y: event.clientY };
       return;
     }
     const pointer = worldAt(event.clientX, event.clientY);
-    const primary = event.ctrlKey || event.metaKey;
     let gesture: Gesture;
-    if (primary) {
-      // §3 ROTATION: Ctrl/Cmd + drag anywhere on the box, no handle.
+    if (action === 'rotate') {
+      // §3 ROTATION: anywhere on the box, no handle.
       gesture = beginRotate(box, pointer);
-    } else if (zone !== 'body') {
+    } else if (action === 'scale' && zone !== 'body') {
       gesture = beginResize(zone, box, pointer);
-    } else if (
-      event.altKey &&
-      event.shiftKey &&
-      nodes.every((node) => node.capabilities.flippable)
-    ) {
-      // §3 FLIP: Alt+Shift+drag anywhere on the body mirrors along the drag axis.
+    } else if (action === 'flip' && nodes.every((node) => node.capabilities.flippable)) {
+      // §3 FLIP: mirrors along the drag axis.
       gesture = beginFlip(box, pointer);
-    } else if (event.altKey && !event.shiftKey && nodes.length === 1 && !freeTransform) {
-      // §3 RESET ASPECT RATIO — Alt+click on the body only. Notes keep their
+    } else if (action === 'reset_aspect' && nodes.length === 1 && !freeTransform) {
+      // §3 RESET ASPECT RATIO — a click on the body only. Notes keep their
       // free aspect (sanctioned exception), so they have no square reset.
       gesture = beginAspectReset(box, pointer);
     } else {
@@ -298,7 +310,7 @@ export function SelectionOverlay({
         current.gesture,
         pointer,
         // Crop is always a free stretch from the opposite edge.
-        crop ? { shift: false, alt: false } : current.modifiers,
+        crop ? { constrain: false, center: false } : current.modifiers,
         vp.zoom,
         crop || current.freeTransform,
       );

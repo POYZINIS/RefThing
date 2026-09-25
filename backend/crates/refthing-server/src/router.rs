@@ -34,6 +34,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::views::router())
         .merge(routes::search::router())
         .merge(routes::snapshots::router())
+        .merge(routes::settings::router())
         .layer(CompressionLayer::new())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

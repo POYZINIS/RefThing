@@ -76,6 +76,8 @@ export async function globalSetup() {
   await waitFor(`http://127.0.0.1:${API_PORT}/api/health`, 'backend', 600_000);
   await waitFor(`http://localhost:${WEB_PORT}/`, 'vite', 120_000);
   process.env.BASE_URL = `http://localhost:${WEB_PORT}`;
+  // Tests that exercise data-folder files (bindings.toml) write here.
+  process.env.E2E_DATA_DIR = dataDir;
 }
 
 export async function globalTeardown() {

@@ -67,6 +67,9 @@ data/               local state (SQLite DB, uploads) — NEVER commit
   linking goes through the shim in `backend/target/`. Do not commit it,
   and note that `cargo clean` deletes the shim. See
   `docs/prerequisites.md` → "No-MSVC machines".
+- Input is data: every press / double-click / key / drag modifier resolves
+  through `canvas/bindings.ts` (defaults + optional `<data_dir>/bindings.toml`,
+  served at `GET /api/settings/bindings`). Never hard-code a button or key.
 - Items and notes share ONE `z_index` space (the canvas interleaves them).
   Item `metadata` updates are JSON merge patches — send only changed keys.
 - Browser tests must create their own boards; never clean up by deleting

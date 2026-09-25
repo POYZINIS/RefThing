@@ -12,8 +12,15 @@
 
 export type Point = { x: number; y: number };
 export type Box = { x: number; y: number; width: number; height: number; rotation: number };
-/** `snap`: Shift+Space held — snap-move to other nodes instead of axis lock. */
-export type Modifiers = { shift: boolean; alt: boolean; snap?: boolean };
+/**
+ * Gesture modifier ROLES, not keys — canvas/bindings.ts maps keys onto them
+ * (defaults: constrain = Shift, center = Alt, snap = Shift+Space).
+ * - constrain: flips aspect locking on resize, 45° snapping on rotate, axis
+ *   lock on move
+ * - center: scale from the center instead of the opposite edge/corner
+ * - snap: snap-move to other nodes' edges/centers (overrides axis lock)
+ */
+export type Modifiers = { constrain: boolean; center: boolean; snap?: boolean };
 
 export type CornerZone = 'top-left' | 'top-right' | 'bottom-right' | 'bottom-left';
 export type EdgeZone = 'top' | 'bottom' | 'left' | 'right';
@@ -240,7 +247,7 @@ function stepMove(
 ): BoxTransform {
   const dx = pointer.x - gesture.start.x;
   const dy = pointer.y - gesture.start.y;
-  if (!modifiers.shift || modifiers.alt || modifiers.snap) {
+  if (!modifiers.constrain || modifiers.center || modifiers.snap) {
     gesture.axis = null;
   } else if (gesture.axis === null) {
     // Lock on the larger delta once the pointer has left the click epsilon;
@@ -267,7 +274,7 @@ function stepResize(
   const local = toLocal(pointer, box);
   const handle = { x: local.x - gesture.grab.x, y: local.y - gesture.grab.y };
   // §3 anchor: the item's center with Alt, else the opposite edge/corner.
-  const fromCenter = modifiers.alt;
+  const fromCenter = modifiers.center;
   const anchor = fromCenter
     ? { x: 0, y: 0 }
     : { x: (-dir.x * box.width) / 2, y: (-dir.y * box.height) / 2 };
@@ -277,7 +284,7 @@ function stepResize(
   // dragged across its anchor mirrors placement to the other side.
   const extentX = (handle.x - anchor.x) * span;
   const extentY = (handle.y - anchor.y) * span;
-  const proportional = freeTransform ? modifiers.shift : !modifiers.shift;
+  const proportional = freeTransform ? modifiers.constrain : !modifiers.constrain;
 
   let width = box.width;
   let height = box.height;
@@ -346,7 +353,7 @@ function stepRotate(
   gesture.sweep += step / DEG;
   const raw = gesture.startRotation + gesture.sweep;
   // §3 Ctrl+Shift: snap the resulting angle to 45° increments.
-  const target = modifiers.shift ? Math.round(raw / 45) * 45 : raw;
+  const target = modifiers.constrain ? Math.round(raw / 45) * 45 : raw;
   return { kind: 'rotate', pivot: gesture.pivot, delta: target - gesture.startRotation };
 }
 

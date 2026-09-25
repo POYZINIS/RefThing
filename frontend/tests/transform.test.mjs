@@ -40,17 +40,17 @@ const ZONES = [
   'right',
 ];
 const MODIFIERS = [
-  { shift: false, alt: false },
-  { shift: true, alt: false },
-  { shift: false, alt: true },
-  { shift: true, alt: true },
+  { constrain: false, center: false },
+  { constrain: true, center: false },
+  { constrain: false, center: true },
+  { constrain: true, center: true },
 ];
 const direction = (zone) => ({
   x: zone.includes('left') ? -1 : zone.includes('right') ? 1 : 0,
   y: zone.includes('top') ? -1 : zone.includes('bottom') ? 1 : 0,
 });
 const label = (mods) =>
-  [mods.shift && 'Shift', mods.alt && 'Alt'].filter(Boolean).join('+') || 'none';
+  [mods.constrain && 'Shift', mods.center && 'Alt'].filter(Boolean).join('+') || 'none';
 
 // ---------------------------------------------------------------- MOVE --
 
@@ -72,7 +72,7 @@ for (const zoom of [0.25, 1, 4]) {
         loops: variant.loops,
       });
       for (const sample of path) {
-        const result = stepGesture(gesture, sample, { shift: false, alt: false }, zoom);
+        const result = stepGesture(gesture, sample, { constrain: false, center: false }, zoom);
         assert.equal(result.kind, 'translate');
         assert.ok(near(result.dx, sample.x - center.x), at(sample, `dx ${result.dx}`));
         assert.ok(near(result.dy, sample.y - center.y), at(sample, `dy ${result.dy}`));
@@ -95,7 +95,7 @@ test('move: Shift pressed mid-drag locks to the dominant axis, release frees it'
   const shiftTo = 60;
   for (const sample of path) {
     const shift = sample.index >= shiftFrom && sample.index < shiftTo;
-    const result = stepGesture(gesture, sample, { shift, alt: false }, 1);
+    const result = stepGesture(gesture, sample, { constrain: shift, center: false }, 1);
     if (shift) {
       assert.equal(result.dy, 0, at(sample, 'x-locked drag moved vertically'));
     } else {
@@ -129,8 +129,8 @@ function resizeCase({ zone, mods, frequency, rotation, freeTransform, zoom }) {
     frequency,
     durationMs: 1000,
   });
-  const proportional = freeTransform ? mods.shift : !mods.shift;
-  const anchorLocal = mods.alt
+  const proportional = freeTransform ? mods.constrain : !mods.constrain;
+  const anchorLocal = mods.center
     ? { x: 0, y: 0 }
     : { x: (-dir.x * box.width) / 2, y: (-dir.y * box.height) / 2 };
   const anchorWorld = toWorld(anchorLocal, box);
@@ -158,7 +158,7 @@ function resizeCase({ zone, mods, frequency, rotation, freeTransform, zoom }) {
       assert.equal(next[perpendicular], box[perpendicular], at(sample, `${perpendicular} changed`));
     }
     // The modifier-determined anchor never moves in world space.
-    const nextAnchorLocal = mods.alt
+    const nextAnchorLocal = mods.center
       ? { x: 0, y: 0 }
       : {
           x: (-dir.x * next.width) / 2,
@@ -227,7 +227,7 @@ test('resize: Shift toggled mid-gesture switches proportional ↔ stretch live',
   });
   for (const sample of path) {
     const shift = sample.index % 20 >= 10;
-    const { to } = stepGesture(gesture, sample, { shift, alt: false }, 1, false);
+    const { to } = stepGesture(gesture, sample, { constrain: shift, center: false }, 1, false);
     if (shift) assert.equal(to.height, 100, at(sample, 'Shift stretch changed height'));
     else assert.ok(near(to.width / to.height, 2), at(sample, 'proportional lost aspect'));
   }
@@ -263,7 +263,7 @@ test('resize: dragging through the 24px collapse size and back never sticks', ()
   let collapsedSomewhere = false;
   let last = null;
   for (const sample of [...shrink, ...grow]) {
-    const { to } = stepGesture(gesture, sample, { shift: true, alt: false }, 1, false);
+    const { to } = stepGesture(gesture, sample, { constrain: true, center: false }, 1, false);
     assert.ok(Number.isFinite(to.width) && to.width > 0, at(sample, `bad width ${to.width}`));
     if (zonesCollapsed(to, 1, 24)) collapsedSomewhere = true;
     last = to;
@@ -291,7 +291,7 @@ for (const sweep of [90, 180, 270, 360, 720]) {
       const gesture = beginRotate(rotateBox, { x: pivot.x + 150, y: pivot.y });
       let previous = 0;
       for (const sample of path) {
-        const result = stepGesture(gesture, sample, { shift: false, alt: false }, 1);
+        const result = stepGesture(gesture, sample, { constrain: false, center: false }, 1);
         assert.ok(
           near(result.delta, sample.angle, 1e-6),
           at(sample, `delta ${result.delta} != ${sample.angle}`),
@@ -316,7 +316,7 @@ test('rotate: Ctrl+Shift snaps exactly at every 45° crossing of a 360° sweep',
   const gesture = beginRotate(rotateBox, { x: pivot.x + 150, y: pivot.y });
   let checked = 0;
   for (const sample of path) {
-    const result = stepGesture(gesture, sample, { shift: true, alt: false }, 1);
+    const result = stepGesture(gesture, sample, { constrain: true, center: false }, 1);
     assert.ok(
       near(result.delta % 45, 0, 1e-9) || near(Math.abs(result.delta % 45), 45, 1e-9),
       at(sample, 'off-grid'),
@@ -343,7 +343,7 @@ test('rotate: +180° then -180° in one held gesture tracks the reversal live', 
   });
   const gesture = beginRotate(rotateBox, { x: pivot.x + 150, y: pivot.y });
   for (const sample of path) {
-    const result = stepGesture(gesture, sample, { shift: false, alt: false }, 1);
+    const result = stepGesture(gesture, sample, { constrain: false, center: false }, 1);
     assert.ok(
       near(result.delta, sample.angle, 1e-6),
       at(sample, `delta ${result.delta} != ${sample.angle}`),
@@ -356,7 +356,7 @@ test('rotate: a lone node spins in place (pivot = its own center)', () => {
   const result = stepGesture(
     gesture,
     { x: pivot.x, y: pivot.y + 150 },
-    { shift: false, alt: false },
+    { constrain: false, center: false },
     1,
   );
   const patch = applyToNode(result, rotateBox);
@@ -413,7 +413,7 @@ test('multi-select rotate turns every member about the shared pivot', () => {
   const a = { x: 0, y: 0, width: 10, height: 10, rotation: 0 };
   const selection = { x: 0, y: 0, width: 110, height: 10, rotation: 0 };
   const gesture = beginRotate(selection, { x: 155, y: 5 });
-  const result = stepGesture(gesture, { x: 55, y: 105 }, { shift: false, alt: false }, 1);
+  const result = stepGesture(gesture, { x: 55, y: 105 }, { constrain: false, center: false }, 1);
   const patch = applyToNode(result, a);
   assert.ok(near(patch.rotation, 90));
   assert.ok(near(patch.x + 5, 55) && near(patch.y + 5, -45), JSON.stringify(patch));
@@ -444,11 +444,11 @@ test('local/world frame round-trips for rotated boxes', () => {
 test('flip: Alt+Shift drag waits for the click epsilon, then locks the drag axis', () => {
   const box = { x: 0, y: 0, width: 200, height: 100, rotation: 0 };
   const gesture = beginFlip(box, { x: 100, y: 50 });
-  assert.equal(stepGesture(gesture, { x: 101, y: 51 }, { shift: true, alt: true }, 1), null);
-  const flip = stepGesture(gesture, { x: 140, y: 60 }, { shift: true, alt: true }, 1);
+  assert.equal(stepGesture(gesture, { x: 101, y: 51 }, { constrain: true, center: true }, 1), null);
+  const flip = stepGesture(gesture, { x: 140, y: 60 }, { constrain: true, center: true }, 1);
   assert.deepEqual([flip.kind, flip.axis], ['flip', 'x']);
   // Once locked, a later vertical swing does not change the axis.
-  const later = stepGesture(gesture, { x: 100, y: 300 }, { shift: true, alt: true }, 1);
+  const later = stepGesture(gesture, { x: 100, y: 300 }, { constrain: true, center: true }, 1);
   assert.equal(later.axis, 'x');
 });
 
@@ -539,7 +539,7 @@ test('crop: rotated frames trim along their own axes', () => {
   const from = { x: 0, y: 0, width: 200, height: 100, rotation: 90 };
   const gesture = beginResize('bottom', from, toWorld({ x: 0, y: 50 }, from));
   const target = toWorld({ x: 0, y: 25 }, from); // bottom edge up by 25 (local)
-  const resized = stepGesture(gesture, target, { shift: true, alt: false }, 1, false).to;
+  const resized = stepGesture(gesture, target, { constrain: true, center: false }, 1, false).to;
   const { box, crop } = recrop(from, FULL_CROP, { x: false, y: false }, resized);
   assert.ok(near(crop.h, 0.75) && near(crop.y, 0) && near(crop.w, 1), JSON.stringify(crop));
   // The top edge (anchor) did not move in world space.

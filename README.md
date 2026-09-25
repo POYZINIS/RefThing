@@ -34,6 +34,25 @@ Both refuse to start while another RefThing (or `npm run dev`) holds port
 7171. Each full build also writes an installer to
 `src-tauri/target/release/bundle/nsis/`.
 
+## Rebinding controls
+
+Every mouse press, double-click, key and drag modifier comes from one
+bindings table (defaults: `DEFAULT_BINDINGS_TOML` in
+`frontend/src/canvas/bindings.ts`). To change any of them, put a
+`bindings.toml` in the data folder (`%APPDATA%\com.refthing.app` for the
+desktop app, `data/` in dev) with just the entries you want to change, e.g.
+
+```toml
+[keys.undo]
+key = "u"
+
+[gesture]
+constrain = ["alt"]   # Alt now locks aspect / snaps rotation / locks the move axis
+```
+
+It is read when the app starts; an invalid file is ignored (the defaults
+stay) and a banner shows the parse error.
+
 ## Useful scripts
 
 | Command             | What it does                                    |
