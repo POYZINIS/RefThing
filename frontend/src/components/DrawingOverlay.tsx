@@ -68,7 +68,7 @@ export function DrawingOverlay({
             )
             .join(' ')}
           fill="none"
-          stroke="#d6ff76"
+          style={{ stroke: 'var(--color-accent)' }}
           strokeLinecap="round"
           strokeLinejoin="round"
           strokeWidth={3}

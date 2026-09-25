@@ -543,7 +543,7 @@ export function SelectionOverlay({
             width: CORNER_HANDLE_PX,
             height: CORNER_HANDLE_PX,
             background: ACCENT,
-            border: '1.5px solid #101419',
+            border: '1.5px solid var(--color-sunken)',
             boxSizing: 'border-box',
             ...(shownZone.includes('top') ? { top: -handle } : { bottom: -handle }),
             ...(shownZone.includes('left') ? { left: -handle } : { right: -handle }),

@@ -5,6 +5,7 @@ import {
   restoreSnapshot,
   type SavedSnapshot,
 } from '@/api/snapshots';
+import { enter } from '@/ui/motion';
 
 export function SnapshotManager({
   boardId,
@@ -23,6 +24,7 @@ export function SnapshotManager({
   const [confirm, setConfirm] = useState<number | null>(null);
   useEffect(() => {
     dialog.current?.showModal();
+    enter(dialog.current, 'rise');
     let current = true;
     void listSnapshots(boardId)
       .then((rows) => {

@@ -16,8 +16,8 @@ export const ACTIVE_EDGE_OUTLINE_PX = 2.5;
 /** Minimum on-screen item size (either dimension) before the 8 transform
  * zones collapse to move/rotate-only (§2 minimum size collapse). */
 export const MIN_SCREEN_SIZE_PX = 24;
-/** Selection/hover accent color. */
-export const ACCENT = '#d6ff76';
+/** Selection/hover accent colour — the design token (index.css @theme). */
+export const ACCENT = 'var(--color-accent)';
 /** §5 custom rotate cursor: a circular arrow, hotspot at its center. */
 const ROTATE_CURSOR_SVG =
   "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'>" +

@@ -9,6 +9,7 @@ import { type NoteTextureSource, noteTextureScale } from './nodes/NoteTextureSou
 import { type PyramidTextureSource, pyramidLevel } from './nodes/PyramidTextureSource';
 import { nodeKindRegistry } from './nodes/registry';
 import type { CanvasNode, NodeChange } from './nodes/types';
+import { themeColor } from './theme';
 import type { Guide, Rect } from './transform';
 
 export type ViewportState = { x: number; y: number; zoom: number };
@@ -116,7 +117,7 @@ export class BoardCanvas {
 
   async mount(host: HTMLElement): Promise<void> {
     await this.app.init({
-      background: '#111318',
+      background: themeColor('--color-canvas', '#0d1014'),
       resizeTo: host,
       antialias: true,
       resolution: window.devicePixelRatio,
@@ -616,8 +617,9 @@ export class BoardCanvas {
     this.boxSelectGraphic.clear();
     if (w > 0 && h > 0) {
       this.boxSelectGraphic.rect(x, y, w, h);
-      this.boxSelectGraphic.fill({ color: 0xd6ff76, alpha: 0.15 });
-      this.boxSelectGraphic.stroke({ color: 0xd6ff76, alpha: 0.6, width: 1 });
+      const accent = themeColor('--color-accent', '#d6ff76');
+      this.boxSelectGraphic.fill({ color: accent, alpha: 0.15 });
+      this.boxSelectGraphic.stroke({ color: accent, alpha: 0.6, width: 1 });
     }
   }
 

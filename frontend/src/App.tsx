@@ -53,6 +53,7 @@ import {
 } from '@/state/commands';
 import { type HistoryEntry, prepareCommand } from '@/state/history';
 import { useBoardFilter } from '@/state/useBoardFilter';
+import { enter } from '@/ui/motion';
 
 type HealthState =
   | { kind: 'loading' }
@@ -1554,9 +1555,13 @@ function BoardApp() {
           </div>
         )}
         {loading && <div className="canvas-status">Syncing board…</div>}
-        {error && <div className="error-banner">{error}</div>}
+        {error && (
+          <div className="error-banner" ref={(element) => enter(element, 'rise')}>
+            {error}
+          </div>
+        )}
         {bindingsError && (
-          <div className="error-banner">
+          <div className="error-banner" ref={(element) => enter(element, 'rise')}>
             bindings.toml ignored (using the defaults): {bindingsError}
           </div>
         )}

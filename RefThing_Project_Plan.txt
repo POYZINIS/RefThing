@@ -362,13 +362,23 @@ Deferred [NEEDS SIGN-OFF]:
   Pixi paints; a worker-owned canvas reintroduces a frame of lag between
   them. Revisit only if a measured workload needs it.
 
-PHASE 10 — POLISH                                          [NOT STARTED]
+PHASE 10 — POLISH                                     [PARTIAL 3/4]
 --------------------------------------------------------------------
-1. anime.js-driven UI chrome transitions.
-2. Tailwind design system pass.
-3. Keyboard shortcuts matching PureRef muscle memory.
-4. Best-effort .pur importer for PureRef 1.x (2.x format is closed —
-   stretch goal, not v1).
+Done:
+1. anime.js UI-chrome transitions (ui/motion.ts): context menu, snapshot
+   dialog, banners — chrome only, never the board; off under
+   prefers-reduced-motion.
+2. Tailwind design-system pass: one token set in index.css @theme
+   (surfaces, lines, text, accent, status, radii) used by all chrome CSS,
+   inline styles and Pixi (canvas/theme.ts); no stray hex colours.
+3. Keyboard: the full plan table, Ctrl/Cmd+C / X / V for board items
+   (cursor-centred, cross-board), Z + drag zoom — and every binding is
+   user-remappable via bindings.toml. [NEEDS SIGN-OFF] exact PureRef
+   default keys could not be verified offline; any mismatch is a one-line
+   bindings.toml change.
+Remaining:
+4. Best-effort .pur importer for PureRef 1.x — needs real .pur sample files
+   to reverse-engineer against (2.x format is closed — stretch, not v1).
 
 PHASE 11 — EXTENSIBILITY: MULTI-FORMAT ITEM TYPES          [NOT STARTED]
 --------------------------------------------------------------------

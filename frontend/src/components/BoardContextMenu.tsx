@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { enter } from '@/ui/motion';
 
 type Choice = {
   label: string;
@@ -38,6 +39,7 @@ export function BoardContextMenu({
       y: Math.max(8, Math.min(position.y, window.innerHeight - rect.height - 8)),
     });
     menu.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+    enter(menu.current, 'pop');
   }, [position]);
   useEffect(() => {
     const closeOutside = (event: PointerEvent) => {
