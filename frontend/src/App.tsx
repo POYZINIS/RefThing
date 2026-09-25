@@ -43,7 +43,6 @@ import {
   groupStyleOps,
   lockOps,
   restackOps,
-  selectedGroupIds,
   toggleTagOps,
   topZ,
   ungroupOps,
@@ -272,10 +271,9 @@ function BoardApp() {
   const filtered = useBoardFilter(snapshot, filter);
   const renderedItems = useMemo(
     () =>
-      filtered.items.map((item) => {
-        const preview = previewPatches[item.id];
-        return itemWithPatch(item, preview);
-      }),
+      Object.keys(previewPatches).length === 0
+        ? filtered.items
+        : filtered.items.map((item) => itemWithPatch(item, previewPatches[item.id])),
     [filtered.items, previewPatches],
   );
   const filteredNoteIds = useMemo(
@@ -478,28 +476,27 @@ function BoardApp() {
   // Item nodes are built once per snapshot; a live preview (drag, resize)
   // rebuilds only the previewed nodes — rebuilding all 20k per pointermove
   // dropped frames on big boards.
-  const baseItemNodes = useMemo(
-    () =>
-      new Map(
-        (snapshotItems ?? [])
-          .filter(
-            (item): item is Item & { blob_hash: string } =>
-              item.type === 'image' && !!item.blob_hash,
-          )
-          .map((item) => [
-            item.id,
-            {
-              item,
-              node: itemToNode(
-                item,
-                gifHashes.has(item.blob_hash),
-                item.group_id !== null && lockedGroupIds.has(item.group_id),
-              ),
-            },
-          ]),
-      ),
-    [snapshotItems, gifHashes, lockedGroupIds],
+  // Nodes are cached per item object: applyBoardOps keeps unchanged items
+  // identical, so a one-item change rebuilds one node, not 20k.
+  const nodeCache = useRef(
+    new WeakMap<Item, { node: CanvasNode; gif: boolean; locked: boolean }>(),
   );
+  const baseItemNodes = useMemo(() => {
+    const byId = new Map<string, { item: Item & { blob_hash: string }; node: CanvasNode }>();
+    for (const item of snapshotItems ?? []) {
+      if (item.type !== 'image' || !item.blob_hash) continue;
+      const image = item as Item & { blob_hash: string };
+      const gif = gifHashes.has(image.blob_hash);
+      const locked = image.group_id !== null && lockedGroupIds.has(image.group_id);
+      let hit = nodeCache.current.get(image);
+      if (!hit || hit.gif !== gif || hit.locked !== locked) {
+        hit = { node: itemToNode(image, gif, locked), gif, locked };
+        nodeCache.current.set(image, hit);
+      }
+      byId.set(image.id, { item: image, node: hit.node });
+    }
+    return byId;
+  }, [snapshotItems, gifHashes, lockedGroupIds]);
   const boardNodesById = useMemo(() => {
     const byId = new Map<string, CanvasNode>();
     for (const [id, { node }] of baseItemNodes) byId.set(id, node);
@@ -717,7 +714,10 @@ function BoardApp() {
   // Every board action, shared by the keyboard map and the context menu so a
   // shortcut and its menu entry can never drift apart.
   const selectedItemIds = selectedNodeIds.filter((id) => !noteIds.has(id));
-  const selectionGroupIds = snapshot ? selectedGroupIds(snapshot, selectedNodeIds) : [];
+  // From the selected nodes, not a scan of every item (20k on big boards).
+  const selectionGroupIds = [
+    ...new Set(selectedNodes.map((node) => node.groupId).filter((id): id is string => id !== null)),
+  ];
   const selectionGrouped = selectionGroupIds.length > 0;
   const selectionGroupStyle = snapshot?.groups.find((group) => group.id === selectionGroupIds[0]);
   const selectionLocked =
@@ -977,23 +977,29 @@ function BoardApp() {
         return renderedCamera.get();
       },
       targetViewport: viewport,
-      nodes: boardNodes.map(({ id, kind, x, y, width, height, rotation, zIndex, crop }) => ({
-        crop,
-        id,
-        kind,
-        x,
-        y,
-        width,
-        height,
-        rotation,
-        zIndex,
-      })),
+      // A getter: building 20k plain objects on every render was a real cost
+      // on big boards even in dev; tests read it on demand.
+      get nodes() {
+        return boardNodes.map(({ id, kind, x, y, width, height, rotation, zIndex, crop }) => ({
+          crop,
+          id,
+          kind,
+          x,
+          y,
+          width,
+          height,
+          rotation,
+          zIndex,
+        }));
+      },
       notes: snapshot?.notes.map((note) => ({ id: note.id, text: noteText(note.content_json) })),
-      groups: snapshot?.groups.map((group) => ({
-        id: group.id,
-        locked: group.locked,
-        members: snapshot.items.filter((item) => item.group_id === group.id).map((i) => i.id),
-      })),
+      get groups() {
+        return snapshot?.groups.map((group) => ({
+          id: group.id,
+          locked: group.locked,
+          members: snapshot.items.filter((item) => item.group_id === group.id).map((i) => i.id),
+        }));
+      },
       tags: snapshot?.tags.map((tag) => ({ id: tag.id, name: tag.name })),
       itemTags: snapshot?.item_tags,
       undoDepth: undoStack.current.length,

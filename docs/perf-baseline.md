@@ -102,7 +102,13 @@ every page at ~15fps regardless of content and is useless for timing.
 
 Pan was p95 33ms / p99 50ms before the rendered camera moved out of App
 state (canvas/renderedCamera.ts): committing it per frame re-rendered the
-whole shell. The one remaining p99 blip on "drag unselected image" is the
-select-to-front write at press time, which rebuilds the 20k-item snapshot
-and canvas grid once; making snapshot/canvas updates incremental would
-remove it.
+whole shell.
+
+The p99 blip on "drag unselected image" is the select-to-front write at
+press time. Node objects are now cached per snapshot object (App and
+BoardCanvas), the paint-order sort uses precomputed keys and the grid uses
+numeric keys: the press costs ~90ms of dev-mode React work instead of ~141ms.
+In the PRODUCTION build (what the desktop app ships), 10 presses on a
+20k board: before 2/10 dropped one frame, after 1/10 (worst 33ms). Dev-mode
+numbers overstate this cost several times over — measure production with
+`vite build` + `vite preview` before optimizing further.

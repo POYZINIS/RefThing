@@ -13,6 +13,9 @@ import type { Guide, Rect } from './transform';
 
 export type ViewportState = { x: number; y: number; zoom: number };
 
+/** Numeric spatial-grid key (no string per cell per node per update). */
+const cellKey = (x: number, y: number) => (x + 1_048_576) * 2_097_152 + (y + 1_048_576);
+
 type CanvasOptions = {
   initialViewport?: ViewportState;
   onViewportChange?: (viewport: ViewportState, source?: 'pan' | 'zoom' | 'release') => void;
@@ -55,7 +58,14 @@ export class BoardCanvas {
   private readonly noteTextures: NoteTextureSource = nodeKindRegistry.note.textureSourceFactory();
   private readonly options: CanvasOptions;
   private readonly controller: NodeInteractionController;
-  private readonly grid = new Map<string, CanvasNode[]>();
+  private readonly grid = new Map<number, CanvasNode[]>();
+  /** Nodes cached by the snapshot object they came from: an update that
+   *  changes one item (select-to-front, a drag commit) rebuilds one node, not
+   *  20k. Flags that live outside the item are part of the cache check. */
+  private readonly nodeCache = new WeakMap<
+    object,
+    { node: CanvasNode; gif: boolean; locked: boolean }
+  >();
   private nodes: CanvasNode[] = [];
   /** Group backgrounds (plan Phase 5): drawn under every node. */
   private readonly groupBackdrop = new Graphics();
@@ -158,25 +168,35 @@ export class BoardCanvas {
     const liveById = this.controller.isDragging
       ? new Map(this.nodes.map((node) => [node.id, node]))
       : null;
-    const next: CanvasNode[] = [
-      ...items
-        .filter(
-          (item): item is Item & { blob_hash: string } => item.type === 'image' && !!item.blob_hash,
-        )
-        .map((item) =>
-          itemToNode(
-            item,
-            gifHashes.has(item.blob_hash),
-            item.group_id !== null && lockedGroups.has(item.group_id),
-          ),
-        ),
-      ...notes.map(noteToNode),
-    ];
+    // Model z per node; the nodes' own zIndex holds the paint RANK (below),
+    // which a cached node carries over from the previous update.
+    const modelZ = new Map<string, number>();
+    const cached = (
+      source: Item | Note,
+      gif: boolean,
+      locked: boolean,
+      build: () => CanvasNode,
+    ) => {
+      modelZ.set(source.id, source.z_index);
+      const hit = this.nodeCache.get(source);
+      if (hit && hit.gif === gif && hit.locked === locked) return hit.node;
+      const node = build();
+      this.nodeCache.set(source, { node, gif, locked });
+      return node;
+    };
+    const next: CanvasNode[] = [];
+    for (const item of items) {
+      if (item.type !== 'image' || !item.blob_hash) continue;
+      const image = item as Item & { blob_hash: string };
+      const gif = gifHashes.has(image.blob_hash);
+      const locked = image.group_id !== null && lockedGroups.has(image.group_id);
+      next.push(cached(image, gif, locked, () => itemToNode(image, gif, locked)));
+    }
+    for (const note of notes) next.push(cached(note, false, false, () => noteToNode(note)));
     this.nodes = liveById
       ? next.map((node) => {
           const inFlight = liveById.get(node.id);
           if (!inFlight || inFlight.kind === 'note' || node.kind === 'note') return node;
-          inFlight.zIndex = node.zIndex;
           inFlight.kind = node.kind;
           return inFlight;
         })
@@ -184,15 +204,23 @@ export class BoardCanvas {
     // One strict paint order shared by the renderer and the hit test: model
     // z first; items and notes may share a z value, so ties break by kind
     // (notes above) and then id — never by whatever order Pixi mounted them.
-    const rank = [...this.nodes].sort(
+    // Sort keys precomputed once (not two Map lookups per comparison: this
+    // runs on every snapshot change of a 20k-node board).
+    const keyed = this.nodes.map((node) => ({
+      node,
+      z: modelZ.get(node.id) ?? 0,
+      note: node.kind === 'note' ? 1 : 0,
+    }));
+    keyed.sort(
       (a, b) =>
-        a.zIndex - b.zIndex ||
-        Number(a.kind === 'note') - Number(b.kind === 'note') ||
-        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+        a.z - b.z ||
+        a.note - b.note ||
+        (a.node.id < b.node.id ? -1 : a.node.id > b.node.id ? 1 : 0),
     );
-    rank.forEach((node, index) => {
-      node.zIndex = index;
-    });
+    for (let index = 0; index < keyed.length; index += 1) {
+      const entry = keyed[index];
+      if (entry) entry.node.zIndex = index;
+    }
     this.groupMembers = new Map();
     for (const node of this.nodes) {
       if (!node.groupId || !this.styledGroups.has(node.groupId)) continue;
@@ -201,13 +229,7 @@ export class BoardCanvas {
       this.groupMembers.set(node.groupId, members);
     }
     this.grid.clear();
-    for (const node of this.nodes) {
-      for (const key of this.coveredCells(node)) {
-        const cell = this.grid.get(key) ?? [];
-        cell.push(node);
-        this.grid.set(key, cell);
-      }
-    }
+    for (const node of this.nodes) this.addToGrid(node);
     this.gifTextures.sync(
       gifHashes,
       new Set(this.nodes.flatMap((node) => (node.kind === 'gif' ? [node.blobHash] : []))),
@@ -434,7 +456,7 @@ export class BoardCanvas {
     const cellSize = 512;
     for (let x = Math.floor(left / cellSize); x <= Math.floor(right / cellSize); x += 1) {
       for (let y = Math.floor(top / cellSize); y <= Math.floor(bottom / cellSize); y += 1) {
-        for (const node of this.grid.get(`${x}:${y}`) ?? []) candidates.set(node.id, node);
+        for (const node of this.grid.get(cellKey(x, y)) ?? []) candidates.set(node.id, node);
       }
     }
     return [...candidates.values()].filter((node) => {
@@ -445,25 +467,21 @@ export class BoardCanvas {
     });
   }
 
-  private coveredCells(node: CanvasNode): string[] {
+  private addToGrid(node: CanvasNode): void {
     // Rotated bounds: a rotated node can reach cells its unrotated rect
     // doesn't, and must not be culled while its corner is on screen.
     const bounds = node.rotatedBounds();
     const cellSize = 512;
-    const cells: string[] = [];
-    for (
-      let x = Math.floor(bounds.left / cellSize);
-      x <= Math.floor(bounds.right / cellSize);
-      x += 1
-    ) {
-      for (
-        let y = Math.floor(bounds.top / cellSize);
-        y <= Math.floor(bounds.bottom / cellSize);
-        y += 1
-      )
-        cells.push(`${x}:${y}`);
+    const x1 = Math.floor(bounds.right / cellSize);
+    const y1 = Math.floor(bounds.bottom / cellSize);
+    for (let x = Math.floor(bounds.left / cellSize); x <= x1; x += 1) {
+      for (let y = Math.floor(bounds.top / cellSize); y <= y1; y += 1) {
+        const key = cellKey(x, y);
+        const cell = this.grid.get(key);
+        if (cell) cell.push(node);
+        else this.grid.set(key, [node]);
+      }
     }
-    return cells;
   }
 
   private applyViewport(): void {
