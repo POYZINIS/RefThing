@@ -1,6 +1,7 @@
 import type { BlobInfo, Item, ItemPatch, Note } from '@/api/client';
 import { type Crop, FULL_CROP } from '../transform';
 import { cardDetail, itemKind, POSTER_LEVELS } from './itemKind';
+import { modelSettings } from './modelView';
 import { layoutNoteDocument, noteScale, noteStyle, noteText } from './noteText';
 import { nodeKindRegistry } from './registry';
 import { type NodePatch, type NoteNode, nodeGeometry, type SpriteNode } from './types';
@@ -32,6 +33,7 @@ export function itemToNode(
     detail: blob ? cardDetail(blob, item.metadata.duration) : '',
     poster: !!blob && POSTER_LEVELS.some((level) => level in blob.levels),
     capabilities: nodeKindRegistry[kind].capabilities,
+    ...(kind === 'model' ? { model: modelSettings(item.metadata.model) } : {}),
     ...nodeGeometry,
   };
 }

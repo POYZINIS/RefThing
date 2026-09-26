@@ -11,9 +11,11 @@ export type Features = {
   video: boolean;
   /** Audio items: waveform posters + live mini-player. */
   audio: boolean;
+  /** 3D model items (GLB / glTF / FBX / .blend): rendered views + orbit. */
+  model: boolean;
 };
 
-const DEFAULTS: Features = { video: true, audio: true };
+const DEFAULTS: Features = { video: true, audio: true, model: true };
 
 function load(): Features {
   try {

@@ -108,6 +108,12 @@ automatically when you `cd` into the repo. Node **24+** is required (Node
   winget install Gyan.FFmpeg
   ```
 
+- **Blender**: opens `.blend` files on the board (the server converts them
+  to GLB headlessly, once per file). GLB, glTF and FBX need nothing. Found
+  on `PATH`, in `Program Files\Blender Foundation`, in Steam libraries, or
+  at `REFTHING_BLENDER`. Without it a `.blend` draws as a card saying it
+  needs Blender.
+
 - **cargo-watch** — backend hot reload during development:
 
   ```bash

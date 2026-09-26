@@ -348,6 +348,7 @@ compressed). `hash` is the 64-char lowercase hex SHA-256 from ingest.
 |:-------------------------|:-------------------------------------------------------------|
 | `full`                   | 200 — original bytes, streamed (never buffered whole); a single `Range: bytes=…` gets 206 / 416 |
 | `thumb` `small` `medium` | 200 generated WebP or ready original-byte alias; pending jobs return 404 + `X-Derivative: pending` |
+| `model`                  | 3D viewer bytes: GLB / glTF / FBX as stored (like `full`); a `.blend` converted to GLB by headless Blender on first request and cached (`deriv/…/model.glb`). 422 + a plain-text reason when it can't be (no Blender, unreadable file) |
 | anything else            | 404 (plain)                                                  |
 | unknown hash             | 404 `not_found`                                              |
 

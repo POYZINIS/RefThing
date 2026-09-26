@@ -297,3 +297,63 @@ async fn video_len(app: &TestApp, hash: &str) -> u64 {
         .expect("bytes")
         .len() as u64
 }
+
+#[tokio::test]
+async fn models_are_recognized_and_served_for_the_viewer() {
+    let app = spawn_app().await;
+    let board = boards::create(&app.state.pools.write, "b")
+        .await
+        .expect("board")
+        .id;
+
+    // GLB by its magic; the viewer gets the bytes as stored.
+    let glb = [b"glTF   ".as_slice(), &[7u8; 64]].concat();
+    let landed = ingest(&app, board, "tiny.glb", glb.clone()).await;
+    assert_eq!(landed["mime_type"], "model/gltf-binary");
+    assert_eq!(
+        (landed["width"].as_f64(), landed["height"].as_f64()),
+        (Some(640.0), Some(480.0))
+    );
+    let record = item(&app, board, landed["item_id"].as_str().expect("id")).await;
+    assert_eq!(record["type"], "model");
+    let hash = landed["blob_hash"].as_str().expect("hash");
+    let served = reqwest::get(format!("{}/blob/{hash}/model", app.base))
+        .await
+        .expect("model");
+    assert_eq!(served.status(), 200);
+    assert_eq!(
+        served.bytes().await.expect("bytes").as_ref(),
+        glb.as_slice()
+    );
+
+    // ASCII FBX: the sniffer can't tell, the extension can.
+    let fbx = ingest(
+        &app,
+        board,
+        "rig.fbx",
+        b"; FBX 7.4.0 project file
+"
+        .to_vec(),
+    )
+    .await;
+    assert_eq!(fbx["mime_type"], "model/x-fbx");
+    let record = item(&app, board, fbx["item_id"].as_str().expect("id")).await;
+    assert_eq!(record["type"], "model");
+
+    // A .blend that can't be converted (no Blender, or not really a
+    // .blend) answers 422 with a reason — never a default scene.
+    let blend = ingest(
+        &app,
+        board,
+        "scene.blend",
+        b"BLENDER-v300REND broken".to_vec(),
+    )
+    .await;
+    assert_eq!(blend["mime_type"], "application/x-blender");
+    let hash = blend["blob_hash"].as_str().expect("hash");
+    let response = reqwest::get(format!("{}/blob/{hash}/model", app.base))
+        .await
+        .expect("model");
+    assert_eq!(response.status(), 422);
+    assert!(!response.text().await.expect("reason").is_empty());
+}

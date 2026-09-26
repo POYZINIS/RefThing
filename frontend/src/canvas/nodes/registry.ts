@@ -1,6 +1,7 @@
 import { MIN_SCREEN_SIZE_PX } from '@/components/interactionConstants';
 import { CardTextureSource } from './CardTextureSource';
 import { GifTextureSource } from './GifTextureSource';
+import { ModelTextureSource } from './ModelTextureSource';
 import type { NodeRenderer } from './NodeRenderer';
 import { NoteTextureSource } from './NoteTextureSource';
 import { PyramidTextureSource } from './PyramidTextureSource';
@@ -59,6 +60,14 @@ export const nodeKindRegistry = {
   audio: {
     rendererFactory: () => new SpriteRenderer(),
     textureSourceFactory: (deps: TextureSourceDeps) => new PyramidTextureSource(deps.onChange),
+    defaults: { freeTransform: false, minSize: MIN_SCREEN_SIZE_PX },
+    capabilities: { ...spriteCapabilities, flippable: false },
+  },
+  // 3D models: views rendered by the model worker, a card until the first
+  // arrives. A viewport has any proportions, but keeps them unless Shift.
+  model: {
+    rendererFactory: () => new SpriteRenderer(),
+    textureSourceFactory: (deps: TextureSourceDeps) => new ModelTextureSource(deps.onChange),
     defaults: { freeTransform: false, minSize: MIN_SCREEN_SIZE_PX },
     capabilities: { ...spriteCapabilities, flippable: false },
   },

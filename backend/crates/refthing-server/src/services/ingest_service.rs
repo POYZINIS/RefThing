@@ -161,8 +161,10 @@ pub(crate) async fn commit_file(
     // stored file's header (or ffprobe for media) BEFORE the transaction, so
     // the item is placed at its true proportions — `infer` sniffs no sizes,
     // and a fixed placeholder squashed every non-square image into a square.
-    let handler = item_types::handler_for(&blob.mime);
-    let probe = handler.probe(&state.blob_store.path(&blob.hash)).await;
+    let stored = state.blob_store.path(&blob.hash);
+    let mime = refined_mime(&stored, &blob.mime, filename.as_deref()).await;
+    let handler = item_types::handler_for(&mime);
+    let probe = handler.probe(&stored).await;
     let (width, height) = landing
         .size
         .unwrap_or_else(|| handler.placement(probe.as_ref()));
@@ -178,13 +180,16 @@ pub(crate) async fn commit_file(
     )
     .bind(&blob.hash)
     .bind(filename.as_deref())
-    .bind(&blob.mime)
+    .bind(&mime)
     .bind(byte_size)
     .bind(probe.as_ref().map(|probe| i64::from(probe.width)))
     .bind(probe.as_ref().map(|probe| i64::from(probe.height)))
     .execute(&mut *tx)
     .await?;
     let dedup = inserted.rows_affected() == 0;
+    if dedup && mime != blob.mime {
+        adopt_refined_mime(&mut tx, &blob.hash, &mime).await?;
+    }
 
     let z_index = next_z_index(&mut tx, board_id).await?;
     let item_id = Uuid::now_v7();
@@ -229,7 +234,7 @@ pub(crate) async fn commit_file(
     if let Some(job) = handler.poster_job() {
         let payload = PyramidPayload {
             blob_hash: blob.hash.clone(),
-            mime: blob.mime.clone(),
+            mime: mime.clone(),
             item_id,
         };
         state
@@ -250,7 +255,7 @@ pub(crate) async fn commit_file(
         IngestedItem {
             item_id,
             blob_hash: blob.hash.clone(),
-            mime_type: blob.mime.clone(),
+            mime_type: mime,
             width,
             height,
             dedup,
@@ -315,4 +320,34 @@ impl AsyncRead for FieldReader<'_> {
             }
         }
     }
+}
+
+/// The stored file's type, refined past the general sniffer (3D models:
+/// magic bytes, then the extension — see `item_types::refine_mime`).
+async fn refined_mime(stored: &std::path::Path, sniffed: &str, filename: Option<&str>) -> String {
+    use tokio::io::AsyncReadExt;
+    let mut head = vec![0u8; 32];
+    let read = match tokio::fs::File::open(stored).await {
+        Ok(mut file) => file.read(&mut head).await.unwrap_or(0),
+        Err(_) => 0,
+    };
+    head.truncate(read);
+    item_types::refine_mime(sniffed, filename, &head)
+}
+
+/// A blob stored before its type was recognized (a model dropped before 3D
+/// support) takes the refined type when it's ingested again.
+async fn adopt_refined_mime(
+    tx: &mut sqlx::SqliteTransaction<'_>,
+    hash: &str,
+    mime: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE blobs SET mime_type = ? WHERE hash = ? AND mime_type = 'application/octet-stream'",
+    )
+    .bind(mime)
+    .bind(hash)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }

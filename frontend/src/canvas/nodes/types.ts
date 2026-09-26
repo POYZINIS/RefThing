@@ -1,5 +1,6 @@
+import type { ModelSettings } from './modelView';
 import type { NoteStyle } from './noteText';
-export type NodeKind = 'image' | 'gif' | 'video' | 'audio' | 'file' | 'note';
+export type NodeKind = 'image' | 'gif' | 'video' | 'audio' | 'model' | 'file' | 'note';
 
 /** Kinds backed by an item + blob (everything but notes). */
 export type SpriteKind = Exclude<NodeKind, 'note'>;
@@ -57,6 +58,8 @@ export interface SpriteNode extends BoardNode {
   /** Video/audio: the server made a poster pyramid (thumb…medium) to draw.
    *  Their `full` level is the media itself, never an image. */
   readonly poster: boolean;
+  /** 3D models: how the model is viewed (item metadata `model`). */
+  readonly model?: ModelSettings;
 }
 
 /** A note: painted by the NoteTextureSource from its text (pretext layout). */

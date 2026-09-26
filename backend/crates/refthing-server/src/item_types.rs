@@ -51,6 +51,8 @@ fn fit(width: u32, height: u32) -> (f64, f64) {
 pub struct ImageHandler;
 pub struct VideoHandler;
 pub struct AudioHandler;
+/// 3D models (GLB / glTF / FBX / .blend): the client renders the views.
+pub struct ModelHandler;
 /// Catch-all: any file lands on the board as a card (poster drawn by the
 /// client) and stays downloadable.
 pub struct FileHandler;
@@ -139,6 +141,27 @@ impl ItemTypeHandler for AudioHandler {
 }
 
 #[async_trait]
+impl ItemTypeHandler for ModelHandler {
+    fn item_type(&self) -> &'static str {
+        "model"
+    }
+    fn accepts(&self, mime: &str) -> bool {
+        mime.starts_with("model/") || mime == BLEND_MIME
+    }
+    async fn probe(&self, _path: &Path) -> Option<Probe> {
+        None
+    }
+    fn placement(&self, _probe: Option<&Probe>) -> (f64, f64) {
+        // A 4:3 viewport.
+        (640.0, 480.0)
+    }
+    fn poster_job(&self) -> Option<&'static str> {
+        // Views are rendered by the client (they follow each item's camera).
+        None
+    }
+}
+
+#[async_trait]
 impl ItemTypeHandler for FileHandler {
     fn item_type(&self) -> &'static str {
         "file"
@@ -158,8 +181,13 @@ impl ItemTypeHandler for FileHandler {
 }
 
 /// Registry, most specific first; [`FileHandler`] catches everything else.
-static HANDLERS: [&dyn ItemTypeHandler; 4] =
-    [&ImageHandler, &VideoHandler, &AudioHandler, &FileHandler];
+static HANDLERS: [&dyn ItemTypeHandler; 5] = [
+    &ImageHandler,
+    &VideoHandler,
+    &AudioHandler,
+    &ModelHandler,
+    &FileHandler,
+];
 
 /// The handler for a sniffed MIME type (always one: files are the fallback).
 #[must_use]
@@ -169,6 +197,50 @@ pub fn handler_for(mime: &str) -> &'static dyn ItemTypeHandler {
         .copied()
         .find(|handler| handler.accepts(mime))
         .unwrap_or(&FileHandler)
+}
+
+// ------------------------------------------------------------------ models
+
+pub const GLB_MIME: &str = "model/gltf-binary";
+pub const GLTF_MIME: &str = "model/gltf+json";
+pub const FBX_MIME: &str = "model/x-fbx";
+pub const BLEND_MIME: &str = "application/x-blender";
+
+/// The general sniffer (`infer`) knows no 3D formats: recognize them by
+/// magic bytes, then — for files it could only call generic (ASCII FBX,
+/// glTF JSON, compressed .blend) — by extension. Anything else keeps the
+/// sniffed type.
+#[must_use]
+pub fn refine_mime(sniffed: &str, filename: Option<&str>, head: &[u8]) -> String {
+    if head.starts_with(b"glTF") {
+        return GLB_MIME.to_string();
+    }
+    if head.starts_with(b"Kaydara FBX Binary") {
+        return FBX_MIME.to_string();
+    }
+    if head.starts_with(b"BLENDER") {
+        return BLEND_MIME.to_string();
+    }
+    let generic = matches!(
+        sniffed,
+        "application/octet-stream"
+            | "application/zstd"
+            | "application/gzip"
+            | "application/x-gzip"
+            | "application/json"
+            | "text/plain"
+    );
+    let extension = filename
+        .and_then(|name| Path::new(name).extension())
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    match (generic, extension.as_deref()) {
+        (true, Some("blend")) => BLEND_MIME.to_string(),
+        (true, Some("fbx")) => FBX_MIME.to_string(),
+        (true, Some("gltf")) => GLTF_MIME.to_string(),
+        (true, Some("glb")) => GLB_MIME.to_string(),
+        _ => sniffed.to_string(),
+    }
 }
 
 // ------------------------------------------------------------------ ffmpeg
@@ -226,6 +298,37 @@ mod tests {
         assert_eq!(handler_for("application/octet-stream").poster_job(), None);
         assert_eq!(handler_for("image/gif").poster_job(), Some("pyramid"));
         assert_eq!(handler_for("video/webm").poster_job(), Some("media_poster"));
+        assert_eq!(handler_for(GLB_MIME).item_type(), "model");
+        assert_eq!(handler_for(FBX_MIME).item_type(), "model");
+        assert_eq!(handler_for(BLEND_MIME).item_type(), "model");
+        assert_eq!(handler_for(GLB_MIME).poster_job(), None);
+    }
+
+    #[test]
+    fn recognizes_models_by_magic_then_extension() {
+        let octet = "application/octet-stream";
+        assert_eq!(refine_mime(octet, None, b"glTF\x02\0\0\0"), GLB_MIME);
+        assert_eq!(
+            refine_mime(octet, Some("a.bin"), b"Kaydara FBX Binary  \0"),
+            FBX_MIME
+        );
+        assert_eq!(refine_mime(octet, None, b"BLENDER-v300"), BLEND_MIME);
+        // Compressed .blend (zstd) and text formats: by extension.
+        assert_eq!(
+            refine_mime("application/zstd", Some("Scene.BLEND"), &[0x28, 0xb5]),
+            BLEND_MIME
+        );
+        assert_eq!(
+            refine_mime(octet, Some("rig.fbx"), b"; FBX 7.4.0"),
+            FBX_MIME
+        );
+        assert_eq!(refine_mime("text/plain", Some("x.gltf"), b"{"), GLTF_MIME);
+        // A real type is never overridden by a misleading extension.
+        assert_eq!(
+            refine_mime("image/png", Some("x.glb"), b"\x89PNG"),
+            "image/png"
+        );
+        assert_eq!(refine_mime(octet, Some("notes.txt"), b"hello"), octet);
     }
 
     #[test]

@@ -80,6 +80,17 @@ button = "right"
 target = "any"
 optional = ["shift", "alt", "primary"]
 
+# Orbit mode (double-click a selected 3D model): presses on the model turn
+# its camera. Target "orbit" = the model being orbited.
+[actions.orbit]
+button = "left"
+target = "orbit"
+
+[actions.orbit_pan]
+button = "left"
+modifiers = ["shift"]
+target = "orbit"
+
 # Double-clicks, by what is under the pointer.
 [double_click]
 note = "enter_note_edit"
@@ -89,6 +100,8 @@ empty = "zoom_to_fit"
 # Phase 11: video/audio go Live (a player over the item); files open.
 media = "play_media"
 file = "open_file"
+# 3D models: orbit mode (drag turns the camera, wheel moves it in and out).
+model = "orbit_model"
 
 # Keyboard. "primary" = Ctrl/Cmd. "optional" keys may be held too (e.g.
 # Shift = larger nudge step).
@@ -155,7 +168,7 @@ modifiers = ["primary"]
 
 /** `space` and `z` are held keys (PointerEvent doesn't carry them). */
 export type Modifier = 'shift' | 'alt' | 'primary' | 'space' | 'z';
-export type PressTarget = 'item' | 'empty' | 'selection' | 'handle';
+export type PressTarget = 'item' | 'empty' | 'selection' | 'handle' | 'orbit';
 export type PressAction =
   | 'pan'
   | 'drag_zoom'
@@ -167,7 +180,9 @@ export type PressAction =
   | 'reset_aspect'
   | 'move_selection'
   | 'scale'
-  | 'move_window';
+  | 'move_window'
+  | 'orbit'
+  | 'orbit_pan';
 export type KeyAction =
   | 'delete'
   | 'group'
@@ -184,7 +199,7 @@ export type KeyAction =
   | 'find'
   | 'bold'
   | 'italic';
-export type DoubleClickTarget = 'note' | 'group' | 'item' | 'media' | 'file' | 'empty';
+export type DoubleClickTarget = 'note' | 'group' | 'item' | 'media' | 'model' | 'file' | 'empty';
 
 type PressBinding = {
   button: 'left' | 'middle' | 'right';

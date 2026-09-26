@@ -89,6 +89,16 @@ conflict in this file; confirm or overrule them here.
    waveform) — there is no separate ruler or seek bar. Per Section 0
    Rule 8 the playhead exists only while the item is selected; grabbing
    it never moves the item.
+15. 3D models. The model is never edited; only how it is viewed. A press
+   on a model is an ordinary item press (select / move — Section 0 Rule
+   8), selected or not. Double-click (bindings [double_click] model)
+   enters ORBIT mode, like a note's Editing: the 8 zones go inert and the
+   outline dashes; drag orbits (cursor: grab / grabbing), Shift+drag pans,
+   the wheel moves the camera in and out, middle-drag still pans the
+   board. Escape, a click elsewhere or any other selection ends it. Each
+   gesture commits; one orbit session is one undo step. The context menu
+   holds the rest: Shade Original / Smooth / Flat, Background (the sky;
+   off = transparent, lighting unchanged), Orbit, Reset View.
 
 PURPOSE
 --------------------------------------------------------------------

@@ -1618,6 +1618,20 @@ kbd {
    the poster once it has frames; audio is invisible) on the editor rung,
    under the selection shell — the item still moves and resizes while it
    plays. Its controls sit above the shell (--z-media-controls). */
+/* Orbit mode (a selected 3D model, double-clicked): a transparent surface
+   over the item takes the presses; the canvas still paints the model. */
+.model-orbit {
+  position: absolute;
+  z-index: var(--z-media-controls);
+  cursor: grab;
+  touch-action: none;
+  transform-origin: center;
+}
+
+.model-orbit.dragging {
+  cursor: grabbing;
+}
+
 .live-media {
   position: absolute;
   z-index: var(--z-note-editor);

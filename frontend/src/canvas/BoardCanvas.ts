@@ -5,6 +5,8 @@ import { NodeInteractionController } from './NodeInteractionController';
 import { itemToNode, noteToNode } from './nodes/adapters';
 import type { CardTextureSource } from './nodes/CardTextureSource';
 import type { GifTextureSource } from './nodes/GifTextureSource';
+import { type ModelTextureSource, modelTextureScale } from './nodes/ModelTextureSource';
+import type { ModelSettings } from './nodes/modelView';
 import type { NodeRenderer } from './nodes/NodeRenderer';
 import { type NoteTextureSource, noteTextureScale } from './nodes/NoteTextureSource';
 import { type PyramidTextureSource, pyramidLevel } from './nodes/PyramidTextureSource';
@@ -61,6 +63,9 @@ export class BoardCanvas {
   });
   private readonly noteTextures: NoteTextureSource = nodeKindRegistry.note.textureSourceFactory();
   private readonly cardTextures: CardTextureSource = nodeKindRegistry.file.textureSourceFactory();
+  private readonly modelTextures: ModelTextureSource = nodeKindRegistry.model.textureSourceFactory({
+    onChange: () => this.renderVisible(),
+  });
   private readonly options: CanvasOptions;
   private readonly controller: NodeInteractionController;
   private readonly grid = new Map<number, CanvasNode[]>();
@@ -298,6 +303,12 @@ export class BoardCanvas {
     this.renderVisible();
   }
 
+  /** Show a model at `settings` while its view is dragged (orbit mode);
+   *  null returns it to its stored settings. */
+  setModelPreview(nodeId: string, settings: ModelSettings | null): void {
+    this.modelTextures.setPreview(nodeId, settings);
+  }
+
   setZoomSpeed(speed: number): void {
     this.zoomSpeed = speed;
   }
@@ -397,6 +408,11 @@ export class BoardCanvas {
     return { ...bounds, x: bounds.x + rect.left, y: bounds.y + rect.top };
   }
 
+  /** What a model item shows (dev/test hook). */
+  modelStatus(nodeId: string): string {
+    return this.modelTextures.status(nodeId);
+  }
+
   /** Bounds of the visible nodes other than `exclude` (snap-move targets). */
   snapTargets(exclude: ReadonlySet<string>): Rect[] {
     return this.visibleNodes()
@@ -424,6 +440,7 @@ export class BoardCanvas {
     this.pyramidTextures.dispose();
     this.noteTextures.dispose();
     this.cardTextures.dispose();
+    this.modelTextures.dispose();
     this.app.destroy(true, { children: true, texture: false });
   }
 
@@ -439,6 +456,10 @@ export class BoardCanvas {
     }
     const visibleNotes = new Set<string>();
     const visibleCards = new Set<string>();
+    const visibleModels = new Set<string>();
+    const zoom = this.renderedViewport.zoom;
+    const dpr = window.devicePixelRatio;
+    const modelScale = String(modelTextureScale(zoom, dpr));
     const cardScale = String(noteTextureScale(this.renderedViewport.zoom, window.devicePixelRatio));
     const card = (node: SpriteNode) => {
       visibleCards.add(node.id);
@@ -457,6 +478,13 @@ export class BoardCanvas {
         texture = this.noteTextures.texture(node, this.levelFor(node));
       } else if (node.kind === 'file') {
         texture = card(node);
+      } else if (node.kind === 'model') {
+        // The rendered view once it arrives; the card until then, and with
+        // the reason when the model can't be opened.
+        visibleModels.add(node.id);
+        const view = this.modelTextures.texture(node, modelScale, zoom * dpr);
+        const error = view ? null : this.modelTextures.error(node.id);
+        texture = view ?? card(error ? { ...node, detail: `Can't open · ${error}` } : node);
       } else if (node.kind === 'video' || node.kind === 'audio') {
         // The poster once it's resident; the card until then (or forever
         // without ffmpeg).
@@ -474,6 +502,7 @@ export class BoardCanvas {
     }
     this.noteTextures.retain(visibleNotes);
     this.cardTextures.retain(visibleCards);
+    this.modelTextures.retain(visibleModels);
     this.drawGroupBackdrops();
     this.scene.sortableChildren = true;
   }
@@ -553,6 +582,7 @@ export class BoardCanvas {
     const frame = performance.now();
     if (this.gifTextures.tick(frame)) this.renderVisible();
     this.pyramidTextures.tick(); // frame clock for texture eviction
+    this.modelTextures.tick();
     const easing = 0.18;
     this.renderedViewport.x += (this.viewport.x - this.renderedViewport.x) * easing;
     this.renderedViewport.y += (this.viewport.y - this.renderedViewport.y) * easing;

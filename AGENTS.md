@@ -39,6 +39,8 @@ frontend/           React + PixiJS app (Vite)
                     the canvas via pretext (noteText.ts) in the same z order
                     as images. NodeInteractionController is the ONE pointer
                     state machine; canvas/transform.ts is the pure gesture math
+  src/canvas/model/ 3D model worker: three.js on an OffscreenCanvas renders
+                    model items to bitmaps (never in the main bundle)
   src/components/   UI chrome only (toolbar, panels, dialogs)
   src/state/        zustand stores; history.ts = command/undo engine
                     (prepareCommand + applyBoardOps — applyOps delegates to it);

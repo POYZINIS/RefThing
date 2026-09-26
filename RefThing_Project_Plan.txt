@@ -386,7 +386,7 @@ Done:
    PureRef 1.x files are refused with a plain message (re-save in 2.x).
    The camera's minimum zoom went from 10% to 1% so boards that size fit.
 
-PHASE 11 — EXTENSIBILITY: MULTI-FORMAT ITEM TYPES   [PARTIAL: image/video/audio/gif/file done; 3D + web embeds open]
+PHASE 11 — EXTENSIBILITY: MULTI-FORMAT ITEM TYPES   [PARTIAL: image/video/audio/gif/file/3D done; web embeds open]
 --------------------------------------------------------------------
 Status (2026-09-25):
 Done:
@@ -425,14 +425,32 @@ Done:
   placed square by the old ingest.
 - poster_ready now updates blob levels live. The client read `sizes`
   while the server sent `levels`.
+- 3D models (GLB / glTF / FBX / .blend) are viewports. The server
+  recognizes them (magic bytes, then extension) as `type = model`; a
+  .blend is converted to GLB by headless Blender on first view (factory
+  settings, scripts disabled) and cached. The client renders: a model
+  Web Worker owns one WebGL context (three.js on an OffscreenCanvas),
+  bakes each model into world-space buffers bucketed by base-colour
+  texture (a draw call per texture), and shades it with a small diffuse
+  shader (sun + sky/ground hemisphere, texture x vertex colour, back
+  faces culled). The Unity-style sky is a pass drawn only where the depth
+  buffer is empty: Background off leaves those pixels transparent and the
+  model lit exactly the same. Renders become the item's sprite (z-order,
+  culling and the selection shell unchanged); settled renders are kept in
+  IndexedDB so boards of models reopen without loading them. Context
+  menu: Shade Original / Smooth / Flat, Background, Orbit, Reset View.
+  Orbit mode: double-click a model; drag orbits, Shift+drag pans, the
+  wheel dollies; Escape or a click elsewhere ends it; one undo step per
+  session. FBX colours are read as linear (Blender writes them so).
 Differences from the plan text: the audio mini-player is the native
 <audio> element, not a custom Web Audio transport. The waveform comes
 from ffmpeg, not symphonia.
+3D differs from the plan text too: no sidecar and no model-viewer — the
+client renders both poster and live view in one worker, because each item
+has its own camera and shading (a server poster per blob couldn't follow
+them).
 Open:
-- 3D models (sidecar three.js poster + model-viewer live).
 - Web embeds (URL paste -> sidecar screenshot poster + sandboxed iframe).
-Until then, .glb and similar files land as file cards (the plan's
-"stub early" rule).
 
 Goal: 3D viewports, video, audio (mp3 mini-player), gifs, web embeds,
 and arbitrary file formats — without touching core engine code per

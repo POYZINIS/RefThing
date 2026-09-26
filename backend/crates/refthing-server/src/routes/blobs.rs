@@ -29,7 +29,9 @@ use refthing_core::models::Blob;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::error::{AppError, AppResult};
+use crate::item_types::GLB_MIME;
 use crate::jobs::pyramid::PyramidPayload;
+use crate::services::model_service::{self, ModelError, ModelSource};
 use crate::state::AppState;
 
 /// Immutable forever: the URL is content-addressed, so bytes never change.
@@ -46,12 +48,20 @@ async fn get_blob(
     Path((hash, level)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
-    if !matches!(level.as_str(), "thumb" | "small" | "medium" | "full") {
+    if !matches!(
+        level.as_str(),
+        "thumb" | "small" | "medium" | "full" | "model"
+    ) {
         return Err(AppError::NotFound("blob level"));
     }
     let blob = blobs::get(&state.pools.read, &hash)
         .await?
         .ok_or(AppError::NotFound("blob"))?;
+
+    // 3D viewer bytes: the file itself, or a .blend converted to GLB.
+    if level == "model" {
+        return serve_model(&state, &hash, &blob, &headers).await;
+    }
 
     // `full` is the passthrough level: the original bytes always exist, even
     // while the pyramid job is still running (or for pre-Phase-3 blobs with
@@ -84,6 +94,35 @@ async fn get_blob(
             reenqueue_pyramid(&state, &hash, &blob).await;
             Ok(derivative_unavailable(&level, "pending"))
         }
+    }
+}
+
+/// `model`: GLB / glTF / FBX as stored; a `.blend` converted by Blender on
+/// first request (`422` + a plain-text reason when it can't be).
+async fn serve_model(
+    state: &AppState,
+    hash: &str,
+    blob: &Blob,
+    headers: &HeaderMap,
+) -> AppResult<Response> {
+    match model_service::model_source(state, hash, &blob.mime_type).await {
+        Ok(ModelSource::Original) => serve_original(state, hash, "model", blob, headers).await,
+        Ok(ModelSource::Converted(path)) => {
+            let etag = format!("\"{hash}-model\"");
+            if if_none_match_matches(headers, &etag) {
+                return Ok(not_modified(&etag));
+            }
+            let file = tokio::fs::File::open(&path).await?;
+            let size = file.metadata().await?.len();
+            Ok(stream_response(
+                file,
+                &etag,
+                GLB_MIME,
+                i64::try_from(size).unwrap_or(i64::MAX),
+            ))
+        }
+        Err(ModelError::Io(error)) => Err(AppError::Io(error)),
+        Err(error) => Ok((StatusCode::UNPROCESSABLE_ENTITY, error.to_string()).into_response()),
     }
 }
 

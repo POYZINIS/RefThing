@@ -27,6 +27,12 @@ import {
   noteWithResize,
 } from '@/canvas/nodes/adapters';
 import {
+  DEFAULT_MODEL_SETTINGS,
+  type ModelSettings,
+  settingsKey,
+  viewOf,
+} from '@/canvas/nodes/modelView';
+import {
   NOTE_FONTS,
   NOTE_SIZES,
   type NoteFontId,
@@ -41,6 +47,7 @@ import { type Guide, recrop } from '@/canvas/transform';
 import { BoardContextMenu, type MenuEntry } from '@/components/BoardContextMenu';
 import { BoardSwitcher } from '@/components/BoardSwitcher';
 import { type MediaHandle, MediaPlayer } from '@/components/MediaPlayer';
+import { ModelOrbit } from '@/components/ModelOrbit';
 import { NoteEditor } from '@/components/NoteEditor';
 import SearchBar, { emptyFilter, type FilterState } from '@/components/SearchBar';
 import { SelectionOverlay } from '@/components/SelectionOverlay';
@@ -167,6 +174,9 @@ function BoardApp() {
   const [drillGroupId, setDrillGroupId] = useState<string | null>(null);
   // §5B Crop mode: the image whose frame the 8 zones currently crop.
   const [cropNodeId, setCropNodeId] = useState<string | null>(null);
+  // Orbit mode: the selected 3D model whose camera presses turn (double-
+  // click it). A new session = a new undo entry.
+  const [orbit, setOrbit] = useState<{ id: string; session: string } | null>(null);
   const drillRef = useRef(drillGroupId);
   drillRef.current = drillGroupId;
   const groupOfRef = useRef<(nodeId: string) => string | null>(() => null);
@@ -639,6 +649,8 @@ function BoardApp() {
     for (const note of renderedNotes) byId.set(note.id, noteToNode(note));
     return byId;
   }, [baseItemNodes, blobsByHash, previewPatches, dragPreview, renderedNotes]);
+  const orbitCandidate = orbit ? boardNodesById.get(orbit.id) : undefined;
+  const orbitNode = orbitCandidate && orbitCandidate.kind === 'model' ? orbitCandidate : null;
   const boardNodes = useMemo(() => [...boardNodesById.values()], [boardNodesById]);
   // A lone selected video/audio item gets its player (custom controls);
   // it lasts while that item stays the one selected node.
@@ -834,6 +846,10 @@ function BoardApp() {
     // drilled group (§6 RULE 2, back to group level), then the selection.
     if (cropNodeId) {
       setCropNodeId(null);
+      return;
+    }
+    if (orbit) {
+      setOrbit(null);
       return;
     }
     if (drillGroupId) {
@@ -1040,6 +1056,28 @@ function BoardApp() {
       });
       if (changes.length > 0) commitNodeChanges.current(changes, 'Restore Proportions');
     },
+    /** Orbit mode for a model (selecting it first). */
+    orbitModel: (nodeId: string) => {
+      setNoteEditingId(null);
+      setSelectedNodeIds([nodeId]);
+      setOrbit({ id: nodeId, session: crypto.randomUUID() });
+    },
+    /** Merge `patch` into the selected models' view settings, one undo
+     *  step (`coalesceKey` folds a whole orbit session into one). */
+    setModel: (
+      patch: Partial<ModelSettings>,
+      label: string,
+      ids: readonly string[] = shellNodes.filter((node) => node.kind === 'model').map((n) => n.id),
+      coalesceKey?: string,
+    ) => {
+      const ops: BatchRequestOp[] = ids.map((id) => ({
+        kind: 'update' as const,
+        op_id: crypto.randomUUID(),
+        item_id: id,
+        fields: { metadata: { model: patch } },
+      }));
+      if (ops.length > 0) commitBoardOps.current(ops, label, coalesceKey);
+    },
     setOpacity: (opacity: number) => {
       const changes: NodeChange[] = shellNodes.map((node) => ({
         id: node.id,
@@ -1191,9 +1229,11 @@ function BoardApp() {
             ? 'group'
             : node.kind === 'video' || node.kind === 'audio'
               ? 'media'
-              : node.kind === 'file'
-                ? 'file'
-                : 'item';
+              : node.kind === 'model'
+                ? 'model'
+                : node.kind === 'file'
+                  ? 'file'
+                  : 'item';
     const action = bindings().doubleClick[target];
     if (action === 'zoom_to_fit') {
       actions.zoomToFit();
@@ -1216,6 +1256,10 @@ function BoardApp() {
       playMediaRef.current(nodeId);
       return;
     }
+    if (action === 'orbit_model' && node.kind === 'model') {
+      actions.orbitModel(nodeId);
+      return;
+    }
     if (action === 'open_file' && node.kind !== 'note') {
       actions.openFile(node);
       return;
@@ -1233,6 +1277,12 @@ function BoardApp() {
     canvas.flyTo(camera);
   };
 
+  // Orbit mode belongs to one selected model: any other selection ends it.
+  useEffect(() => {
+    if (orbit && !(selectedNodeIds.length === 1 && selectedNodeIds[0] === orbit.id)) {
+      setOrbit(null);
+    }
+  }, [orbit, selectedNodeIds]);
   // Crop mode belongs to one selected image: any other selection ends it.
   useEffect(() => {
     if (cropNodeId && !(selectedNodeIds.length === 1 && selectedNodeIds[0] === cropNodeId)) {
@@ -1324,6 +1374,14 @@ function BoardApp() {
       itemTags: snapshot?.item_tags,
       undoDepth: undoStack.current.length,
       painted: (id: string) => boardCanvas.current?.paintedClientRect(id) ?? null,
+      /** A 3D model item's state: card / cached / rendered / error: … */
+      model: (id: string) => boardCanvas.current?.modelStatus(id) ?? null,
+      /** A model item's view settings as the node carries them. */
+      modelSettings: (id: string) => {
+        const node = boardNodesById.get(id);
+        return node && node.kind === 'model' ? node.model : null;
+      },
+      orbiting: orbit?.id ?? null,
       /** A note's laid-out text height (world px, padding included). */
       noteTextHeight: (id: string) => {
         const note = snapshot?.notes.find((candidate) => candidate.id === id);
@@ -1409,6 +1467,62 @@ function BoardApp() {
   const every = <K extends keyof NoteStyle>(key: K, value: NoteStyle[K]) =>
     selectedNoteStyles.length > 0 && selectedNoteStyles.every((style) => style[key] === value);
   const fills = selectedNoteRecords.map((note) => note.bg_color);
+  // 3D models in the selection: how they're shown (never the model itself).
+  const selectedModels = shellNodes.filter((node): node is SpriteNode => node.kind === 'model');
+  const modelsAll = (test: (settings: ModelSettings) => boolean) =>
+    selectedModels.length > 0 &&
+    selectedModels.every((node) => test(node.model ?? DEFAULT_MODEL_SETTINGS));
+  const modelMenu: MenuEntry[] =
+    selectedModels.length === 0
+      ? []
+      : [
+          {
+            label: 'Shade',
+            keepOpen: true,
+            action: () => undefined,
+            choices: (
+              [
+                ['Original', 'original'],
+                ['Smooth', 'smooth'],
+                ['Flat', 'flat'],
+              ] as const
+            ).map(([label, shading]) => ({
+              label,
+              active: modelsAll((settings) => settings.shading === shading),
+              action: () => actions.setModel({ shading }, `Shade ${label}`),
+            })),
+          },
+          {
+            label: 'Background',
+            checked: modelsAll((settings) => settings.background),
+            keepOpen: true,
+            action: () =>
+              actions.setModel(
+                { background: !modelsAll((settings) => settings.background) },
+                'Background',
+              ),
+          },
+          ...(selectedModels.length === 1 && selectedModels[0]
+            ? [
+                orbit?.id === selectedModels[0].id
+                  ? { label: 'Done Orbiting', shortcut: 'Esc', action: () => setOrbit(null) }
+                  : {
+                      label: 'Orbit',
+                      shortcut: 'Double-click',
+                      action: () => actions.orbitModel(selectedModels[0]?.id ?? ''),
+                    },
+              ]
+            : []),
+          {
+            label: 'Reset View',
+            disabled: modelsAll(
+              (settings) =>
+                settingsKey({ ...settings, shading: 'original', background: true }) ===
+                settingsKey(DEFAULT_MODEL_SETTINGS),
+            ),
+            action: () => actions.setModel(viewOf(DEFAULT_MODEL_SETTINGS), 'Reset View'),
+          },
+        ];
   const textMenu: MenuEntry[] =
     selectedNoteRecords.length === 0
       ? []
@@ -1684,7 +1798,7 @@ function BoardApp() {
                 <SelectionOverlay
                   nodes={shellNodes}
                   viewport={camera}
-                  editing={noteEditing}
+                  editing={noteEditing || orbitNode !== null}
                   locked={shellLocked}
                   cropping={
                     cropNodeId !== null &&
@@ -1728,6 +1842,22 @@ function BoardApp() {
                     setPreviewPatches({});
                     commitNodeChanges.current(changes);
                   }}
+                />
+              )}
+              {orbitNode && orbit && (
+                <ModelOrbit
+                  key={orbit.session}
+                  node={orbitNode}
+                  viewport={camera}
+                  onPreview={(settings) =>
+                    boardCanvas.current?.setModelPreview(orbitNode.id, settings)
+                  }
+                  onCommit={(view) =>
+                    actions.setModel(view, 'Orbit', [orbitNode.id], `orbit:${orbit.session}`)
+                  }
+                  onBoardPress={(event, action) =>
+                    boardCanvas.current?.chromePointerDown(event, action)
+                  }
                 />
               )}
             </>
@@ -1873,6 +2003,7 @@ function BoardApp() {
                       { label: 'Download', action: () => actions.download(lone) },
                     ];
                   })(),
+                  ...modelMenu,
                   { label: 'Restore Proportions', action: actions.restoreProportions },
                   ...(shellNodes.length === 1 && shellNodes[0]?.kind !== 'note'
                     ? [

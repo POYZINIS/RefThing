@@ -15,6 +15,8 @@ export function itemKind(item: Pick<Item, 'type'>, blob: BlobInfo | undefined): 
       return features.video ? 'video' : 'file';
     case 'audio':
       return features.audio ? 'audio' : 'file';
+    case 'model':
+      return features.model ? 'model' : 'file';
     default:
       return 'file';
   }

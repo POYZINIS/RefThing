@@ -72,13 +72,29 @@ WebSocket (api/ws.ts) is receive-only: other clients' diffs and job events.
   `components/MediaPlayer.tsx`: the media element on the editor rung and
   custom controls above the selection shell (`--z-media-controls`), each
   revealed by its own `useProximityReveal`. See `docs/onboarding-new-item-type.md`.
+- **3D models** (`type = model`: GLB / glTF / FBX / `.blend`): rendered by
+  the client, not the server. `canvas/model/modelWorker.ts` is a Web Worker
+  owning one WebGL context (three.js on an OffscreenCanvas): it parses the
+  file (`modelLoad.ts`), bakes every mesh into world-space buffers bucketed
+  by base-colour texture (one draw call per texture), and renders a cheap
+  diffuse shader with back-face culling; the sky is a separate pass drawn
+  only where the depth buffer is empty, so Background off is transparent
+  and lights the model identically. Renders come back as ImageBitmaps that
+  `ModelTextureSource` turns into the item's sprite texture (so z-order,
+  culling and the selection shell are unchanged); settled renders are
+  cached in IndexedDB (`posterCache.ts`) so a board of models reopens
+  without loading any. Per-item view settings (`item_metadata.model`,
+  `canvas/nodes/modelView.ts`) are merge-patched like any metadata;
+  `components/ModelOrbit.tsx` is orbit mode. `.blend` files reach the
+  worker as GLB via `GET /blob/{hash}/model` (headless Blender, server side,
+  `services/model_service.rs`).
 - **Board import** (`refthing-core/src/pureref.rs`, `POST /api/boards:import`):
   a PureRef 2 `.pur` is a displaced SQLite database of Qt-serialized items;
   the core reads it into placements and the server commits them through the
   same ingest / note paths as a drop. The frontend routes any dropped,
   chosen or pasted `.pur` there (`isBoardFile` in `api/client.ts`).
-- **sidecar** — internal Node helper for three.js GLB poster snapshots and
-  puppeteer embed screenshots (Phase 11+). See `sidecar/README.md` and
+- **sidecar** — internal Node helper for puppeteer embed screenshots
+  (Phase 11+; 3D models no longer need it — the client renders them). See `sidecar/README.md` and
   `docs/onboarding-new-item-type.md`.
 
 ## Chrome (UI around the board)

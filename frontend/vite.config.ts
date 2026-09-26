@@ -10,6 +10,8 @@ const webPort = Number(process.env.REFTHING_WEB_PORT ?? 5173);
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // The model worker is an ES module (three.js + its loaders).
+  worker: { format: 'es' },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
