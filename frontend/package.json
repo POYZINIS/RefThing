@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.9",
+    "@jaames/iro": "^5.5.2",
     "@jungherz-de/glasskit": "^1.18.0",
     "animejs": "^4.5.0",
     "lucide-react": "^1.48.0",

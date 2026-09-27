@@ -496,6 +496,37 @@ test('the Textures submenu opens with the keyboard and closes with ←', async (
   await page.keyboard.press('Escape');
 });
 
+test('Sample Colors on a model samples the model, never its sky', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    files: [{ name: 'red.glb', x: 100, y: 100, buffer: glb(sphere(24, 16), [0.8, 0.08, 0.05, 1]) }],
+  });
+  await openBoard(page, seeded);
+  const id = seeded.ids['red.glb'];
+  await rendered(page, id);
+  assert.equal((await settings(page, id)).background, true, 'the sky is on');
+  const center = await nodeCenter(page, id);
+  await page.mouse.click(center.x, center.y, { button: 'right' });
+  await page.getByRole('menuitem', { name: 'Sample Colors' }).click();
+  await page.waitForFunction(
+    () => window.__refthing.nodes.some((node) => node.kind === 'palette'),
+    null,
+    {
+      timeout: 20_000,
+    },
+  );
+  const palette = (await page.evaluate(() => window.__refthing.nodes)).find(
+    (node) => node.kind === 'palette',
+  );
+  assert.ok(palette.colors.length >= 1);
+  for (const hex of palette.colors) {
+    const [r, g, b] = [1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16));
+    // The lit red sphere, dark to bright: red leads every swatch — no sky
+    // blue, no pale horizon, no grey ground.
+    assert.ok(r >= g && r >= b && r - b > 20, `a model colour, not sky: ${hex}`);
+  }
+});
+
 // ------------------------------------------------------------ Blender files
 
 /** Blender, where the server would find it too (env, PATH, Steam). */

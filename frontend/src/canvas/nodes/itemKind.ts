@@ -17,6 +17,10 @@ export function itemKind(item: Pick<Item, 'type'>, blob: BlobInfo | undefined): 
       return features.audio ? 'audio' : 'file';
     case 'model':
       return features.model ? 'model' : 'file';
+    case 'palette':
+      return 'palette';
+    case 'colorwheel':
+      return 'colorwheel';
     default:
       return 'file';
   }

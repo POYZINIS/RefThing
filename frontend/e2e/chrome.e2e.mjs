@@ -158,7 +158,7 @@ test('Escape closes a popover and leaves the selection alone', async () => {
   assert.deepEqual((await state(page)).selection, [seeded.ids['a.png']], 'still selected');
 });
 
-test('the theme toggle restyles the chrome, persists, and never touches board pixels', async () => {
+test('the theme setting restyles the chrome, persists, and never touches board pixels', async () => {
   const { page, context } = session;
   const seeded = await seedBoard(context.request, {
     images: [{ name: 'a.png', x: 200, y: 200, width: 200, height: 150, color: [200, 60, 40] }],
@@ -168,11 +168,10 @@ test('the theme toggle restyles the chrome, persists, and never touches board pi
   const theme = () => page.evaluate(() => document.documentElement.dataset.theme);
   const before = await theme();
   const imagePixel = await pixel(page, inside);
-  await page
-    .getByRole('button', {
-      name: before === 'dark' ? 'Switch to light theme' : 'Switch to dark theme',
-    })
-    .click();
+  // The theme lives in Settings (the corner button is the colour wheel).
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await page.getByLabel('Theme').selectOption(before === 'dark' ? 'light' : 'dark');
+  await page.keyboard.press('Escape');
   const after = await theme();
   assert.notEqual(after, before, 'theme flipped');
   assert.deepEqual(await pixel(page, inside), imagePixel, 'board content keeps its colours');

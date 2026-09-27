@@ -99,6 +99,13 @@ button = "left"
 modifiers = ["alt"]
 target = ["model", "orbit"]
 
+# Palettes: Alt+drag on a swatch pulls a copy of that colour out onto the
+# board (target "swatch" = a palette's colour, selected or not).
+[actions.pull_color]
+button = "left"
+modifiers = ["alt"]
+target = "swatch"
+
 # Double-clicks, by what is under the pointer.
 [double_click]
 note = "enter_note_edit"
@@ -180,7 +187,7 @@ modifiers = ["primary"]
 
 /** `space` and `z` are held keys (PointerEvent doesn't carry them). */
 export type Modifier = 'shift' | 'alt' | 'primary' | 'space' | 'z';
-export type PressTarget = 'item' | 'empty' | 'selection' | 'handle' | 'orbit' | 'model';
+export type PressTarget = 'item' | 'empty' | 'selection' | 'handle' | 'orbit' | 'model' | 'swatch';
 export type PressAction =
   | 'pan'
   | 'drag_zoom'
@@ -195,7 +202,8 @@ export type PressAction =
   | 'move_window'
   | 'orbit'
   | 'orbit_pan'
-  | 'orbit_view';
+  | 'orbit_view'
+  | 'pull_color';
 export type KeyAction =
   | 'delete'
   | 'group'

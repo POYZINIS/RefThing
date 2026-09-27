@@ -15,7 +15,7 @@ const presets: Record<Kind, Parameters<typeof animate>[1]> = {
   rise: { opacity: [0, 1], translateY: [6, 0], duration: 180, ease: 'outCubic' },
 };
 
-const reducedMotion = () =>
+export const reducedMotion = () =>
   typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /** Play an enter transition on an element (use as / from a ref callback). */

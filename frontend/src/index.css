@@ -63,13 +63,19 @@
      reads as clear rather than frosted. */
   --menu-bg: color-mix(in srgb, var(--panel-solid) 82%, transparent);
   --menu-blur: 12px;
+  /* The colour wheel's glass (the canvas paints the same tint: keep in step
+     with TOOL_GLASS_ALPHA in ColorTextureSources.ts). */
+  --tool-bg: color-mix(in srgb, var(--panel-solid) 76%, transparent);
+  /* The colour tools' highlight: brighter than --shade-hi, which vanishes
+     against their glass (ColorTextureSources.ts reads it). */
+  --tool-hi: rgb(255 255 255);
   --field-bg: rgb(52 61 56 / 6%);
   --hover-bg: rgb(52 61 56 / 8%);
   --press-bg: rgb(52 61 56 / 12%);
   --shade-hi: rgb(255 255 255 / 80%);
   --shade-lo: rgb(58 72 64 / 18%);
-  --shadow-raised: -3px -3px 8px var(--shade-hi), 3px 4px 11px var(--shade-lo);
-  --shadow-float: -4px -4px 14px var(--shade-hi), 6px 10px 28px rgb(58 72 64 / 22%),
+  --shadow-raised: -3px -3px 8px var(--shade-hi), 4px 4px 11px var(--shade-lo);
+  --shadow-float: -4px -4px 14px var(--shade-hi), 8px 8px 28px rgb(58 72 64 / 22%),
     var(--gl-inset-strong);
   --shadow-inset: inset 2px 2px 5px var(--shade-lo), inset -2px -2px 5px var(--shade-hi);
   --sheen: rgb(255 255 255 / 35%);
@@ -88,11 +94,11 @@
      (image, GIF, note) paints INSIDE the canvas in its own z order, so no DOM
      node layer can ever cover the selection chrome.
        canvas 0 < note editor 10 < hover outline 20 < selection shell 30
-       < drawing 40 < floating chrome 50 < popovers/menus 60 < toasts 70 */
+       < media and colour-tool controls 45 < floating chrome 50
+       < popovers/menus 60 < toasts 70 */
   --z-note-editor: 10;
   --z-hover-outline: 20;
   --z-selection: 30;
-  --z-drawing: 40;
   --z-media-controls: 45;
   --z-chrome: 50;
   --z-menu: 60;
@@ -150,10 +156,11 @@
   --press-bg: rgb(208 216 208 / 12%);
   --shade-hi: rgb(255 255 255 / 4%);
   --shade-lo: rgb(0 0 0 / 42%);
-  --shadow-float: -3px -3px 12px var(--shade-hi), 6px 12px 30px rgb(0 0 0 / 48%),
+  --shadow-float: -3px -3px 12px var(--shade-hi), 9px 9px 30px rgb(0 0 0 / 48%),
     var(--gl-inset-strong);
   --sheen: rgb(255 255 255 / 4%);
   --grain-opacity: 0.1;
+  --tool-hi: rgb(255 255 255 / 16%);
 }
 
 /* Glass off: solid raised surfaces instead of translucent panels. */
@@ -164,6 +171,7 @@
   --glass-saturate: 1;
   --menu-bg: var(--panel-solid);
   --menu-blur: 0px;
+  --tool-bg: var(--panel-solid);
 }
 
 /* The workspace is opaque except on the desktop shell with glass on, where
@@ -756,12 +764,6 @@ button:disabled {
   overflow-y: auto;
 }
 
-.popover-section + .popover-section {
-  margin-top: 4px;
-  padding-top: 4px;
-  border-top: 1px solid var(--color-line);
-}
-
 .popover-empty {
   margin: 0;
   padding: 6px 8px 10px;
@@ -1312,7 +1314,8 @@ kbd {
 }
 
 .board-context-menu button[role="menuitem"],
-.board-context-menu button[role="menuitemcheckbox"] {
+.board-context-menu button[role="menuitemcheckbox"],
+.board-context-menu > button[role="menuitemradio"] {
   display: flex;
   height: 30px;
   align-items: center;
@@ -1625,16 +1628,6 @@ kbd {
 
 /* ------------------------------------------------ on-canvas overlays */
 
-.drawing-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: var(--z-drawing);
-  width: 100%;
-  height: 100%;
-  cursor: crosshair;
-  pointer-events: auto;
-}
-
 .selection-overlay {
   position: absolute;
   z-index: var(--z-selection);
@@ -1655,6 +1648,440 @@ kbd {
    the poster once it has frames; audio is invisible) on the editor rung,
    under the selection shell — the item still moves and resizes while it
    plays. Its controls sit above the shell (--z-media-controls). */
+/* The colour wheel's live controls, over the item while it's the lone
+   selection (the canvas picture beneath is hidden meanwhile). Chrome
+   glass, like the menus: the theme tint at --tool-bg (the canvas paints the
+   same tint when it isn't live) and the rim — nothing lights its inside —
+   and once live the real blur, easing in; deselected, it eases back out
+   before the canvas picture returns. The panel itself lets the pointer
+   through (to the selection shell: move, resize); only its controls take
+   it, the wheel only inside its disc. */
+.color-wheel-panel {
+  /* Depth, the chrome's neumorphism in the wheel's em (it scales with the
+     item; ColorTextureSources.ts paints the same numbers). Every shadow and
+     highlight sits at 45° (equal x and y offsets), here and everywhere. */
+  --raise: 0.26em 0.26em 0.7em var(--shade-lo), -0.22em -0.22em 0.6em var(--tool-hi);
+  --raise-half: 0.13em 0.13em 0.35em var(--shade-lo), -0.11em -0.11em 0.3em var(--tool-hi);
+  --raise-small: 0.1em 0.1em 0.28em var(--shade-lo), -0.09em -0.09em 0.24em var(--tool-hi);
+  /* The disc: the raise with a second, wider highlight. */
+  --raise-disc: 0.26em 0.26em 0.7em var(--shade-lo), -0.22em -0.22em 0.6em var(--tool-hi),
+    -0.4em -0.4em 1.1em var(--tool-hi);
+  --well: inset 0.13em 0.13em 0.35em var(--shade-lo), inset -0.13em -0.13em 0.35em var(--shade-hi);
+
+  position: absolute;
+  z-index: var(--z-media-controls);
+  pointer-events: none;
+  color: var(--color-text);
+  background: var(--tool-bg);
+  box-shadow: inset 0 0 0 1px var(--panel-edge);
+  backdrop-filter: blur(var(--blur-group)) saturate(var(--glass-saturate));
+  font-family: var(--font-sans);
+  animation: tool-in 320ms var(--ease-out);
+}
+
+/* Selecting: the board behind blurs in (the canvas picture is the same
+   glass, unblurred). Deselecting (or zooming far out): it blurs back out
+   and the controls go quiet, then the canvas picture takes over. */
+@keyframes tool-in {
+  from {
+    backdrop-filter: blur(0) saturate(1);
+  }
+}
+
+.color-wheel-panel.leaving {
+  animation: tool-out 240ms var(--ease-out) forwards;
+}
+
+.color-wheel-panel.leaving * {
+  pointer-events: none !important;
+}
+
+@keyframes tool-out {
+  to {
+    backdrop-filter: blur(0) saturate(1);
+  }
+}
+
+.color-wheel-panel > * {
+  position: absolute;
+  pointer-events: auto;
+}
+
+/* Zoomed out: only the colour — the text and buttons fade away and stop
+   taking the pointer, the handles shrink to dots. */
+.color-wheel-extra {
+  transition: opacity 180ms var(--ease-out), visibility 180ms;
+}
+
+.color-wheel-panel[data-detail="compact"] .color-wheel-extra {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.color-wheel-panel .color-wheel-title {
+  display: flex;
+  align-items: center;
+  color: var(--color-text-muted);
+  font-size: 0.9em;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.color-wheel-slider {
+  border-radius: 999px;
+  box-shadow: var(--raise-half);
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.color-wheel-slider:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+.color-wheel-thumb {
+  position: absolute;
+  left: 50%;
+  width: 124%;
+  aspect-ratio: 1;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 45%);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  transition: top 260ms var(--ease-out), background-color 260ms var(--ease-out),
+    scale 140ms var(--ease-out);
+}
+
+.color-wheel-slider.sliding .color-wheel-thumb {
+  transition: scale 140ms var(--ease-out);
+  scale: 1.15;
+}
+
+/* iro's hit box is a square: only the disc takes the pointer. */
+.color-wheel-panel > .color-wheel-iro {
+  pointer-events: none;
+  touch-action: none;
+}
+
+.color-wheel-iro .IroWheel {
+  border-radius: 50%;
+  box-shadow: var(--raise-disc);
+  pointer-events: auto;
+}
+
+.color-wheel-iro .IroHandle {
+  filter: drop-shadow(0 1px 2px rgb(0 0 0 / 35%));
+}
+
+.color-wheel-iro .IroHandle circle {
+  transform-box: fill-box;
+  transform-origin: center;
+  vector-effect: non-scaling-stroke;
+  transition: transform 200ms var(--ease-out), opacity 200ms var(--ease-out);
+}
+
+.color-wheel-iro .IroHandle circle:first-child {
+  stroke: rgb(0 0 0 / 28%);
+  stroke-width: 1;
+}
+
+.color-wheel-panel[data-detail="compact"] .IroHandle circle:first-child {
+  opacity: 0;
+}
+
+.color-wheel-panel[data-detail="compact"] .IroHandle circle:last-child {
+  transform: scale(var(--dot-scale));
+}
+
+.color-wheel-panel[data-detail="compact"] .IroHandle--isActive circle:last-child {
+  transform: scale(var(--dot-scale-active));
+}
+
+/* The controls row: chrome fields (recessed tint, the theme's text). */
+.color-wheel-harmony button,
+.color-wheel-random,
+.color-wheel-mode {
+  border: 0;
+  border-radius: var(--field-radius);
+  color: var(--color-text);
+  background: var(--field-bg);
+  box-shadow: var(--well);
+  font: inherit;
+  transition: background-color 140ms var(--ease-out), color 140ms var(--ease-out),
+    box-shadow 140ms var(--ease-out);
+}
+
+.color-wheel-harmony button {
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+  padding: 0 2.4em 0 0.95em;
+  cursor: pointer;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.color-wheel-chevron {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  height: 100%;
+  place-items: center;
+  color: var(--color-text-muted);
+  pointer-events: none;
+  transition: transform 180ms var(--ease-out);
+}
+
+/* Open: the chevron turns up; the list is the right-click menu's. */
+.color-wheel-harmony:has(button.open) .color-wheel-chevron {
+  transform: rotate(180deg);
+}
+
+.harmony-menu {
+  min-width: 160px;
+}
+
+/* Random is a button: raised off the glass, pressed in while held. */
+.color-wheel-random {
+  display: grid;
+  padding: 0;
+  place-items: center;
+  background: var(--panel-solid);
+  box-shadow: var(--raise-half);
+  cursor: pointer;
+}
+
+.color-wheel-harmony button:hover,
+.color-wheel-harmony button.open {
+  color: var(--color-text-strong);
+  background: var(--hover-bg);
+  box-shadow: var(--well), inset 0 0 0 1px var(--color-line);
+}
+
+.color-wheel-random:hover {
+  color: var(--color-text-strong);
+}
+
+.color-wheel-random:active {
+  box-shadow: var(--well);
+}
+
+/* HSV | HSL: a well with the chosen side raised; the raised part slides. */
+.color-wheel-mode {
+  display: flex;
+  min-width: 0;
+  margin: 0;
+  padding: 0.24em;
+}
+
+.color-wheel-mode-thumb {
+  position: absolute;
+  top: 0.24em;
+  bottom: 0.24em;
+  left: 0.24em;
+  width: calc(50% - 0.24em);
+  border-radius: calc(var(--field-radius) * 0.8);
+  background: var(--panel-solid);
+  box-shadow: var(--raise-small);
+  transition: transform 220ms var(--ease-out);
+}
+
+.color-wheel-mode[data-mode="hsl"] .color-wheel-mode-thumb {
+  transform: translateX(100%);
+}
+
+.color-wheel-mode button {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  color: var(--color-text-muted);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  transition: color 180ms var(--ease-out);
+}
+
+.color-wheel-mode button[aria-pressed="true"] {
+  color: var(--color-accent);
+  cursor: default;
+}
+
+.color-wheel-mode button[aria-pressed="false"]:hover {
+  color: var(--color-text-strong);
+}
+
+.color-wheel-harmony button:focus-visible,
+.color-wheel-random:focus-visible,
+.color-wheel-mode button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* The current palette: one strip; a hovered swatch lifts out of it. */
+.color-wheel-swatches {
+  display: flex;
+  border-radius: var(--strip-radius);
+  box-shadow: var(--raise);
+  cursor: grab;
+}
+
+.color-wheel-swatches button {
+  position: relative;
+  flex: 1;
+  border: 0;
+  cursor: copy;
+  transition: transform 160ms var(--ease-out), border-radius 160ms var(--ease-out),
+    box-shadow 160ms var(--ease-out), background-color 260ms var(--ease-out);
+}
+
+.color-wheel-swatches button:first-child {
+  border-radius: var(--strip-radius) 0 0 var(--strip-radius);
+}
+
+.color-wheel-swatches button:last-child {
+  border-radius: 0 var(--strip-radius) var(--strip-radius) 0;
+}
+
+.color-wheel-swatches button:hover {
+  z-index: 2;
+  border-radius: calc(var(--strip-radius) * 0.7);
+  box-shadow: 0 0 0 1.5px rgb(255 255 255 / 70%);
+  transform: translateY(-9%) scale(1.07);
+}
+
+.color-wheel-swatches button:active {
+  transform: translateY(-4%) scale(1.02);
+}
+
+.color-wheel-swatches button:focus-visible,
+.color-wheel-row:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* The library: the rows take the pointer, the gaps pass through. */
+.color-wheel-panel > .color-wheel-library {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  pointer-events: none;
+  scrollbar-width: none;
+}
+
+.color-wheel-row {
+  flex: 0 0 auto;
+  width: 100%;
+  border: 0;
+  border-radius: var(--row-radius);
+  box-shadow: var(--raise-half);
+  cursor: grab;
+  pointer-events: auto;
+  transition: box-shadow 160ms var(--ease-out), filter 160ms var(--ease-out);
+}
+
+.color-wheel-row:hover {
+  box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 70%), var(--raise);
+  filter: saturate(1.08) brightness(1.04);
+}
+
+.color-wheel-row:active {
+  filter: brightness(0.94);
+}
+
+/* A newly saved palette slides in at the top. */
+.color-wheel-row.entering {
+  animation: row-in 280ms var(--ease-out);
+}
+
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-60%) scaleY(0.4);
+  }
+}
+
+/* A palette (or one colour) on its way out onto the board: picked up —
+   tilted a touch, rimmed like the glass (flat: palettes cast no shadow). */
+.palette-ghost {
+  position: fixed;
+  z-index: var(--z-menu);
+  width: 160px;
+  height: 30px;
+  border-radius: 7px;
+  box-shadow: 0 0 0 1.5px rgb(255 255 255 / 55%);
+  pointer-events: none;
+  transform: translate(-50%, -50%) rotate(-3deg);
+  animation: ghost-in 160ms var(--ease-out);
+}
+
+.palette-ghost.single {
+  width: 44px;
+  height: 36px;
+}
+
+@keyframes ghost-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) rotate(0) scale(0.7);
+  }
+}
+
+/* A palette swatch's hex while hovered: a small glass tip above it. */
+.palette-hex-tip {
+  position: absolute;
+  z-index: var(--z-media-controls);
+  display: flex;
+  height: 24px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px 0 6px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 999px;
+  color: var(--color-text-strong);
+  background: var(--menu-bg);
+  box-shadow: 0 6px 16px rgb(0 0 0 / 20%);
+  backdrop-filter: blur(var(--menu-blur)) saturate(var(--glass-saturate));
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  transform: translate(-50%, -100%);
+  transition: left 140ms var(--ease-out), top 140ms var(--ease-out);
+  animation: tip-in 140ms var(--ease-out);
+}
+
+.palette-hex-tip i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 18%);
+}
+
+@keyframes tip-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-100% + 4px)) scale(0.94);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .color-wheel-panel,
+  .color-wheel-panel *,
+  .palette-ghost,
+  .palette-hex-tip {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
 /* Orbit mode (a selected 3D model, double-clicked): a transparent surface
    over the item takes the presses; the canvas still paints the model. */
 .model-orbit {

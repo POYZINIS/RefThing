@@ -26,18 +26,6 @@ import { CLIENT_ID } from '@/api/clientId';
 import { arrangeDrop, arrivalSize, type Camera, DROP_GAP } from './commands';
 import { applyBoardOps } from './history';
 
-/** Geometry patch for a note — kept for the (unwired) drawing overlay's
- *  content path. Interactive note geometry flows through `put_note` batch
- *  ops (see App.tsx commitBoardOps), not REST PATCH. */
-export type NoteGeoPatch = {
-  x?: number;
-  y?: number;
-  width?: number;
-  height?: number;
-  rotation?: number;
-  z_index?: number;
-};
-
 type BoardState = {
   boards: BoardSummary[];
   activeBoardId: string | null;

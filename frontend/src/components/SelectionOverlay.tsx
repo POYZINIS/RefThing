@@ -3,6 +3,7 @@ import type { ViewportState } from '@/canvas/BoardCanvas';
 import { gestureRoles, heldModifiers, resolvePress } from '@/canvas/bindings';
 import { screenToWorld } from '@/canvas/coordinates';
 import { isHeld } from '@/canvas/heldKeys';
+import { outlineRadius } from '@/canvas/nodes/registry';
 import { type BoardNode, type NodeChange, nodeChangeKind } from '@/canvas/nodes/types';
 import {
   applyToNode,
@@ -76,6 +77,9 @@ type SelectionOverlayProps = {
    *  that DRAGS turns its camera; one that stays a click keeps its usual
    *  meaning (Alt+click: reset aspect). */
   onModelViewPress?: (event: PointerEvent) => void;
+  /** A press on the body, before the bindings: true when it was taken (a
+   *  palette swatch pulled out). */
+  onSwatchPress?: (event: PointerEvent) => boolean;
 };
 
 /** §1 MULTI-SELECTED: exactly ONE box. A lone node's box is the node itself
@@ -181,6 +185,7 @@ export function SelectionOverlay({
   cropping = false,
   onDoubleClick,
   onModelViewPress,
+  onSwatchPress,
 }: SelectionOverlayProps) {
   const box = selectionBox(nodes);
   const [hovered, setHovered] = useState<Zone | null>(null);
@@ -235,6 +240,10 @@ export function SelectionOverlay({
     if (editing || !box || active.current) return;
     const native = event.nativeEvent;
     const zone = zoneAt(event.clientX, event.clientY);
+    if (zone === 'body' && onSwatchPress?.(native)) {
+      event.preventDefault();
+      return;
+    }
     // The body of a lone selected model is also target `model`: a drag
     // there bound to `orbit_view` turns its camera (a click doesn't).
     const viewOnDrag =
@@ -487,6 +496,14 @@ export function SelectionOverlay({
   const edge = EDGE_HIT_ZONE_PX / 2;
   const corner = CORNER_HIT_ZONE_PX / 2;
   const handle = CORNER_HANDLE_PX / 2;
+  // A lone colour tool is outlined along its own rounded shape: the hovered
+  // edge thickens along the straight run only, a corner handle sits on the
+  // curve.
+  const only = nodes.length === 1 ? nodes[0] : undefined;
+  const radius = only
+    ? Math.min(outlineRadius(only) * viewport.zoom, screen.width / 2, screen.height / 2)
+    : 0;
+  const onCurve = radius * (1 - Math.SQRT1_2);
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: canvas transform shell (pointer-only surface)
@@ -506,6 +523,7 @@ export function SelectionOverlay({
           editing || cropping
             ? `${SELECTED_OUTLINE_PX}px dashed ${ACCENT}`
             : `${SELECTED_OUTLINE_PX}px solid ${ACCENT}`,
+        borderRadius: radius,
         transform: `rotate(${box.rotation}deg)`,
         transformOrigin: 'center',
       }}
@@ -559,8 +577,8 @@ export function SelectionOverlay({
             pointerEvents: 'none',
             background: ACCENT,
             ...(shownZone === 'top' || shownZone === 'bottom'
-              ? { left: 0, width: '100%', height: ACTIVE_EDGE_OUTLINE_PX }
-              : { top: 0, height: '100%', width: ACTIVE_EDGE_OUTLINE_PX }),
+              ? { left: radius, right: radius, height: ACTIVE_EDGE_OUTLINE_PX }
+              : { top: radius, bottom: radius, width: ACTIVE_EDGE_OUTLINE_PX }),
             ...(shownZone === 'top' && { top: -ACTIVE_EDGE_OUTLINE_PX / 2 }),
             ...(shownZone === 'bottom' && { bottom: -ACTIVE_EDGE_OUTLINE_PX / 2 }),
             ...(shownZone === 'left' && { left: -ACTIVE_EDGE_OUTLINE_PX / 2 }),
@@ -579,8 +597,12 @@ export function SelectionOverlay({
             background: ACCENT,
             border: '1.5px solid var(--color-sunken)',
             boxSizing: 'border-box',
-            ...(shownZone.includes('top') ? { top: -handle } : { bottom: -handle }),
-            ...(shownZone.includes('left') ? { left: -handle } : { right: -handle }),
+            ...(shownZone.includes('top')
+              ? { top: onCurve - handle }
+              : { bottom: onCurve - handle }),
+            ...(shownZone.includes('left')
+              ? { left: onCurve - handle }
+              : { right: onCurve - handle }),
           }}
         />
       )}

@@ -1,9 +1,11 @@
 import { Application, Container, Graphics, type Texture } from 'pixi.js';
 import type { BlobInfo, Group, Item, Note } from '@/api/client';
+import { isBoardItem } from '@/color/items';
 import { clampZoom, screenToWorld, wheelZoomFactor } from './coordinates';
 import { NodeInteractionController } from './NodeInteractionController';
 import { itemToNode, noteToNode } from './nodes/adapters';
 import type { CardTextureSource } from './nodes/CardTextureSource';
+import type { PaletteTextureSource, WheelTextureSource } from './nodes/ColorTextureSources';
 import type { GifTextureSource } from './nodes/GifTextureSource';
 import { type ModelTextureSource, modelTextureScale } from './nodes/ModelTextureSource';
 import type { ModelSettings } from './nodes/modelView';
@@ -45,6 +47,11 @@ type CanvasOptions = {
    *  viewport, or they run ahead of the canvas while easing. */
   onRenderedViewportChange?: (viewport: ViewportState) => void;
   onSelectionChange?: (nodeId: string | null) => void;
+  /** A click (press and release without a move) on a node. */
+  onNodeClick?: (nodeId: string, clientX: number, clientY: number) => void;
+  /** A press on bare canvas or an unselected node, before the bindings:
+   *  true when it was taken (a palette swatch pulled out). */
+  onSwatchPress?: (event: PointerEvent) => boolean;
   onSelectionToggle?: (nodeId: string) => void;
   onMultiSelectChange?: (nodeIds: string[]) => void;
   onBoxSelect?: (worldRect: { x1: number; y1: number; x2: number; y2: number }) => void;
@@ -80,6 +87,10 @@ export class BoardCanvas {
   });
   private readonly noteTextures: NoteTextureSource = nodeKindRegistry.note.textureSourceFactory();
   private readonly cardTextures: CardTextureSource = nodeKindRegistry.file.textureSourceFactory();
+  private readonly paletteTextures: PaletteTextureSource =
+    nodeKindRegistry.palette.textureSourceFactory();
+  private readonly wheelTextures: WheelTextureSource =
+    nodeKindRegistry.colorwheel.textureSourceFactory();
   private readonly modelTextures: ModelTextureSource = nodeKindRegistry.model.textureSourceFactory({
     onChange: () => this.renderVisible(),
   });
@@ -130,6 +141,8 @@ export class BoardCanvas {
       },
       {
         onSelectionChange: (nodeId) => this.options.onSelectionChange?.(nodeId),
+        onNodeClick: (nodeId, clientX, clientY) =>
+          this.options.onNodeClick?.(nodeId, clientX, clientY),
         onSelectionToggle: (nodeId) => this.options.onSelectionToggle?.(nodeId),
         onMultiSelectChange: (nodeIds) => this.options.onMultiSelectChange?.(nodeIds),
         onClearSelection: () => this.options.onClearSelection?.(),
@@ -231,11 +244,10 @@ export class BoardCanvas {
     };
     const next: CanvasNode[] = [];
     for (const item of items) {
-      if (!item.blob_hash) continue;
-      const withBlob = item as Item & { blob_hash: string };
-      const blob = blobs.get(withBlob.blob_hash);
-      const locked = withBlob.group_id !== null && lockedGroups.has(withBlob.group_id);
-      next.push(cached(withBlob, blob, locked, () => itemToNode(withBlob, blob, locked)));
+      if (!isBoardItem(item)) continue;
+      const blob = item.blob_hash ? blobs.get(item.blob_hash) : undefined;
+      const locked = item.group_id !== null && lockedGroups.has(item.group_id);
+      next.push(cached(item, blob, locked, () => itemToNode(item, blob, locked)));
     }
     for (const note of notes) next.push(cached(note, undefined, false, () => noteToNode(note)));
     this.nodes = liveById
@@ -439,6 +451,17 @@ export class BoardCanvas {
     return { ...bounds, x: bounds.x + rect.left, y: bounds.y + rect.top };
   }
 
+  /** What a node shows right now (a GIF's current frame, an image's
+   *  loaded level), for sampling its colours. */
+  nodeImage(nodeId: string): CanvasImageSource | null {
+    return this.renderers.get(nodeId)?.currentImage?.() ?? null;
+  }
+
+  /** A model rendered without its sky, for sampling its colours. */
+  modelSnapshot(node: SpriteNode, width: number, height: number): Promise<ImageBitmap | null> {
+    return this.modelTextures.snapshot(node, width, height);
+  }
+
   /** What a model item shows (dev/test hook). */
   modelStatus(nodeId: string): string {
     return this.modelTextures.status(nodeId);
@@ -473,6 +496,8 @@ export class BoardCanvas {
     this.noteTextures.dispose();
     this.cardTextures.dispose();
     this.modelTextures.dispose();
+    this.paletteTextures.dispose();
+    this.wheelTextures.dispose();
     this.app.destroy(true, { children: true, texture: false });
   }
 
@@ -489,6 +514,7 @@ export class BoardCanvas {
     const visibleNotes = new Set<string>();
     const visibleCards = new Set<string>();
     const visibleModels = new Set<string>();
+    const visibleTools = new Set<string>();
     const zoom = this.renderedViewport.zoom;
     const dpr = window.devicePixelRatio;
     const modelScale = String(modelTextureScale(zoom, dpr));
@@ -510,6 +536,12 @@ export class BoardCanvas {
         texture = this.noteTextures.texture(node, this.levelFor(node));
       } else if (node.kind === 'file') {
         texture = card(node);
+      } else if (node.kind === 'palette') {
+        visibleTools.add(node.id);
+        texture = this.paletteTextures.texture(node, cardScale);
+      } else if (node.kind === 'colorwheel') {
+        visibleTools.add(node.id);
+        texture = this.wheelTextures.texture(node, cardScale, zoom);
       } else if (node.kind === 'model') {
         // The rendered view once it arrives; the card until then, and with
         // the reason when the model can't be opened.
@@ -535,6 +567,8 @@ export class BoardCanvas {
     this.noteTextures.retain(visibleNotes);
     this.cardTextures.retain(visibleCards);
     this.modelTextures.retain(visibleModels);
+    this.paletteTextures.retain(visibleTools);
+    this.wheelTextures.retain(visibleTools);
     this.drawGroupBackdrops();
     this.scene.sortableChildren = true;
   }
@@ -819,6 +853,7 @@ export class BoardCanvas {
   }
 
   private readonly onPointerDown = (event: PointerEvent): void => {
+    if (this.options.onSwatchPress?.(event)) return;
     // The bindings table decides what this press means.
     const action = this.controller.resolve(event);
     if (action === null) return; // e.g. right button: the context menu
@@ -926,7 +961,8 @@ export class BoardCanvas {
   private readonly onWheel = (event: WheelEvent): void => {
     // Text (a note being edited, a field) scrolls instead; a surface with a
     // wheel of its own (orbit mode) stops the event before it gets here.
-    if ((event.target as Element | null)?.closest?.('textarea, input, select')) return;
+    if ((event.target as Element | null)?.closest?.('textarea, input, select, [data-wheel-scroll]'))
+      return;
     event.preventDefault();
     // Multiply the TARGET zoom, so notches spun faster than the camera eases
     // all add up; anchor on the world point under the pointer as painted.

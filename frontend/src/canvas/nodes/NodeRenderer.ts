@@ -13,6 +13,8 @@ export interface NodeRenderer {
   sync(node: BoardNode, frame: RenderFrame): void;
   /** Board-wide grayscale toggle, applied to already-mounted renderers. */
   setGrayscale(enabled: boolean): void;
+  /** What the node shows right now (its texture's image), if anything. */
+  currentImage?(): CanvasImageSource | null;
   /** Painted axis-aligned bounds in canvas-local px (test/debug hook). */
   paintedBounds(): { x: number; y: number; width: number; height: number } | null;
   destroy(): void;

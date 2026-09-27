@@ -87,9 +87,6 @@ export function fontString(
   return `${italic ? 'italic ' : ''}${bold ? 700 : 400} ${px}px ${family}`;
 }
 
-/** The plain body font (no weight/style), e.g. for file cards. */
-export const noteFont = (sizePx = NOTE_FONT_PX) => `${sizePx}px ${NOTE_FONT_FAMILY}`;
-
 // --------------------------------------------------------------- content --
 
 const isHex = (value: unknown): value is string =>

@@ -453,6 +453,17 @@ Done:
   references. Shading stays cheap: a model pays only for the maps it has
   (defines); metalness/roughness add a small GGX specular with sky
   reflections; normal maps need no tangents (derivative frame). FBX colours are read as linear (Blender writes them so).
+- Colour (an Adobe Color-style system): the colour wheel and palettes are
+  blob-less items (types colorwheel / palette; everything in item
+  metadata, created with restore_item ops, so undoable and exported with
+  the board). iro.js draws the wheel; nine harmonies (Adobe's eight plus
+  tetrad), HSV/HSL brightness, a library of every palette the wheel
+  produced, a random generator (harmony + saturation/value bands + dark
+  and light anchors). Palettes copy/sample on click, pull a colour out
+  with Alt+drag, join end to end. Sample Colors (k-means++ in OKLab,
+  look-alike clusters merged) turns an image, a GIF/video frame or a 3D
+  model (sky filtered out) into a palette. The corner button that toggled
+  the theme brings the wheel; the theme stays in Settings.
 Differences from the plan text: the audio mini-player is the native
 <audio> element, not a custom Web Audio transport. The waveform comes
 from ffmpeg, not symphonia.

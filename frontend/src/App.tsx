@@ -1,4 +1,13 @@
-import { type ComponentType, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type ComponentType,
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { flushSync } from 'react-dom';
 import { BatchQueue } from '@/api/batchQueue';
 import {
@@ -17,8 +26,15 @@ import {
 import { CLIENT_ID } from '@/api/clientId';
 import { BoardSync } from '@/api/ws';
 import { BoardCanvas, type ViewportState } from '@/canvas/BoardCanvas';
-import { applyBindingsOverride, bindings, resolveKey } from '@/canvas/bindings';
+import {
+  applyBindingsOverride,
+  bindings,
+  heldModifiers,
+  resolveKey,
+  resolvePress,
+} from '@/canvas/bindings';
 import { MIN_ZOOM, screenToWorld } from '@/canvas/coordinates';
+import { isHeld } from '@/canvas/heldKeys';
 import {
   itemFields,
   itemToNode,
@@ -43,15 +59,34 @@ import {
   noteText,
   storedStyle,
 } from '@/canvas/nodes/noteText';
+import { outlineRadius } from '@/canvas/nodes/registry';
 import type { CanvasNode, NodeChange, NodePatch, SpriteNode } from '@/canvas/nodes/types';
 import { CameraBound, renderedCamera } from '@/canvas/renderedCamera';
 import { type Guide, recrop } from '@/canvas/transform';
+import { harmonyHexes, hexToHsv } from '@/color/harmony';
+import {
+  DEFAULT_WHEEL,
+  isBoardItem,
+  joinTarget,
+  PALETTE_TYPE,
+  type PaletteBox,
+  paletteSize,
+  swatchAt,
+  toolItem,
+  WHEEL_SIZE,
+  WHEEL_TYPE,
+  type WheelState,
+} from '@/color/items';
+import { extractPalette } from '@/color/sample';
+import { wheelDetail } from '@/color/wheelLayout';
 import { BoardContextMenu, type MenuEntry } from '@/components/BoardContextMenu';
 import { BoardSwitcher } from '@/components/BoardSwitcher';
+import { ColorWheelPanel } from '@/components/ColorWheelPanel';
 import { type MediaHandle, MediaPlayer } from '@/components/MediaPlayer';
 import { ModelGizmo } from '@/components/ModelGizmo';
 import { dragModelView, ModelOrbit } from '@/components/ModelOrbit';
 import { NoteEditor } from '@/components/NoteEditor';
+import { PaletteHexTip } from '@/components/PaletteHexTip';
 import SearchBar, { emptyFilter, type FilterState } from '@/components/SearchBar';
 import { SelectionOverlay } from '@/components/SelectionOverlay';
 import { SettingsSheet } from '@/components/SettingsSheet';
@@ -81,7 +116,12 @@ import { type HistoryEntry, prepareCommand } from '@/state/history';
 import { useBoardFilter } from '@/state/useBoardFilter';
 import { useAppearance } from '@/ui/appearance';
 import { Icon } from '@/ui/Icon';
+import { reducedMotion } from '@/ui/motion';
 import { useProximityReveal } from '@/ui/useProximityReveal';
+
+/** How long a deselected colour wheel eases back into its canvas picture
+ *  (index.css tool-out). */
+const WHEEL_LEAVE_MS = 240;
 
 type HealthState =
   | { kind: 'loading' }
@@ -155,9 +195,25 @@ function BoardApp() {
   const [bindingsDismissed, setBindingsDismissed] = useState(false);
   // A quiet confirmation (e.g. what an imported board brought across).
   const [notice, setNotice] = useState<{ title: string; message?: string } | null>(null);
+  // A short confirmation ("Copied #3B82C4") that clears itself.
+  const flashTimer = useRef<number | null>(null);
+  const flash = (title: string) => {
+    setNotice({ title });
+    if (flashTimer.current !== null) window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => {
+      flashTimer.current = null;
+      setNotice((current) => (current?.title === title ? null : current));
+    }, 1800);
+  };
+  // Palette gestures the canvas and the selection shell hand over (read
+  // at the time, from the latest render).
+  const paletteClickRef = useRef<(nodeId: string, clientX: number, clientY: number) => void>(
+    () => undefined,
+  );
+  const swatchPressRef = useRef<(event: PointerEvent) => boolean>(() => false);
+  const [pullGhost, setPullGhost] = useState<{ hex: string; x: number; y: number } | null>(null);
   const [healthDismissed, setHealthDismissed] = useState(false);
   const theme = useAppearance((state) => state.resolved);
-  const setAppearance = useAppearance((state) => state.set);
   const glass = useAppearance((state) => state.glass);
   // Unified selection: items and notes share one id list (mixed multi-select
   // works); the noteIds set below routes persistence per kind.
@@ -488,6 +544,8 @@ function BoardApp() {
       onMoveWindow: (event) => {
         beginWindowMove(event, RIGHT_CLICK_EPSILON_PX);
       },
+      onNodeClick: (nodeId, clientX, clientY) => paletteClickRef.current(nodeId, clientX, clientY),
+      onSwatchPress: (event) => swatchPressRef.current(event),
       snapToGrid: false,
     });
     boardCanvas.current = canvas;
@@ -517,15 +575,12 @@ function BoardApp() {
   useEffect(() => {
     boardCanvas.current?.setZoomSpeed(zoomSpeed);
   }, [zoomSpeed]);
-  // Unfilled notes draw their text in the theme's flip: repaint on a switch.
+  // Unfilled notes draw their text in the theme's flip, and the colour
+  // wheel is theme glass: repaint on a switch.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: repaint triggers
   useEffect(() => {
-    if (theme) boardCanvas.current?.redraw();
-  }, [theme]);
-
-  // The note being edited is drawn by its DOM editor, not the canvas.
-  useEffect(() => {
-    boardCanvas.current?.setHiddenNode(noteEditing ? noteEditingId : null);
-  }, [noteEditing, noteEditingId]);
+    boardCanvas.current?.redraw();
+  }, [theme, glass]);
 
   // Copy / cut / paste ride the platform's own clipboard events (Ctrl/Cmd+C,
   // X, V): they carry clipboard data synchronously and need no permission.
@@ -642,11 +697,11 @@ function BoardApp() {
     new WeakMap<Item, { node: CanvasNode; blob: BlobInfo | undefined; locked: boolean }>(),
   );
   const baseItemNodes = useMemo(() => {
-    const byId = new Map<string, { item: Item & { blob_hash: string }; node: CanvasNode }>();
+    const byId = new Map<string, { item: Item; node: CanvasNode }>();
     for (const item of snapshotItems ?? []) {
-      if (!item.blob_hash) continue;
-      const withBlob = item as Item & { blob_hash: string };
-      const blob = blobsByHash.get(withBlob.blob_hash);
+      if (!isBoardItem(item)) continue;
+      const withBlob = item;
+      const blob = item.blob_hash ? blobsByHash.get(item.blob_hash) : undefined;
       const locked = withBlob.group_id !== null && lockedGroupIds.has(withBlob.group_id);
       let hit = nodeCache.current.get(withBlob);
       if (!hit || hit.blob !== blob || hit.locked !== locked) {
@@ -668,7 +723,7 @@ function BoardApp() {
         id,
         itemToNode(
           itemWithPatch(base.item, preview),
-          blobsByHash.get(base.item.blob_hash),
+          base.item.blob_hash ? blobsByHash.get(base.item.blob_hash) : undefined,
           base.node.locked,
         ),
       );
@@ -733,6 +788,45 @@ function BoardApp() {
     );
     return [...selectedNodes, ...mates];
   }, [selectedNodes, selectedNodeIds, boardNodes, drillGroupId]);
+  /** The lone selected colour wheel (its live controls) and the board's
+   *  wheel, if it has one (the corner button summons it). */
+  const loneWheel =
+    shellNodes.length === 1 && shellNodes[0]?.kind === 'colorwheel' ? shellNodes[0] : null;
+  const wheelNode = boardNodes.find((node): node is SpriteNode => node.kind === 'colorwheel');
+  /** Its live panel shows unless it's zoomed far out (then the canvas
+   *  picture stays, and a press anywhere on it moves it). */
+  // (A boolean off the painted camera: App re-renders only on a crossing.)
+  const wheelZoomedIn = useSyncExternalStore(
+    renderedCamera.subscribe,
+    () => !!loneWheel && wheelDetail(loneWheel.width * renderedCamera.get().zoom) !== 'minimal',
+  );
+  const liveWheel = wheelZoomedIn ? loneWheel : null;
+  const liveWheelId = liveWheel?.id ?? null;
+  // Deselected (or zoomed far out), the panel stays a moment to ease back
+  // into the canvas picture (index.css .leaving), then the canvas draws it.
+  const [leavingWheelId, setLeavingWheelId] = useState<string | null>(null);
+  const shownWheelId = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = shownWheelId.current;
+    shownWheelId.current = liveWheelId;
+    if (liveWheelId || !previous || reducedMotion()) {
+      setLeavingWheelId(null);
+      return;
+    }
+    setLeavingWheelId(previous);
+    const timer = window.setTimeout(() => setLeavingWheelId(null), WHEEL_LEAVE_MS);
+    return () => window.clearTimeout(timer);
+  }, [liveWheelId]);
+  const leavingWheel =
+    !liveWheel && leavingWheelId ? boardNodesById.get(leavingWheelId) : undefined;
+  const panelWheel =
+    liveWheel ?? (leavingWheel?.kind === 'colorwheel' ? (leavingWheel as SpriteNode) : null);
+  const panelWheelId = panelWheel?.id ?? null;
+  // The note being edited is drawn by its DOM editor, not the canvas; the
+  // wheel by its glass panel while that's up.
+  useEffect(() => {
+    boardCanvas.current?.setHiddenNode(noteEditing ? noteEditingId : panelWheelId);
+  }, [noteEditing, noteEditingId, panelWheelId]);
   /** The lone selected 3D model (its sun trackball, Alt+drag camera). */
   const loneModel =
     shellNodes.length === 1 && shellNodes[0]?.kind === 'model' ? shellNodes[0] : null;
@@ -843,6 +937,13 @@ function BoardApp() {
   // with notes in the move set): items update in place, notes upsert whole.
   commitNodeChanges.current = (changes, label = 'Transform selection', coalesceKey) => {
     if (!snapshot) return;
+    // A palette dropped at another's end joins it instead of moving (undo
+    // restores it where it was: the delete's inverse is the item as it was).
+    const join = paletteJoinOps(changes);
+    if (join.length > 0) {
+      commitBoardOps.current(join, 'Join Palettes', coalesceKey);
+      return;
+    }
     const ops: BatchRequestOp[] = [];
     for (const change of changes) {
       if (change.kind === 'item') {
@@ -863,6 +964,49 @@ function BoardApp() {
       }
     }
     commitBoardOps.current(ops, label, coalesceKey);
+  };
+
+  /** Every palette on the board as a box (with live patches applied). */
+  const paletteBoxes = (patches: Record<string, NodePatch> = {}): PaletteBox[] =>
+    boardNodes
+      .filter((node): node is SpriteNode => node.kind === 'palette')
+      .map((node) => {
+        const patch = patches[node.id] ?? {};
+        return {
+          id: node.id,
+          x: patch.x ?? node.x,
+          y: patch.y ?? node.y,
+          width: patch.width ?? node.width,
+          height: patch.height ?? node.height,
+          rotation: patch.rotation ?? node.rotation,
+          colors: node.colors ?? [],
+        };
+      });
+  /** A palette moved to the end of another joins it: the other grows by
+   *  its colours and the moved one goes (same undo step as the move). */
+  const paletteJoinOps = (changes: NodeChange[]): BatchRequestOp[] => {
+    const moved = changes.filter(
+      (change) =>
+        change.kind === 'item' &&
+        (change.patch.x !== undefined || change.patch.y !== undefined) &&
+        boardNodesById.get(change.id)?.kind === 'palette',
+    );
+    if (moved.length !== 1 || changes.length !== 1) return [];
+    const patches = Object.fromEntries(changes.map((change) => [change.id, change.patch]));
+    const boxes = paletteBoxes(patches);
+    const box = boxes.find((candidate) => candidate.id === moved[0]?.id);
+    if (!box) return [];
+    const join = joinTarget(box, boxes, JOIN_DISTANCE_PX / renderedCamera.get().zoom);
+    if (!join) return [];
+    return [
+      {
+        kind: 'update',
+        op_id: crypto.randomUUID(),
+        item_id: join.target.id,
+        fields: { ...join.box, metadata: { palette: { colors: join.colors } } },
+      },
+      { kind: 'delete', op_id: crypto.randomUUID(), item_ids: [box.id] },
+    ];
   };
 
   commitItemChanges.current = (changes) => {
@@ -950,7 +1094,7 @@ function BoardApp() {
       // Everything the canvas currently shows (a search filter narrows it).
       setNoteEditingId(null);
       setSelectedNodeIds([
-        ...renderedItems.filter((item) => item.blob_hash).map((item) => item.id),
+        ...renderedItems.filter(isBoardItem).map((item) => item.id),
         ...canvasNotes.map((note) => note.id),
       ]);
     },
@@ -1105,6 +1249,221 @@ function BoardApp() {
       });
       if (changes.length > 0) commitNodeChanges.current(changes, 'Restore Proportions');
     },
+    /** Merge `patch` into one item's metadata (one undo step). */
+    setItemMeta: (id: string, patch: Record<string, unknown>, label: string) => {
+      commitBoardOps.current(
+        [{ kind: 'update', op_id: crypto.randomUUID(), item_id: id, fields: { metadata: patch } }],
+        label,
+      );
+    },
+    /** Patch the board's colour wheel (or the given one). */
+    setWheel: (patch: Partial<WheelState>, label: string, id = wheelNode?.id) => {
+      if (id) actions.setItemMeta(id, { colorwheel: patch }, label);
+    },
+    /** The corner button: bring the colour wheel. Not on the board yet: it
+     *  arrives at the middle of the view. Off screen: it moves there. On
+     *  screen: the view pans to centre it. */
+    summonWheel: () => {
+      const canvas = boardCanvas.current;
+      if (!canvas || !activeBoardId || !snapshot) return;
+      const camera = renderedCamera.get();
+      const { width, height } = canvas.size();
+      const middle = {
+        x: (width / 2 - camera.x) / camera.zoom,
+        y: (height / 2 - camera.y) / camera.zoom,
+      };
+      if (!wheelNode) {
+        const size = {
+          width: WHEEL_SIZE.width / camera.zoom,
+          height: WHEEL_SIZE.height / camera.zoom,
+        };
+        const id = crypto.randomUUID();
+        commitBoardOps.current(
+          [
+            {
+              kind: 'restore_item',
+              op_id: crypto.randomUUID(),
+              tag_ids: [],
+              item: toolItem({
+                id,
+                boardId: activeBoardId,
+                type: WHEEL_TYPE,
+                x: middle.x - size.width / 2,
+                y: middle.y - size.height / 2,
+                ...size,
+                zIndex: topZ(snapshot) + 1,
+                metadata: { colorwheel: DEFAULT_WHEEL },
+              }),
+            },
+          ],
+          'Color Wheel',
+        );
+        setSelectedNodeIds([id]);
+        return;
+      }
+      const bounds = wheelNode.rotatedBounds();
+      const view = {
+        left: -camera.x / camera.zoom,
+        top: -camera.y / camera.zoom,
+        right: (width - camera.x) / camera.zoom,
+        bottom: (height - camera.y) / camera.zoom,
+      };
+      const onScreen =
+        bounds.right > view.left &&
+        bounds.left < view.right &&
+        bounds.bottom > view.top &&
+        bounds.top < view.bottom;
+      if (onScreen) {
+        const cx = (bounds.left + bounds.right) / 2;
+        const cy = (bounds.top + bounds.bottom) / 2;
+        canvas.flyTo({
+          x: width / 2 - cx * camera.zoom,
+          y: height / 2 - cy * camera.zoom,
+          zoom: camera.zoom,
+        });
+      } else {
+        commitBoardOps.current(
+          [
+            {
+              kind: 'update',
+              op_id: crypto.randomUUID(),
+              item_id: wheelNode.id,
+              fields: {
+                x: middle.x - wheelNode.width / 2,
+                y: middle.y - wheelNode.height / 2,
+              },
+            },
+          ],
+          'Bring Color Wheel',
+        );
+      }
+      setSelectedNodeIds([wheelNode.id]);
+    },
+    /** A palette of `colors` centred at a world point — joining a palette
+     *  it lands at the end of, or as a new item (selected). */
+    createPalette: (colors: string[], at: { x: number; y: number }, label: string) => {
+      if (!activeBoardId || !snapshot || colors.length === 0) return;
+      const zoom = renderedCamera.get().zoom;
+      const size = paletteSize(colors.length, zoom);
+      const id = crypto.randomUUID();
+      const box: PaletteBox = {
+        id,
+        x: at.x - size.width / 2,
+        y: at.y - size.height / 2,
+        ...size,
+        rotation: 0,
+        colors,
+      };
+      const join = joinTarget(box, paletteBoxes(), JOIN_DISTANCE_PX / zoom);
+      if (join) {
+        commitBoardOps.current(
+          [
+            {
+              kind: 'update',
+              op_id: crypto.randomUUID(),
+              item_id: join.target.id,
+              fields: { ...join.box, metadata: { palette: { colors: join.colors } } },
+            },
+          ],
+          label,
+        );
+        setSelectedNodeIds([join.target.id]);
+        return;
+      }
+      commitBoardOps.current(
+        [
+          {
+            kind: 'restore_item',
+            op_id: crypto.randomUUID(),
+            tag_ids: [],
+            item: toolItem({
+              id,
+              boardId: activeBoardId,
+              type: PALETTE_TYPE,
+              x: box.x,
+              y: box.y,
+              ...size,
+              zIndex: topZ(snapshot) + 1,
+              metadata: { palette: { colors } },
+            }),
+          },
+        ],
+        label,
+      );
+      setSelectedNodeIds([id]);
+    },
+    /** Copy a hex to the clipboard, and say so. */
+    copyHex: (hex: string) => {
+      void navigator.clipboard?.writeText(hex).catch(() => undefined);
+      flash(`Copied ${hex.toUpperCase()}`);
+    },
+    /** Save a palette to the wheel's library (bringing a wheel if none). */
+    addToPalettes: (colors: string[]) => {
+      if (!wheelNode) {
+        actions.summonWheel();
+        // The new wheel is created in the same tick: patch it next frame.
+        requestAnimationFrame(() =>
+          actionsRef.current.setWheel({ library: [colors] }, 'Add to Palettes'),
+        );
+        return;
+      }
+      const library = wheelNode.wheel?.library ?? [];
+      actions.setWheel({ library: [colors, ...library] }, 'Add to Palettes');
+      flash('Added to Palettes');
+    },
+    /** Sample an item's main colours into a new palette under it (and the
+     *  library): images and GIFs as shown, a video's current frame, a 3D
+     *  model rendered without its sky. */
+    sampleColors: async (node: SpriteNode) => {
+      const canvas = boardCanvas.current;
+      if (!canvas) return;
+      let source: CanvasImageSource | null = null;
+      if (node.kind === 'model') {
+        const aspect = node.height / Math.max(1, node.width);
+        source = await canvas.modelSnapshot(node, 192, 192 * aspect);
+      } else if (node.kind === 'video') {
+        const video = document.querySelector<HTMLVideoElement>(`video[data-item-id="${node.id}"]`);
+        source = video && video.readyState >= 2 ? video : canvas.nodeImage(node.id);
+      } else {
+        source = canvas.nodeImage(node.id);
+      }
+      if (!source && node.blobHash) {
+        try {
+          const response = await fetch(blobUrl(node.blobHash, 'small'));
+          if (response.ok) source = await createImageBitmap(await response.blob());
+        } catch {
+          source = null;
+        }
+      }
+      if (!source) {
+        flash('Nothing to sample yet');
+        return;
+      }
+      const size = 128;
+      const sample = new OffscreenCanvas(size, size);
+      const context2d = sample.getContext('2d', { willReadFrequently: true });
+      if (!context2d) return;
+      context2d.drawImage(source, 0, 0, size, size);
+      const colors = extractPalette(context2d.getImageData(0, 0, size, size).data, { count: 5 });
+      if (colors.length === 0) {
+        flash('No colours found');
+        return;
+      }
+      const zoom = renderedCamera.get().zoom;
+      const bounds = node.rotatedBounds();
+      const palette = paletteSize(colors.length, zoom);
+      actions.createPalette(
+        colors,
+        { x: (bounds.left + bounds.right) / 2, y: bounds.bottom + palette.height / 2 + 16 / zoom },
+        'Sample Colors',
+      );
+      if (wheelNode) {
+        actions.setWheel(
+          { library: [colors, ...(wheelNode.wheel?.library ?? [])] },
+          'Add to Palettes',
+        );
+      }
+    },
     /** Space: play / pause the lone selected video or audio item. */
     play_pause: () => {
       const lone = shellNodes.length === 1 ? shellNodes[0] : undefined;
@@ -1154,7 +1513,7 @@ function BoardApp() {
       const { width, height } = canvas.size();
       const bounds = unionRect([
         ...renderedItems
-          .filter((item) => item.blob_hash)
+          .filter(isBoardItem)
           .map((item) => boardNodesById.get(item.id)?.rotatedBounds())
           .filter((rect) => rect !== undefined),
         ...canvasNotes.map((note) => noteToNode(note).rotatedBounds()),
@@ -1274,6 +1633,68 @@ function BoardApp() {
     },
   };
   const actionsRef = useRef(actions);
+  /** Which palette swatch a client point is on, if any. */
+  const swatchUnder = (clientX: number, clientY: number) => {
+    const canvas = boardCanvas.current;
+    const nodeId = canvas?.nodeIdAt(clientX, clientY);
+    const node = nodeId ? boardNodesById.get(nodeId) : undefined;
+    if (node?.kind !== 'palette') return null;
+    const colors = node.colors ?? [];
+    const world = screenToWorld(
+      { clientX, clientY },
+      renderedCamera.get(),
+      canvasHost.current?.getBoundingClientRect() ?? new DOMRect(),
+    );
+    const index = swatchAt(node, colors.length, world);
+    const hex = index === null ? undefined : colors[index];
+    return hex ? { node, hex } : null;
+  };
+  // A click on a swatch copies its hex and samples it into the wheel.
+  paletteClickRef.current = (nodeId, clientX, clientY) => {
+    if (boardNodesById.get(nodeId)?.kind !== 'palette') return;
+    const hit = swatchUnder(clientX, clientY);
+    if (!hit) return;
+    actionsRef.current.copyHex(hit.hex);
+    const wheel = wheelNode?.wheel;
+    if (wheelNode && wheel) {
+      actionsRef.current.setWheel(
+        { base: hit.hex, colors: harmonyHexes(hexToHsv(hit.hex), wheel.harmony) },
+        'Sample Color',
+        wheelNode.id,
+      );
+    }
+  };
+  // Alt+drag (bindings `pull_color`) on a swatch pulls a copy of it out.
+  swatchPressRef.current = (event) => {
+    const action = resolvePress(event.button, heldModifiers(event, isHeld), 'swatch');
+    if (action !== 'pull_color') return false;
+    const hit = swatchUnder(event.clientX, event.clientY);
+    if (!hit) return false;
+    event.preventDefault();
+    const start = { x: event.clientX, y: event.clientY };
+    let moved = false;
+    const move = (moveEvent: PointerEvent) => {
+      if (!moved && Math.hypot(moveEvent.clientX - start.x, moveEvent.clientY - start.y) < 4)
+        return;
+      moved = true;
+      setPullGhost({ hex: hit.hex, x: moveEvent.clientX, y: moveEvent.clientY });
+    };
+    const up = (upEvent: PointerEvent) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      setPullGhost(null);
+      if (!moved) return;
+      const world = screenToWorld(
+        { clientX: upEvent.clientX, clientY: upEvent.clientY },
+        renderedCamera.get(),
+        canvasHost.current?.getBoundingClientRect() ?? new DOMRect(),
+      );
+      actionsRef.current.createPalette([hit.hex], world, 'Pull Color');
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    return true;
+  };
   actionsRef.current = actions;
 
   // §4 double-click: a note enters Editing; an image zooms in on itself (again
@@ -1428,6 +1849,8 @@ function BoardApp() {
           rotation: node.rotation,
           zIndex: node.zIndex,
           poster: node.kind === 'note' ? undefined : node.poster,
+          colors: node.kind === 'palette' ? node.colors : undefined,
+          wheel: node.kind === 'colorwheel' ? node.wheel : undefined,
         }));
       },
       notes: snapshot?.notes.map((note) => ({ id: note.id, text: noteText(note.content_json) })),
@@ -1923,9 +2346,24 @@ function BoardApp() {
                         top: camera.y + bounds.top * camera.zoom - 0.5,
                         width: (bounds.right - bounds.left) * camera.zoom,
                         height: (bounds.bottom - bounds.top) * camera.zoom,
+                        // The colour tools' own rounded shape (upright only:
+                        // a rotated one is outlined by its bounds).
+                        borderRadius: node.rotation === 0 ? outlineRadius(node) * camera.zoom : 0,
                       }}
                     />
                   );
+                })()}
+              {hoveredNodeId &&
+                (() => {
+                  const node = boardNodesById.get(hoveredNodeId);
+                  return node?.kind === 'palette' ? (
+                    <PaletteHexTip
+                      key={node.id}
+                      node={node as SpriteNode}
+                      camera={camera}
+                      host={canvasHost.current}
+                    />
+                  ) : null;
                 })()}
               {/* §0.7 / §1 MULTI-SELECTED — ONE kind-agnostic shell around the
                     whole selection (items and notes). Notes get the exact same 8
@@ -1947,6 +2385,7 @@ function BoardApp() {
                     )
                   }
                   onOutsidePress={(event) => boardCanvas.current?.overlayPointerDown(event)}
+                  onSwatchPress={(event) => swatchPressRef.current(event)}
                   onModelViewPress={(event) => {
                     if (!loneModel) return;
                     dragModelView(event, {
@@ -1965,6 +2404,9 @@ function BoardApp() {
                     // plain click narrows a multi-selection to it.
                     const nodeId = boardCanvas.current?.nodeIdAt(event.clientX, event.clientY);
                     if (!nodeId) return;
+                    if (!event.shiftKey && selectedNodeIds.length === 1) {
+                      paletteClickRef.current(nodeId, event.clientX, event.clientY);
+                    }
                     if (event.shiftKey) {
                       setSelectedNodeIds((previous) =>
                         previous.includes(nodeId)
@@ -2001,6 +2443,24 @@ function BoardApp() {
                   onBoardPress={(event, action) =>
                     boardCanvas.current?.chromePointerDown(event, action)
                   }
+                />
+              )}
+              {panelWheel && (
+                <ColorWheelPanel
+                  key={panelWheel.id}
+                  node={panelWheel}
+                  leaving={!liveWheel}
+                  viewport={camera}
+                  onCommit={(patch, label) => actions.setWheel(patch, label, panelWheel.id)}
+                  onCopy={actions.copyHex}
+                  onDragOut={(colors, clientX, clientY) => {
+                    const world = screenToWorld(
+                      { clientX, clientY },
+                      renderedCamera.get(),
+                      canvasHost.current?.getBoundingClientRect() ?? new DOMRect(),
+                    );
+                    actions.createPalette(colors, world, 'Palette');
+                  }}
                 />
               )}
               {loneModel && (
@@ -2081,11 +2541,18 @@ function BoardApp() {
             <button
               className="icon-button"
               type="button"
-              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-              title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
-              onClick={() => setAppearance({ theme: theme === 'dark' ? 'light' : 'dark' })}
+              aria-label="Color wheel"
+              title="Color wheel"
+              disabled={!activeBoardId}
+              onClick={actions.summonWheel}
+              onContextMenu={(event) => {
+                // Right-click brings it too.
+                event.preventDefault();
+                event.stopPropagation();
+                actions.summonWheel();
+              }}
             >
-              <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
+              <Icon name="palette" />
             </button>
             <button
               className="icon-button"
@@ -2144,7 +2611,31 @@ function BoardApp() {
                     // Phase 11: play / open / download a lone media or file item.
                     const lone = shellNodes.length === 1 ? shellNodes[0] : undefined;
                     if (!lone || lone.kind === 'note') return [];
+                    if (lone.kind === 'colorwheel') return [];
+                    if (lone.kind === 'palette') {
+                      const colors = lone.colors ?? [];
+                      return [
+                        { label: 'Add to Palettes', action: () => actions.addToPalettes(colors) },
+                        {
+                          label: 'Copy Hex Codes',
+                          action: () => {
+                            void navigator.clipboard
+                              ?.writeText(colors.map((hex) => hex.toUpperCase()).join(', '))
+                              .catch(() => undefined);
+                            flash('Copied hex codes');
+                          },
+                        },
+                      ];
+                    }
                     return [
+                      ...(lone.kind !== 'file'
+                        ? [
+                            {
+                              label: 'Sample Colors',
+                              action: () => void actions.sampleColors(lone),
+                            },
+                          ]
+                        : []),
                       ...(lone.kind === 'video' || lone.kind === 'audio'
                         ? [
                             {
@@ -2160,8 +2651,15 @@ function BoardApp() {
                     ];
                   })(),
                   ...modelMenu,
-                  { label: 'Restore Proportions', action: actions.restoreProportions },
-                  ...(shellNodes.length === 1 && shellNodes[0]?.kind !== 'note'
+                  ...(shellNodes.some(
+                    (node) => node.kind === 'palette' || node.kind === 'colorwheel',
+                  )
+                    ? []
+                    : [{ label: 'Restore Proportions', action: actions.restoreProportions }]),
+                  ...(shellNodes.length === 1 &&
+                  shellNodes[0]?.kind !== 'note' &&
+                  shellNodes[0]?.kind !== 'palette' &&
+                  shellNodes[0]?.kind !== 'colorwheel'
                     ? [
                         cropNodeId === shellNodes[0]?.id
                           ? {
@@ -2279,6 +2777,12 @@ function BoardApp() {
         />
       )}
       <Toasts toasts={toasts} />
+      {pullGhost && (
+        <div
+          className="palette-ghost single"
+          style={{ left: pullGhost.x, top: pullGhost.y, background: pullGhost.hex }}
+        />
+      )}
       <input
         ref={textureInput}
         className="visually-hidden"
@@ -2322,6 +2826,8 @@ const MAX_RESIDENT_MEDIA = 6;
 /** A right press that travels less than this (screen px) is a click: the
  *  context menu. Further, and it's a right-drag (the window moves). */
 const RIGHT_CLICK_EPSILON_PX = 3;
+/** Palettes dropped this close (screen px) end to end join up. */
+const JOIN_DISTANCE_PX = 18;
 
 /** Note text colours (plus Automatic: the theme's flip, or contrast with a
  *  fill). Board content, so fixed across themes. */

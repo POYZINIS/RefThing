@@ -1,6 +1,16 @@
+import type { WheelState } from '@/color/items';
 import type { ModelSettings } from './modelView';
 import type { NoteStyle } from './noteText';
-export type NodeKind = 'image' | 'gif' | 'video' | 'audio' | 'model' | 'file' | 'note';
+export type NodeKind =
+  | 'image'
+  | 'gif'
+  | 'video'
+  | 'audio'
+  | 'model'
+  | 'file'
+  | 'palette'
+  | 'colorwheel'
+  | 'note';
 
 /** Kinds backed by an item + blob (everything but notes). */
 export type SpriteKind = Exclude<NodeKind, 'note'>;
@@ -60,6 +70,10 @@ export interface SpriteNode extends BoardNode {
   readonly poster: boolean;
   /** 3D models: how the model is viewed (item metadata `model`). */
   readonly model?: ModelSettings;
+  /** Palettes: their colours (item metadata `palette.colors`). */
+  readonly colors?: string[];
+  /** The colour wheel: its picker state and saved palettes. */
+  readonly wheel?: WheelState;
 }
 
 /** A note: painted by the NoteTextureSource from its text (pretext layout). */

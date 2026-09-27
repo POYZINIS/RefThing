@@ -1,4 +1,5 @@
 import type { BlobInfo, Item, ItemPatch, Note } from '@/api/client';
+import { paletteColors, wheelState } from '@/color/items';
 import { type Crop, FULL_CROP } from '../transform';
 import { cardDetail, itemKind, POSTER_LEVELS } from './itemKind';
 import { modelSettings } from './modelView';
@@ -7,12 +8,9 @@ import { nodeKindRegistry } from './registry';
 import { type NodePatch, type NoteNode, nodeGeometry, type SpriteNode } from './types';
 
 /** Item → node. The blob supplies gif-ness, card text and poster presence. */
-export function itemToNode(
-  item: Item & { blob_hash: string },
-  blob: BlobInfo | undefined,
-  locked = false,
-): SpriteNode {
+export function itemToNode(item: Item, blob: BlobInfo | undefined, locked = false): SpriteNode {
   const kind = itemKind(item, blob);
+  const hash = item.blob_hash ?? '';
   return {
     id: item.id,
     kind,
@@ -28,12 +26,14 @@ export function itemToNode(
     zIndex: item.z_index,
     groupId: item.group_id,
     locked,
-    blobHash: item.blob_hash,
-    label: blob?.original_filename ?? item.blob_hash.slice(0, 12),
+    blobHash: hash,
+    label: blob?.original_filename ?? hash.slice(0, 12),
     detail: blob ? cardDetail(blob, item.metadata.duration) : '',
     poster: !!blob && POSTER_LEVELS.some((level) => level in blob.levels),
     capabilities: nodeKindRegistry[kind].capabilities,
     ...(kind === 'model' ? { model: modelSettings(item.metadata.model) } : {}),
+    ...(kind === 'palette' ? { colors: paletteColors(item.metadata) } : {}),
+    ...(kind === 'colorwheel' ? { wheel: wheelState(item.metadata) } : {}),
     ...nodeGeometry,
   };
 }
@@ -125,11 +125,6 @@ export function noteTextHeight(
 ): number {
   return layoutNoteDocument(noteText(note.content_json), width, scale, noteStyle(note.content_json))
     .contentHeight;
-}
-
-/** Is the note's text taller than its box, so the bottom is clipped? */
-export function noteClipped(note: Note): boolean {
-  return noteTextHeight(note, note.width, noteScale(note.content_json)) > note.height + 0.5;
 }
 
 /**

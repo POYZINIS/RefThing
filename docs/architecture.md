@@ -88,6 +88,14 @@ WebSocket (api/ws.ts) is receive-only: other clients' diffs and job events.
   `components/ModelOrbit.tsx` is orbit mode. `.blend` files reach the
   worker as GLB via `GET /blob/{hash}/model` (headless Blender, server side,
   `services/model_service.rs`).
+- **Colour** (`src/color/`): `harmony.ts` (conversions, the nine
+  harmonies, the random generator), `sample.ts` (k-means++ palette
+  extraction in OKLab), `items.ts` (the blob-less `palette` / `colorwheel`
+  items: metadata, `restore_item` construction, swatch hit-testing, the
+  end-to-end join), `wheelLayout.ts` (one layout for the canvas painting
+  and the live panel). `canvas/nodes/ColorTextureSources.ts` paints both
+  kinds; `components/ColorWheelPanel.tsx` is the wheel's live controls
+  (iro.js), shown only while it is the lone selection.
 - **Board import** (`refthing-core/src/pureref.rs`, `POST /api/boards:import`):
   a PureRef 2 `.pur` is a displaced SQLite database of Qt-serialized items;
   the core reads it into placements and the server commits them through the

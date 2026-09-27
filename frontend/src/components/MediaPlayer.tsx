@@ -327,6 +327,7 @@ export function MediaPlayer({
       {isVideo ? (
         <video
           {...mediaEvents}
+          data-item-id={node.id}
           className="live-media live-media--video"
           playsInline
           // Deselected, the canvas poster shows (a DOM element can't take

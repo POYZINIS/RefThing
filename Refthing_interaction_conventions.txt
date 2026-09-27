@@ -89,6 +89,38 @@ conflict in this file; confirm or overrule them here.
    waveform) — there is no separate ruler or seek bar. Per Section 0
    Rule 8 the playhead exists only while the item is selected; grabbing
    it never moves the item.
+18. Colour. The colour wheel and palettes are ITEMS — selected, moved,
+   resized, grouped, undone like everything else (the wheel doesn't
+   rotate). The corner button (click or right-click) brings the wheel:
+   not on the board yet, it arrives in the middle of the view; off
+   screen, it moves there; on screen, the view pans to centre it.
+   - The wheel's controls are live only while it is the lone selection
+     (Rule 8); unselected, the canvas paints the same layout. Dragging any
+     handle turns the whole harmony (Analogous, Monochromatic, Triad,
+     Complementary, Split complementary, Square, Compound, Shades,
+     Tetrad); the slider beside it is HSV value or HSL lightness (extends
+     to white). Letting go of the wheel or the slider saves the palette
+     to the wheel's library (newest first, never pruned); Random makes a
+     palette from the harmonies, kept in pleasant bands with a dark and a
+     light anchor. The current palette and every saved one drag out onto
+     the board as palette items; a click on a saved one loads it.
+   - They're outlined along their own rounded shape (selection and
+     hover; the corner handle sits on the curve) — every other item is
+     outlined square.
+   - Only the controls take the pointer: the wheel inside its disc, the
+     slider, the fields, the swatches and saved rows. Everywhere else on
+     the wheel (margins, gaps, the corners around the disc) moves it.
+   - Zoomed out it shows only its colour: under 300px wide on screen the
+     text and buttons go and the handles become dots (still live, when
+     selected); under 170px nothing is live — a press anywhere moves it.
+   - A palette swatch: hovering shows its hex in a tip; click copies it
+     and samples it into the wheel; Alt+drag (bindings pull_color, target "swatch") pulls a copy
+     of that colour out. A palette dropped with an end at another's end
+     (same row) joins it — one undo step.
+   - Menus: a palette has Add to Palettes and Copy Hex Codes; images,
+     GIFs, video, audio and 3D models have Sample Colors (the colours
+     as shown: a GIF's or video's current frame, a model rendered without
+     its sky), which makes a palette under the item and saves it.
 17. Resizing the window crops the board: dragging the left or top edge
    (or any corner but bottom-right) keeps everything where it is on
    screen — the camera takes the opposite shift — so the thing you are

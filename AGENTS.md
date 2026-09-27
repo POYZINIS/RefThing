@@ -41,6 +41,8 @@ frontend/           React + PixiJS app (Vite)
                     state machine; canvas/transform.ts is the pure gesture math
   src/canvas/model/ 3D model worker: three.js on an OffscreenCanvas renders
                     model items to bitmaps (never in the main bundle)
+  src/color/        colour: harmonies, palette sampling, the blob-less
+                    palette / colorwheel items (pure, unit-tested)
   src/components/   UI chrome only (toolbar, panels, dialogs)
   src/state/        zustand stores; history.ts = command/undo engine
                     (prepareCommand + applyBoardOps — applyOps delegates to it);

@@ -8,7 +8,6 @@
   "scripts": {
     "dev": "concurrently -k -n api,web -c blue,green \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "cargo run --manifest-path backend/Cargo.toml -p refthing-server",
-    "dev:api:once": "cargo run --manifest-path backend/Cargo.toml -p refthing-server",
     "dev:web": "npm run dev -w frontend",
     "dev:app": "tauri dev",
     "build:app": "tauri build",
@@ -21,7 +20,6 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
     "@tauri-apps/cli": "^2.11.5",
-    "concurrently": "^9",
-    "root": "^3.2.0"
+    "concurrently": "^9"
   }
 }

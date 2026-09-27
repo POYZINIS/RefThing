@@ -57,6 +57,9 @@ Selection outlines, hover outlines and the box-select rectangle all read
 - **Floating** (popovers, menus, sheets, toasts): the same glass, a deeper
   drop shadow; sheets blur heavier (`--gl-blur-heavy`).
 - **Recessed** (fields, the opening target): inset shadows, no border.
+- **Every neumorphic shadow and highlight sits at 45°** (equal x and y
+  offsets): light from the top-left, shadow to the bottom-right — raised,
+  floating, recessed, the colour tools and the palettes' dip alike.
 - **Glass off** swaps every translucent panel for a solid raised surface.
 - **Workspace**: flat colour, a faint top sheen and a static grain overlay
   (breaks up banding). On desktop with glass on, the workspace is partly
@@ -81,6 +84,51 @@ Lucide (`lucide-react`), through one component (`ui/Icon.tsx`) that maps
 job names (`close`, `addFiles`, `loop`…) to glyphs: 1.75 stroke,
 `currentColor`, 17px by default. The rotate cursor is Lucide's rotate-cw
 (white over a dark outline). No icon font, no emoji or glyph stand-ins.
+
+## Colour tools
+
+The colour wheel is chrome glass on the board: the theme's panel tint at
+76% (`--tool-bg`), its rim and top sheen, the theme's text; its controls
+are chrome fields (`--field-bg`, 0.28×height radius) — a harmony picker
+(our menu, the right-click menu's look) with a Lucide chevron, an HSV|HSL switch whose raised side slides, and
+Random as the Lucide dice. Unselected, the canvas paints that tint over
+the board; live (the lone selection), the canvas picture is hidden and
+the DOM panel adds the real blur and a lift, easing in (220ms). Both
+faces share `color/wheelLayout.ts`, so they match pixel for pixel.
+Zoomed out (under 300px wide on screen) it drops its text and buttons and
+its handles become 3.5px dots.
+
+Depth is the chrome's neumorphism, in the wheel's em so it scales with
+the item, and it is only ever dipped or plateaued: nothing lights the
+inside top of a colour tool (no glass sheen on the wheel, no inner
+highlight on any strip — that's claymorphism). The wheel's colours stay
+flat (colour accuracy) and their depth is all outside them: the disc,
+the brightness slider, the palette strips and Random are raised, a
+shadow down-right and a highlight up-left (`--tool-hi`, brighter than
+the chrome's, which vanished on the glass; the disc has a second, wider
+one). The harmony field and the switch are recessed wells, the switch's
+chosen side raised in it. The selection and hover outlines follow the
+tools' own rounded corners.
+
+Unselected, the canvas paints the wheel as the same glass without the
+blur. Selecting it blurs the board behind in (320ms); deselecting (or
+zooming far out) blurs it back out (240ms, the controls already
+inert) before the canvas picture takes over. No drop shadow either way.
+
+Palettes dropped on the board are the one dipped exception: shaded over
+their colours at 45° — a shadow along the inner top-left in multiply,
+light along the inner bottom-right in lighten — so dark swatches aren't
+crushed and light ones aren't washed out.
+
+Palettes are the wheel's palette strip on its own: contiguous swatches
+in one strip (radius 0.14×height), 7:9 swatches, nothing printed on
+them; a hovered swatch's hex shows in a small glass tip above it.
+
+Motion (colour tools only; the board itself never animates): handles
+glide to a new harmony, Random or undo (260ms, hue the short way), the
+slider thumb and swatches follow; a hovered swatch lifts out of the
+strip, a copied one pulses; a newly saved palette slides into the
+library; the dice tumbles; a palette being dragged out is tilted.
 
 ## Board text
 

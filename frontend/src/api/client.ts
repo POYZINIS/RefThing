@@ -83,15 +83,6 @@ export interface Tag {
   color: string | null;
 }
 
-export interface BoardView {
-  id: string;
-  board_id: string;
-  name: string;
-  viewport: unknown;
-  created_at: number;
-  updated_at: number;
-}
-
 export interface BoardSnapshot {
   board: Board;
   seq: number;
@@ -225,11 +216,6 @@ export function listBoards(): Promise<BoardSummary[]> {
   return request<BoardSummary[]>('/api/boards');
 }
 
-/** List all tags (global, not board-scoped). */
-export function listTags(): Promise<Tag[]> {
-  return request<Tag[]>('/api/tags');
-}
-
 export function createTag(name: string, color?: string | null): Promise<Tag> {
   return request<Tag>('/api/tags', {
     method: 'POST',
@@ -251,31 +237,6 @@ export function updateTag(
 
 export function deleteTag(tagId: string): Promise<void> {
   return request<void>(`/api/tags/${tagId}`, { method: 'DELETE' });
-}
-
-/** List saved views for a board (Phase 6). */
-export function listViews(boardId: string): Promise<BoardView[]> {
-  return request<BoardView[]>(`/api/boards/${boardId}/views`);
-}
-
-export function createView(boardId: string, name: string, viewport: unknown): Promise<BoardView> {
-  return request<BoardView>(`/api/boards/${boardId}/views`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, viewport }),
-  });
-}
-
-export function renameView(boardId: string, viewId: string, name: string): Promise<BoardView> {
-  return request<BoardView>(`/api/boards/${boardId}/views/${viewId}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  });
-}
-
-export function deleteView(boardId: string, viewId: string): Promise<void> {
-  return request<void>(`/api/boards/${boardId}/views/${viewId}`, { method: 'DELETE' });
 }
 
 /** A single FTS5 full-text search result (Phase 6). */
@@ -315,25 +276,6 @@ export function fetchBoard(boardId: string): Promise<BoardSnapshot> {
   return request<BoardSnapshot>(`/api/boards/${boardId}`);
 }
 
-export function createNote(
-  boardId: string,
-  note: { x: number; y: number; width: number; height: number; content_json: unknown },
-): Promise<{ note: Note }> {
-  return request<{ note: Note }>(`/api/boards/${boardId}/notes`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(note),
-  });
-}
-
-export function createGroup(boardId: string, name: string): Promise<{ group: Group }> {
-  return request<{ group: Group }>(`/api/boards/${boardId}/groups`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  });
-}
-
 export function updateNote(
   boardId: string,
   noteId: string,
@@ -352,15 +294,6 @@ export function updateNote(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
   });
-}
-
-export function noteContent(note: Note): {
-  text?: string;
-  strokes?: Array<Array<{ x: number; y: number }>>;
-} {
-  return typeof note.content_json === 'object' && note.content_json !== null
-    ? (note.content_json as { text?: string; strokes?: Array<Array<{ x: number; y: number }>> })
-    : {};
 }
 
 export function renameBoard(boardId: string, name: string): Promise<Board> {

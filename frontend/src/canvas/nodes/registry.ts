@@ -1,5 +1,7 @@
+import { PANEL_RADIUS, STRIP_RADIUS } from '@/color/wheelLayout';
 import { MIN_SCREEN_SIZE_PX } from '@/components/interactionConstants';
 import { CardTextureSource } from './CardTextureSource';
+import { PaletteTextureSource, WheelTextureSource } from './ColorTextureSources';
 import { GifTextureSource } from './GifTextureSource';
 import { ModelTextureSource } from './ModelTextureSource';
 import type { NodeRenderer } from './NodeRenderer';
@@ -20,6 +22,10 @@ export type NodeKindRegistration = {
   textureSourceFactory: (deps: TextureSourceDeps) => TextureSource<CanvasNode> | TextureSource;
   defaults: { freeTransform: boolean; minSize: number };
   capabilities: NodeCapabilities;
+  /** A kind with its own rounded shape (the colour tools): the corner
+   *  radius, world units, that its selection and hover outlines follow.
+   *  Everything else is outlined square. */
+  outlineRadius?: (width: number, height: number) => number;
 };
 
 const spriteCapabilities: NodeCapabilities = {
@@ -71,6 +77,23 @@ export const nodeKindRegistry = {
     defaults: { freeTransform: false, minSize: MIN_SCREEN_SIZE_PX },
     capabilities: { ...spriteCapabilities, flippable: false },
   },
+  // Colour tools: blob-less items painted from their metadata. Palettes
+  // behave like any item; the wheel doesn't rotate (its live controls sit
+  // upright over it while it's selected).
+  palette: {
+    rendererFactory: () => new SpriteRenderer(),
+    textureSourceFactory: () => new PaletteTextureSource(),
+    defaults: { freeTransform: false, minSize: MIN_SCREEN_SIZE_PX },
+    capabilities: { ...spriteCapabilities, flippable: false },
+    outlineRadius: (_width: number, height: number) => height * STRIP_RADIUS,
+  },
+  colorwheel: {
+    rendererFactory: () => new SpriteRenderer(),
+    textureSourceFactory: () => new WheelTextureSource(),
+    defaults: { freeTransform: false, minSize: MIN_SCREEN_SIZE_PX },
+    capabilities: { ...spriteCapabilities, flippable: false, rotatable: false },
+    outlineRadius: (width: number) => width * PANEL_RADIUS,
+  },
   file: {
     rendererFactory: () => new SpriteRenderer(),
     textureSourceFactory: () => new CardTextureSource(),
@@ -96,3 +119,10 @@ export const nodeKindRegistry = {
     },
   },
 } satisfies Record<NodeKind, NodeKindRegistration>;
+
+/** The corner radius (world units) a node's outline follows: its own
+ *  rounded shape for the colour tools, 0 (square) for everything else. */
+export function outlineRadius(node: Pick<CanvasNode, 'kind' | 'width' | 'height'>): number {
+  const kind: NodeKindRegistration = nodeKindRegistry[node.kind];
+  return kind.outlineRadius?.(node.width, node.height) ?? 0;
+}

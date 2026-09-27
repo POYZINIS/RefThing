@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  Dices,
   FilePlus2,
   History,
   LayoutDashboard,
@@ -10,6 +11,7 @@ import {
   Maximize,
   Minus,
   Moon,
+  Palette,
   Pause,
   Pencil,
   Pin,
@@ -62,6 +64,8 @@ const ICONS = {
   volume: Volume2,
   mute: VolumeX,
   loop: Repeat,
+  palette: Palette,
+  dice: Dices,
 } satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof ICONS;

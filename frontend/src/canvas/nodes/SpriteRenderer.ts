@@ -40,9 +40,24 @@ export class SpriteRenderer implements NodeRenderer {
     this.applyGrayscale(enabled);
   }
 
+  currentImage(): CanvasImageSource | null {
+    const resource = this.sprite?.texture.source.resource as unknown;
+    return resource instanceof ImageBitmap ||
+      resource instanceof HTMLCanvasElement ||
+      resource instanceof HTMLImageElement ||
+      resource instanceof HTMLVideoElement ||
+      (typeof OffscreenCanvas !== 'undefined' && resource instanceof OffscreenCanvas)
+      ? (resource as CanvasImageSource)
+      : null;
+  }
+
   paintedBounds(): { x: number; y: number; width: number; height: number } | null {
     if (!this.sprite) return null;
+    // A hidden node (drawn by DOM meanwhile) still reports where it sits.
+    const visible = this.sprite.visible;
+    this.sprite.visible = true;
     const bounds = this.sprite.getBounds();
+    this.sprite.visible = visible;
     return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
   }
 

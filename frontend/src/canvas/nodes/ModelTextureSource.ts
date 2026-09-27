@@ -45,6 +45,8 @@ export class ModelTextureSource implements TextureSource {
   private readonly releasing = new Map<string, number>();
   private nextReqId = 1;
   private frame = 0;
+  /** One-off renders on their way (sampling colours), by request id. */
+  private readonly snapshots = new Map<number, (bitmap: ImageBitmap | null) => void>();
 
   constructor(private readonly onChange: () => void) {}
 
@@ -105,6 +107,33 @@ export class ModelTextureSource implements TextureSource {
       });
     }
     return entry.texture;
+  }
+
+  /**
+   * A one-off render of a model that isn't shown (sampling its colours):
+   * its own settings with the sky off, so the transparent background
+   * filters out and only the model's pixels remain.
+   */
+  snapshot(node: SpriteNode, width: number, height: number): Promise<ImageBitmap | null> {
+    const settings = { ...(node.model ?? modelSettings(undefined)), background: false };
+    const reqId = this.nextReqId++;
+    return new Promise((resolve) => {
+      this.snapshots.set(reqId, resolve);
+      this.post({
+        type: 'render',
+        id: `${node.id}#snapshot`,
+        reqId,
+        url: modelUrl(node.blobHash),
+        width: Math.max(MIN_RENDER_PX, Math.round(width)),
+        height: Math.max(MIN_RENDER_PX, Math.round(height)),
+        settings,
+        // Jumps the queue and never becomes a cached poster.
+        live: true,
+      });
+      setTimeout(() => {
+        if (this.snapshots.delete(reqId)) resolve(null);
+      }, 30_000);
+    });
   }
 
   /** Test/debug hook: what a model item shows right now. */
@@ -177,6 +206,12 @@ export class ModelTextureSource implements TextureSource {
   }
 
   private receive(message: FromWorker): void {
+    const snapshot = this.snapshots.get(message.reqId);
+    if (snapshot) {
+      this.snapshots.delete(message.reqId);
+      snapshot(message.type === 'frame' ? message.bitmap : null);
+      return;
+    }
     const entry = this.entries.get(message.id);
     if (message.type === 'error') {
       if (entry && message.reqId === entry.reqId) {

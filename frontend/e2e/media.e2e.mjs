@@ -204,10 +204,12 @@ test('video: probed to its frame size, poster painted, double-click plays over t
   const video = await node(page, id);
   assert.equal(video.kind, 'video');
   assert.deepEqual([video.width, video.height], [320, 180]);
+  // The poster job shares the stack's job queue with every thumbnail the
+  // earlier suites queued: in a full run it can wait its turn a while.
   await page.waitForFunction(
     (nodeId) => window.__refthing.nodes.find((n) => n.id === nodeId)?.poster === true,
     id,
-    { timeout: 20_000 },
+    { timeout: 60_000 },
   );
 
   const center = await nodeCenter(page, id);

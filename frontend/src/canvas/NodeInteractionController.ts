@@ -6,6 +6,8 @@ import { type Guide, type Rect, SNAP_DISTANCE_PX, snapTranslate } from './transf
 export type InteractionCallbacks = {
   /** Press-selected a single node (replaces the selection), or null. */
   onSelectionChange?: (nodeId: string | null) => void;
+  /** A press on a node released without moving it (a click). */
+  onNodeClick?: (nodeId: string, clientX: number, clientY: number) => void;
   /** Shift-click: toggle one node's membership without starting a drag. */
   onSelectionToggle?: (nodeId: string) => void;
   /** Box-select committed a set of node ids (mixed kinds). */
@@ -66,6 +68,8 @@ const toChange = (node: BoardNode): NodeChange => ({
  */
 export class NodeInteractionController {
   private dragging: DragState | null = null;
+  /** Where the current node press started (client px), for clicks. */
+  private pressClient: { x: number; y: number } | null = null;
   private boxOrigin: { x: number; y: number } | null = null;
   private boxCurrent: { x: number; y: number } | null = null;
   private hovered: BoardNode | null = null;
@@ -178,6 +182,8 @@ export class NodeInteractionController {
       const { node, originX, originY } = this.dragging;
       if (node.x !== originX || node.y !== originY) {
         this.callbacks.onNodesChange?.(this.moveSet(node).map(toChange));
+      } else if (this.pressClient) {
+        this.callbacks.onNodeClick?.(node.id, this.pressClient.x, this.pressClient.y);
       }
     }
     if (this.dragging) this.callbacks.onGuides?.([]);
@@ -224,6 +230,7 @@ export class NodeInteractionController {
         originX: node.x,
         originY: node.y,
       };
+      this.pressClient = { x: event.clientX, y: event.clientY };
       return;
     }
     // §14 BOX SELECT: left-click on empty canvas starts box selection.
