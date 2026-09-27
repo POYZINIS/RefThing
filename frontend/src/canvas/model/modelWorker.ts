@@ -18,13 +18,26 @@ import {
   GLSL3,
   LessEqualDepth,
   Mesh,
+  NoColorSpace,
+  OrthographicCamera,
   PerspectiveCamera,
   RawShaderMaterial,
+  RepeatWrapping,
   Scene,
+  SRGBColorSpace,
+  Texture,
   Vector3,
   WebGLRenderer,
 } from 'three';
-import { cameraBasis, framingDistance, MODEL_FOV_Y, settingsKey } from '../nodes/modelView';
+import {
+  activeTextures,
+  cameraBasis,
+  framingDistance,
+  MODEL_FOV_Y,
+  type ModelSettings,
+  settingsKey,
+  type TextureChannel,
+} from '../nodes/modelView';
 import { type Bucket, computeSmoothNormals, loadModel, type ModelAsset } from './modelLoad';
 import { readPoster, writePoster } from './posterCache';
 import type { FromWorker, ToWorker } from './protocol';
@@ -49,7 +62,11 @@ const LIGHT = {
   sky: new Color('#b4c3d8').multiplyScalar(0.62),
   ground: new Color('#8a837b').multiplyScalar(0.5),
   sun: new Color('#fff3e2').multiplyScalar(0.95),
-  /** Towards the sun, world space: high, front-right. */
+  /** What smooth surfaces reflect: the sky above the horizon, ground below. */
+  envSky: new Color('#c6d2df'),
+  envGround: new Color('#8f8a85'),
+  /** Towards the sun, model space: each item's own (settings.sun*), set
+   *  before every render; the model and sky materials share this vector. */
   sunDirection: new Vector3(0.45, 0.8, 0.4).normalize(),
 };
 
@@ -68,7 +85,7 @@ in vec3 position;
 in vec3 normal;
 in vec3 smoothNormal;
 in vec3 color;
-#ifdef USE_MAP
+#ifdef USE_UV
 in vec2 uv;
 out vec2 vUv;
 #endif
@@ -80,28 +97,77 @@ void main() {
   vPosition = position;
   // Stored sRGB (a byte each); lighting happens in linear.
   vColor = pow(color, vec3(2.2));
-#ifdef USE_MAP
+#ifdef USE_UV
   vUv = uv;
 #endif
   gl_Position = projectionMatrix * viewMatrix * vec4(position, 1.0);
 }`;
 
+/**
+ * The model shader. With no maps beyond the model's own colour texture it
+ * is the plain diffuse one (sun + sky/ground hemisphere). Maps given in the
+ * menu switch parts on by define, so a model only pays for what it has:
+ * a normal map (tangent frame from screen-space derivatives — no tangent
+ * attribute), ambient occlusion, and — with metalness or roughness — a
+ * small GGX specular plus sky reflections.
+ */
 const MODEL_FRAGMENT = /* glsl */ `
 precision highp float;
+#define PI 3.14159265
 uniform vec3 uSky;
 uniform vec3 uGround;
 uniform vec3 uSun;
 uniform vec3 uSunDirection;
+uniform vec3 uEnvSky;
+uniform vec3 uEnvGround;
+uniform vec3 cameraPosition;
 uniform float uFlat;
+uniform float uRoughInvert;
+#ifdef USE_UV
+in vec2 vUv;
+#endif
 #ifdef USE_MAP
 uniform sampler2D map;
-in vec2 vUv;
+#endif
+#ifdef USE_NORMALMAP
+uniform sampler2D normalMap;
+#endif
+#ifdef USE_MRO
+uniform sampler2D mroMap;
+#endif
+#ifdef USE_METALMAP
+uniform sampler2D metalMap;
+#endif
+#ifdef USE_ROUGHMAP
+uniform sampler2D roughMap;
+#endif
+#ifdef USE_AOMAP
+uniform sampler2D aoMap;
 #endif
 in vec3 vNormal;
 in vec3 vPosition;
 in vec3 vColor;
 out vec4 fragColor;
 ${SRGB_OUT}
+
+#ifdef USE_NORMALMAP
+// A tangent-space normal onto the surface, the frame from derivatives of
+// position and UV (Schueler's cotangent frame).
+vec3 perturb(vec3 n, vec3 mapN) {
+  vec3 q0 = dFdx(vPosition);
+  vec3 q1 = dFdy(vPosition);
+  vec2 st0 = dFdx(vUv);
+  vec2 st1 = dFdy(vUv);
+  vec3 q1perp = cross(q1, n);
+  vec3 q0perp = cross(n, q0);
+  vec3 t = q1perp * st0.x + q0perp * st1.x;
+  vec3 b = q1perp * st0.y + q0perp * st1.y;
+  float det = max(dot(t, t), dot(b, b));
+  float scale = det == 0.0 ? 0.0 : inversesqrt(det);
+  return normalize(t * (mapN.x * scale) + b * (mapN.y * scale) + n * mapN.z);
+}
+#endif
+
 void main() {
   vec3 albedo = vColor;
 #ifdef USE_MAP
@@ -109,15 +175,71 @@ void main() {
   #ifdef USE_CUTOUT
   if (texel.a < 0.5) discard;
   #endif
+  #ifdef COLOR_REPLACES
+  // An imported colour map IS the base colour (as an image in Blender's
+  // Base Color is): the material's colour and vertex colour step aside.
+  albedo = texel.rgb;
+  #else
   albedo *= texel.rgb;
+  #endif
 #endif
   // Flat: the face's own normal from screen-space derivatives (no extra
   // geometry). Otherwise the interpolated vertex normal.
   vec3 faceNormal = normalize(cross(dFdx(vPosition), dFdy(vPosition)));
   vec3 n = uFlat > 0.5 ? faceNormal : normalize(vNormal);
-  float hemisphere = n.y * 0.5 + 0.5;
-  vec3 light = mix(uGround, uSky, hemisphere) + uSun * max(dot(n, uSunDirection), 0.0);
-  fragColor = vec4(toSrgb(albedo * light), 1.0);
+#ifdef USE_NORMALMAP
+  vec3 mapN = texture(normalMap, vUv).xyz * 2.0 - 1.0;
+  // OpenGL-style maps (green up) on top-down UVs: up in the image is -v.
+  mapN.y = -mapN.y;
+  n = perturb(n, mapN);
+#endif
+  float ao = 1.0;
+  float metal = 0.0;
+  float rough = 1.0;
+#ifdef USE_MRO
+  vec3 mro = texture(mroMap, vUv).rgb;
+  metal = mro.r;
+  rough = mix(mro.g, 1.0 - mro.g, uRoughInvert);
+  ao = mro.b;
+#endif
+#ifdef USE_METALMAP
+  metal = texture(metalMap, vUv).r;
+#endif
+#ifdef USE_ROUGHMAP
+  float roughness = texture(roughMap, vUv).r;
+  rough = mix(roughness, 1.0 - roughness, uRoughInvert);
+#endif
+#ifdef USE_AOMAP
+  ao = texture(aoMap, vUv).r;
+#endif
+  vec3 ambient = mix(uGround, uSky, n.y * 0.5 + 0.5) * ao;
+  float ndl = max(dot(n, uSunDirection), 0.0);
+#ifdef USE_PBR
+  vec3 v = normalize(cameraPosition - vPosition);
+  vec3 h = normalize(uSunDirection + v);
+  float ndv = max(dot(n, v), 1e-4);
+  float ndh = max(dot(n, h), 0.0);
+  float vdh = max(dot(v, h), 0.0);
+  float a = max(rough * rough, 0.002);
+  float a2 = a * a;
+  float denom = ndh * ndh * (a2 - 1.0) + 1.0;
+  float d = a2 / (PI * denom * denom);
+  float k = (rough + 1.0) * (rough + 1.0) / 8.0;
+  float g = (ndl / (ndl * (1.0 - k) + k)) * (ndv / (ndv * (1.0 - k) + k));
+  vec3 f0 = mix(vec3(0.04), albedo, metal);
+  vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - vdh, 5.0);
+  vec3 specular = d * g * fresnel / max(4.0 * ndl * ndv, 1e-4);
+  vec3 diffuse = albedo * (1.0 - metal);
+  // Reflections of the sky: sharp when smooth, towards the ambient when rough.
+  vec3 r = reflect(-v, n);
+  vec3 env = mix(uEnvGround, uEnvSky, smoothstep(-0.15, 0.25, r.y));
+  env = mix(env, ambient * 1.6, rough);
+  vec3 envFresnel = f0 + (max(vec3(1.0 - rough), f0) - f0) * pow(1.0 - ndv, 5.0);
+  vec3 lit = diffuse * ambient + (diffuse + PI * specular) * uSun * ndl + env * envFresnel * ao;
+#else
+  vec3 lit = albedo * (ambient + uSun * ndl);
+#endif
+  fragColor = vec4(toSrgb(lit), 1.0);
 }`;
 
 const SKY_VERTEX = /* glsl */ `
@@ -138,6 +260,7 @@ uniform vec3 uZenith;
 uniform vec3 uHorizon;
 uniform vec3 uGroundHorizon;
 uniform vec3 uGround;
+uniform vec3 uSunDirection;
 in vec2 vNdc;
 out vec4 fragColor;
 ${SRGB_OUT}
@@ -147,7 +270,11 @@ void main() {
   float y = direction.y;
   vec3 sky = mix(uHorizon, uZenith, pow(max(y, 0.0), 0.55));
   vec3 ground = mix(uGroundHorizon, uGround, pow(max(-y, 0.0), 0.4));
-  fragColor = vec4(toSrgb(mix(ground, sky, smoothstep(-0.015, 0.015, y))), 1.0);
+  vec3 color = mix(ground, sky, smoothstep(-0.015, 0.015, y));
+  // The sun where the light comes from: a small disk and a soft glow.
+  float toSun = dot(direction, uSunDirection);
+  color += vec3(1.0, 0.95, 0.85) * (smoothstep(0.9993, 0.9996, toSun) * 3.0 + pow(max(toSun, 0.0), 180.0) * 0.35);
+  fragColor = vec4(toSrgb(color), 1.0);
 }`;
 
 // --------------------------------------------------------------- renderer
@@ -162,6 +289,7 @@ const renderer = new WebGLRenderer({
 });
 renderer.setClearColor(0x000000, 0);
 const camera = new PerspectiveCamera((MODEL_FOV_Y * 180) / Math.PI, 1, 0.1, 100);
+const ortho = new OrthographicCamera(-1, 1, 1, -1, 0.1, 100);
 
 const skyMaterial = new RawShaderMaterial({
   glslVersion: GLSL3,
@@ -175,6 +303,7 @@ const skyMaterial = new RawShaderMaterial({
     uHorizon: { value: SKY.horizon },
     uGroundHorizon: { value: SKY.groundHorizon },
     uGround: { value: SKY.ground },
+    uSunDirection: { value: LIGHT.sunDirection },
   },
   depthTest: true,
   depthWrite: false,
@@ -207,25 +336,144 @@ const MAX_RESIDENT_VERTICES = 12_000_000;
 let clock = 0;
 
 function modelMaterial(bucket: Bucket): RawShaderMaterial {
-  const defines: Record<string, string> = {};
-  if (bucket.map) defines.USE_MAP = '';
-  if (bucket.cutout) defines.USE_CUTOUT = '';
-  return new RawShaderMaterial({
+  const material = new RawShaderMaterial({
     glslVersion: GLSL3,
     vertexShader: MODEL_VERTEX,
     fragmentShader: MODEL_FRAGMENT,
-    defines,
     uniforms: {
       map: { value: bucket.map },
+      normalMap: { value: null },
+      mroMap: { value: null },
+      metalMap: { value: null },
+      roughMap: { value: null },
+      aoMap: { value: null },
       uSky: { value: LIGHT.sky },
       uGround: { value: LIGHT.ground },
       uSun: { value: LIGHT.sun },
       uSunDirection: { value: LIGHT.sunDirection },
+      uEnvSky: { value: LIGHT.envSky },
+      uEnvGround: { value: LIGHT.envGround },
       uFlat: { value: 0 },
       uSmooth: { value: 0 },
+      uRoughInvert: { value: 0 },
     },
     side: FrontSide,
   });
+  applyMaps(material, bucket, {}, false);
+  return material;
+}
+
+/** Point a bucket's material at its maps (the menu's, over the model's own
+ *  colour texture), recompiling only when the set of maps changes. */
+function applyMaps(
+  material: RawShaderMaterial,
+  bucket: Bucket,
+  maps: Maps,
+  roughnessInvert: boolean,
+): void {
+  const color = maps.color ?? bucket.map;
+  const defines: Record<string, string> = {};
+  if (color) defines.USE_MAP = '';
+  if (maps.color) defines.COLOR_REPLACES = '';
+  // The model's own texture's alpha cuts out (foliage); a replacement doesn't.
+  if (color === bucket.map && bucket.cutout) defines.USE_CUTOUT = '';
+  if (maps.normal) defines.USE_NORMALMAP = '';
+  if (maps.mro) defines.USE_MRO = '';
+  if (maps.metalness) defines.USE_METALMAP = '';
+  if (maps.roughness) defines.USE_ROUGHMAP = '';
+  if (maps.ao) defines.USE_AOMAP = '';
+  if (maps.mro || maps.metalness || maps.roughness) defines.USE_PBR = '';
+  if (Object.keys(defines).length > 0) defines.USE_UV = '';
+  const signature = Object.keys(defines).sort().join(',');
+  if (material.userData.signature !== signature) {
+    material.userData.signature = signature;
+    material.defines = defines;
+    material.needsUpdate = true;
+  }
+  const { uniforms } = material;
+  const set = (name: string, value: unknown) => {
+    const uniform = uniforms[name];
+    if (uniform) uniform.value = value;
+  };
+  set('map', color ?? null);
+  set('normalMap', maps.normal ?? null);
+  set('mroMap', maps.mro ?? null);
+  set('metalMap', maps.metalness ?? null);
+  set('roughMap', maps.roughness ?? null);
+  set('aoMap', maps.ao ?? null);
+  set('uRoughInvert', roughnessInvert ? 1 : 0);
+}
+
+// -------------------------------------------------------------- user maps
+
+/** Resolved maps given in the menu, by channel. */
+type Maps = Partial<Record<TextureChannel, Texture>>;
+
+type MapEntry = { texture: Texture | null; done: boolean; lastUsed: number };
+/** Loaded images by blob hash + colour space; failures resolve to null. */
+const mapCache = new Map<string, MapEntry>();
+/** Images kept on the GPU before the least recently used go. */
+const MAX_MAPS = 64;
+
+function loadMap(hash: string, srgb: boolean): MapEntry {
+  const key = `${hash}|${srgb ? 'srgb' : 'linear'}`;
+  const cached = mapCache.get(key);
+  if (cached) {
+    cached.lastUsed = clock;
+    return cached;
+  }
+  const entry: MapEntry = { texture: null, done: false, lastUsed: clock };
+  mapCache.set(key, entry);
+  fetch(`/blob/${hash}/full`, { credentials: 'same-origin' })
+    .then((response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.blob();
+    })
+    .then((blob) => createImageBitmap(blob))
+    .then((bitmap) => {
+      const texture = new Texture(bitmap);
+      texture.flipY = false; // top-down, like every baked UV
+      texture.colorSpace = srgb ? SRGBColorSpace : NoColorSpace;
+      texture.wrapS = RepeatWrapping;
+      texture.wrapT = RepeatWrapping;
+      texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+      texture.needsUpdate = true;
+      entry.texture = texture;
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      entry.done = true;
+      evictMaps();
+      schedule();
+    });
+  return entry;
+}
+
+function evictMaps(): void {
+  if (mapCache.size <= MAX_MAPS) return;
+  const oldest = [...mapCache.entries()]
+    .filter(([, entry]) => entry.done)
+    .sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+  for (const [key, entry] of oldest.slice(0, mapCache.size - MAX_MAPS)) {
+    entry.texture?.dispose();
+    mapCache.delete(key);
+  }
+}
+
+/** A render's maps once all have loaded (a failed one is left out), or
+ *  null while any is still on its way. */
+function resolveMaps(settings: ModelSettings): Maps | null {
+  const maps: Maps = {};
+  let ready = true;
+  for (const [channel, hash] of Object.entries(activeTextures(settings)) as [
+    TextureChannel,
+    string,
+  ][]) {
+    const entry = loadMap(hash, channel === 'color');
+    if (!entry.done) ready = false;
+    else if (entry.texture) maps[channel] = entry.texture;
+  }
+  return ready ? maps : null;
 }
 
 function buildScene(asset: ModelAsset): Loaded {
@@ -235,7 +483,7 @@ function buildScene(asset: ModelAsset): Loaded {
     geometry.setAttribute('position', new BufferAttribute(bucket.positions, 3));
     geometry.setAttribute('normal', new BufferAttribute(bucket.normals, 3, true));
     geometry.setAttribute('color', new BufferAttribute(bucket.colors, 3, true));
-    if (bucket.uvs) geometry.setAttribute('uv', new BufferAttribute(bucket.uvs, 2));
+    geometry.setAttribute('uv', new BufferAttribute(bucket.uvs, 2));
     geometry.setIndex(new BufferAttribute(bucket.indices, 1));
     const mesh = new Mesh(geometry, modelMaterial(bucket));
     // One camera always framing the whole model: nothing to cull.
@@ -293,7 +541,7 @@ type Request = Extract<ToWorker, { type: 'render' }>;
 
 const target = new Vector3();
 
-function render(loaded: Loaded, request: Request): ImageBitmap {
+function render(loaded: Loaded, request: Request, maps: Maps): ImageBitmap {
   const { asset, scene, meshes } = loaded;
   const { settings } = request;
   loaded.lastUsed = ++clock;
@@ -308,11 +556,15 @@ function render(loaded: Loaded, request: Request): ImageBitmap {
       }
     });
   }
-  for (const mesh of meshes) {
+  meshes.forEach((mesh, index) => {
     const { uFlat, uSmooth } = mesh.material.uniforms;
     if (uFlat) uFlat.value = settings.shading === 'flat' ? 1 : 0;
     if (uSmooth) uSmooth.value = settings.shading === 'smooth' ? 1 : 0;
-  }
+    const bucket = asset.buckets[index];
+    if (bucket) applyMaps(mesh.material, bucket, maps, settings.roughnessInvert);
+  });
+
+  LIGHT.sunDirection.set(settings.sunX, settings.sunY, settings.sunZ).normalize();
 
   const width = Math.max(1, Math.round(request.width));
   const height = Math.max(1, Math.round(request.height));
@@ -333,8 +585,33 @@ function render(loaded: Loaded, request: Request): ImageBitmap {
   camera.updateProjectionMatrix();
   camera.updateMatrixWorld();
 
+  // Orthographic: the same framing (the model's sphere just fits at
+  // distance 1), the camera backed off far enough never to clip it. The
+  // sky keeps reading its rays from the perspective camera above, so its
+  // gradient stays (a parallel projection would flatten it to one colour).
+  let view: PerspectiveCamera | OrthographicCamera = camera;
+  if (settings.projection === 'orthographic') {
+    const half = radius * settings.distance;
+    const halfHeight = half * Math.max(1, 1 / aspect);
+    const halfWidth = halfHeight * aspect;
+    ortho.left = -halfWidth;
+    ortho.right = halfWidth;
+    ortho.top = halfHeight;
+    ortho.bottom = -halfHeight;
+    const back = reach * 3;
+    ortho.position.set(forward.x, forward.y, forward.z).multiplyScalar(back).add(target);
+    ortho.up.set(0, 1, 0);
+    ortho.lookAt(target);
+    const orthoToCenter = ortho.position.distanceTo(asset.center);
+    ortho.near = Math.max(orthoToCenter - reach, radius * 0.001);
+    ortho.far = orthoToCenter + reach;
+    ortho.updateProjectionMatrix();
+    ortho.updateMatrixWorld();
+    view = ortho;
+  }
+
   if (settings.background) scene.add(sky);
-  renderer.render(scene, camera);
+  renderer.render(scene, view);
   scene.remove(sky);
   return canvas.transferToImageBitmap();
 }
@@ -369,10 +646,13 @@ function drain(): void {
       ensureModel(request.url).then(schedule, schedule);
       continue;
     }
+    // Maps given in the menu load first (a finished load reschedules).
+    const maps = resolveMaps(request.settings);
+    if (!maps) continue;
     pending.delete(request.id);
     let bitmap: ImageBitmap;
     try {
-      bitmap = render(loaded, request);
+      bitmap = render(loaded, request, maps);
     } catch (error) {
       scope.postMessage({
         type: 'error',

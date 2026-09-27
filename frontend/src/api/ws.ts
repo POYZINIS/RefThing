@@ -1,4 +1,4 @@
-import { BoardSocket, type BoardSocketEvent, fetchChanges } from '@/api/client';
+import { BoardSocket, type BoardSocketEvent, blobUrl, fetchChanges } from '@/api/client';
 import { useBoardStore } from '@/state/boardStore';
 
 /** `levels` are level names (what the server sends); `sizes` is the older
@@ -48,6 +48,7 @@ export class BoardSync {
     switch (event.type) {
       case 'hello':
         if (event.seq > (store.snapshot?.seq ?? 0)) await this.catchUp();
+        void this.recoverPosters();
         break;
       case 'diff': {
         const currentSeq = store.snapshot?.seq ?? 0;
@@ -94,6 +95,39 @@ export class BoardSync {
         break;
       }
     }
+  }
+
+  /**
+   * A poster that finished between the snapshot fetch and this socket
+   * connecting announced itself to no one (job events aren't replayed like
+   * board changes), leaving its item a card until a reload. On connect,
+   * ask once for the poster of every media item still without one.
+   */
+  private async recoverPosters(): Promise<void> {
+    const snapshot = useBoardStore.getState().snapshot;
+    if (!snapshot) return;
+    const blobs = new Map(snapshot.blobs.map((blob) => [blob.hash, blob]));
+    const waiting = snapshot.items.filter((item) => {
+      if (item.type !== 'video' && item.type !== 'audio') return false;
+      const levels = item.blob_hash ? blobs.get(item.blob_hash)?.levels : undefined;
+      return !levels || !('thumb' in levels);
+    });
+    await Promise.all(
+      waiting.map(async (item) => {
+        if (!item.blob_hash) return;
+        try {
+          const response = await fetch(blobUrl(item.blob_hash, 'thumb'), {
+            method: 'HEAD',
+            credentials: 'same-origin',
+          });
+          if (!response.ok) return; // still pending: its poster_ready will come
+          useBoardStore.getState().markPosterReady(item.id, ['thumb', 'small', 'medium']);
+          this.onPosterReady?.();
+        } catch {
+          // Offline or gone: nothing to recover.
+        }
+      }),
+    );
   }
 
   private async catchUp(): Promise<void> {

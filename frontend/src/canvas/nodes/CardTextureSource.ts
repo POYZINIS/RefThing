@@ -1,4 +1,4 @@
-import { layoutWithLines, prepareWithSegments } from '@chenglou/pretext';
+import { layoutWithLines, measureNaturalWidth, prepareWithSegments } from '@chenglou/pretext';
 import { Texture } from 'pixi.js';
 import { NOTE_FONT_FAMILY } from './noteText';
 import type { TextureSource } from './TextureSource';
@@ -28,9 +28,31 @@ function cardGlyph(node: SpriteNode): string | null {
   return null;
 }
 
+/** A single line's width, measured by pretext (every card string is laid
+ *  out by pretext, like note text — never by the canvas's own measuring). */
+const measureText = (text: string, fontSpec: string) =>
+  measureNaturalWidth(prepareWithSegments(text, fontSpec));
+
+/** `text` on one line within `width`: as is, or cut and ellipsized. */
+export function fitLine(text: string, fontSpec: string, width: number): string {
+  if (measureText(text, fontSpec) <= width) return text;
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (measureText(`${text.slice(0, mid).trimEnd()}…`, fontSpec) <= width) low = mid;
+    else high = mid - 1;
+  }
+  return low > 0 ? `${text.slice(0, low).trimEnd()}…` : '…';
+}
+
 /** Filename lines: wrapped by pretext (breaks inside long names too), at
  *  most two, the last ellipsized when the name runs on. */
-export function cardLabelLines(label: string, width: number, measure: (text: string) => number) {
+export function cardLabelLines(
+  label: string,
+  width: number,
+  measure: (text: string) => number = (text) => measureText(text, font(LABEL_PX, 600)),
+) {
   const prepared = prepareWithSegments(label, font(LABEL_PX, 600));
   const { lines } = layoutWithLines(prepared, Math.max(1, width), LABEL_LINE_PX);
   const texts = lines.map((line) => line.text.trimEnd());
@@ -111,11 +133,7 @@ function paintCard(node: SpriteNode, scale: number): HTMLCanvasElement {
   // Text block pinned to the bottom: filename lines, then the detail line.
   const textWidth = Math.max(1, width - PAD * 2);
   context.font = font(LABEL_PX, 600);
-  const labelLines = cardLabelLines(
-    node.label,
-    textWidth,
-    (text) => context.measureText(text).width,
-  );
+  const labelLines = cardLabelLines(node.label, textWidth);
   const textHeight = labelLines.length * LABEL_LINE_PX + (node.detail ? DETAIL_PX + 6 : 0);
   let y = height - PAD - textHeight;
   context.textBaseline = 'top';
@@ -127,7 +145,7 @@ function paintCard(node: SpriteNode, scale: number): HTMLCanvasElement {
   if (node.detail) {
     context.font = font(DETAIL_PX);
     context.fillStyle = CARD_MUTED;
-    context.fillText(node.detail, PAD, y + 4, textWidth);
+    context.fillText(fitLine(node.detail, font(DETAIL_PX), textWidth), PAD, y + 4);
   }
 
   // The badge fills the space above: a play/note glyph for media, else the
@@ -136,12 +154,15 @@ function paintCard(node: SpriteNode, scale: number): HTMLCanvasElement {
   if (room > 14) {
     const glyph = cardGlyph(node);
     const badge = glyph ?? node.detail.split(' ')[0] ?? '';
-    const size = Math.min(room * (glyph ? 0.7 : 0.45), width * (glyph ? 0.35 : 0.22));
+    let size = Math.min(room * (glyph ? 0.7 : 0.45), width * (glyph ? 0.35 : 0.22));
+    // Shrunk to fit the card's width when a long extension would overrun.
+    const badgeWidth = measureText(badge, font(size, 700));
+    if (badgeWidth > textWidth) size *= textWidth / badgeWidth;
     context.font = font(size, 700);
     context.fillStyle = CARD_ACCENT;
     context.textAlign = 'center';
     context.textBaseline = 'middle';
-    context.fillText(badge, width / 2, PAD + room / 2, textWidth);
+    context.fillText(badge, width / 2, PAD + room / 2);
   }
   context.restore();
   return canvas;

@@ -19,7 +19,7 @@ use crate::auth::Principal;
 use crate::error::AppResult;
 use crate::services::import_service::{self, ImportResponse};
 use crate::services::ingest_service;
-use crate::services::ingest_service::IngestResponse;
+use crate::services::ingest_service::{IngestResponse, StoredBlob};
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -28,6 +28,18 @@ pub fn router() -> Router<AppState> {
         // Board import (a PureRef .pur): same body limit, no timeout — a big
         // board is a big upload.
         .route("/api/boards:import", post(import))
+        // A blob with no item: a 3D model's texture (the item's metadata
+        // refers to it by hash).
+        .route("/api/blobs", post(store_blob))
+}
+
+async fn store_blob(
+    State(state): State<AppState>,
+    _principal: Principal,
+    multipart: Multipart,
+) -> AppResult<(StatusCode, Json<StoredBlob>)> {
+    let stored = ingest_service::store_blob(&state, multipart).await?;
+    Ok((StatusCode::CREATED, Json(stored)))
 }
 
 async fn import(

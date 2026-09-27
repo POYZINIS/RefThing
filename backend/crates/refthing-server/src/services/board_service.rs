@@ -130,6 +130,60 @@ async fn snapshot_item_tags(
     Ok(map)
 }
 
+/// One blob as the snapshot describes it (ready levels, or a synthesized
+/// `full`) — for responses that hand a client a new item without a refetch.
+pub(crate) async fn blob_info(
+    pool: &sqlx::SqlitePool,
+    hash: &str,
+) -> Result<Option<dto::BlobInfo>, CoreError> {
+    let Some(blob) = sqlx::query_as::<_, models::Blob>(
+        "SELECT hash, original_filename, mime_type, byte_size, width, height, created_at \
+         FROM blobs WHERE hash = ?",
+    )
+    .bind(hash)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| core_err(&error))?
+    else {
+        return Ok(None);
+    };
+    let rows: Vec<(String, Option<i64>, Option<i64>)> = sqlx::query_as(
+        "SELECT level, width, height FROM blob_derivatives \
+         WHERE blob_hash = ? AND status = 'ready'",
+    )
+    .bind(hash)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| core_err(&error))?;
+    let mut levels: HashMap<String, BlobLevel> = rows
+        .into_iter()
+        .filter_map(|(level, width, height)| {
+            Some((
+                level,
+                BlobLevel {
+                    width: width?,
+                    height: height?,
+                },
+            ))
+        })
+        .collect();
+    if !levels.contains_key("full")
+        && let (Some(width), Some(height)) = (blob.width, blob.height)
+    {
+        levels.insert("full".to_string(), BlobLevel { width, height });
+    }
+    Ok(Some(dto::BlobInfo {
+        hash: blob.hash,
+        original_filename: blob.original_filename,
+        mime_type: blob.mime_type,
+        byte_size: blob.byte_size,
+        width: blob.width,
+        height: blob.height,
+        created_at: services::ms(blob.created_at),
+        levels,
+    }))
+}
+
 /// Blobs referenced by the board's items. `levels` holds every `ready`
 /// `blob_derivatives` level (`thumb`/`small`/`medium`/`full`), falling back
 /// to a synthesized `full` from the blob's intrinsic dimensions when the

@@ -72,6 +72,13 @@ pub async fn run_with_shutdown(
         tracing::warn!(recovered, "reset interrupted jobs to pending");
     }
 
+    // Models dropped before 3D support landed as file cards: upgrade them.
+    match services::model_service::retype_models(&pools, &blob_store).await {
+        Ok(0) => {}
+        Ok(changed) => tracing::info!(changed, "file items recognized as 3D models"),
+        Err(error) => tracing::warn!(%error, "model retyping skipped"),
+    }
+
     let hub = events::BroadcastHub::new();
     let resize_pool = Arc::new(ResizePool::new());
     let job_ctx = JobContext {

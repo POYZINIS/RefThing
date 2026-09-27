@@ -11,7 +11,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { glb, sphere } from './glb.mjs';
-import { launch, nodeCenter, openBoard, pixel, seedBoard, state } from './harness.mjs';
+import {
+  BASE_URL,
+  launch,
+  nodeCenter,
+  openBoard,
+  pixel,
+  seedBoard,
+  solidPng,
+  state,
+} from './harness.mjs';
 
 let session;
 before(async () => {
@@ -34,6 +43,10 @@ const rendered = (page, id, timeout = 30_000) =>
     { timeout },
   );
 const painted = (page, id) => page.evaluate((nodeId) => window.__refthing.painted(nodeId), id);
+const close = (actual, expected, epsilon, message) =>
+  assert.ok(Math.abs(actual - expected) < epsilon, `${message}: ${actual} vs ${expected}`);
+/** The default sun's x (normalize(0.45, 0.8, 0.4)). */
+const DEFAULT_SUN_X = 0.45 / Math.hypot(0.45, 0.8, 0.4);
 const distance = (a, b) => Math.max(...a.map((value, index) => Math.abs(value - b[index])));
 
 /** Poll a pixel until `done` holds (a new render landed) or time runs out. */
@@ -171,6 +184,316 @@ test('the view only moves in orbit mode: double-click, drag, wheel, one undo ste
   const restored = await settings(page, id);
   assert.equal(restored.yaw, before.yaw);
   assert.equal(restored.distance, before.distance);
+});
+
+test('Alt+drag turns a selected model camera; the item stays put', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    files: [{ name: 'alt.glb', x: 100, y: 100, buffer: glb(sphere(12, 8)) }],
+  });
+  await openBoard(page, seeded);
+  const id = seeded.ids['alt.glb'];
+  await rendered(page, id);
+  const before = await settings(page, id);
+  const center = await nodeCenter(page, id);
+
+  // Unselected: Alt+drag never touches the view (click first).
+  const altDrag = async (dx) => {
+    await page.keyboard.down('Alt');
+    await page.mouse.move(center.x, center.y);
+    await page.mouse.down();
+    await page.mouse.move(center.x + dx, center.y, { steps: 8 });
+    await page.mouse.up();
+    await page.keyboard.up('Alt');
+  };
+  await altDrag(-80);
+  assert.deepEqual(await settings(page, id), before, 'no view change before a click');
+
+  await page.keyboard.press('Escape');
+  await page.mouse.click(center.x, center.y);
+  const depth = await page.evaluate(() => window.__refthing.undoDepth);
+  const placed = (await state(page)).nodes.find((n) => n.id === id);
+  await altDrag(120);
+  const turned = await settings(page, id);
+  assert.ok(turned.yaw < before.yaw - 0.3, `the camera turned: ${turned.yaw}`);
+  close(turned.pitch, before.pitch, 1e-6, 'a level drag keeps the horizon (turntable)');
+  const after = (await state(page)).nodes.find((n) => n.id === id);
+  assert.deepEqual([after.x, after.y], [placed.x, placed.y], 'the item stayed put');
+  assert.equal(await page.evaluate(() => window.__refthing.orbiting), null, 'no orbit mode');
+  assert.equal(await page.evaluate(() => window.__refthing.undoDepth), depth + 1);
+
+  // Alt+CLICK (no drag) keeps its meaning: reset the aspect to square.
+  await page.keyboard.down('Alt');
+  await page.mouse.click(center.x, center.y);
+  await page.keyboard.up('Alt');
+  await page.waitForTimeout(300);
+  const square = (await state(page)).nodes.find((n) => n.id === id);
+  close(square.width, square.height, 1e-6, 'squared');
+  assert.equal((await settings(page, id)).yaw, turned.yaw, 'and the view untouched');
+});
+
+/** A selected model's gizmo, and where its marks are on screen. */
+async function gizmoMarks(page) {
+  const gizmo = page.getByTestId('model-gizmo');
+  const middle = async (locator) => {
+    const box = await locator.boundingBox();
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  };
+  const axis = (label) =>
+    middle(gizmo.locator('g.model-gizmo-axis', { hasText: label }).locator('circle'));
+  const sun = await middle(gizmo.locator('g.model-gizmo-sun circle'));
+  // Somewhere on the ball away from every mark (so a drag there orbits).
+  const box = await gizmo.boundingBox();
+  const centers = await gizmo.locator('circle').evaluateAll((circles) =>
+    circles.map((c) => {
+      const r = c.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }),
+  );
+  let ball = null;
+  let best = -1;
+  for (let dy = -22; dy <= 22; dy += 4) {
+    for (let dx = -22; dx <= 22; dx += 4) {
+      if (Math.hypot(dx, dy) > 26) continue;
+      const point = { x: box.x + box.width / 2 + dx, y: box.y + box.height / 2 + dy };
+      const clear = Math.min(...centers.map((c) => Math.hypot(c.x - point.x, c.y - point.y)));
+      if (clear > best) {
+        best = clear;
+        ball = point;
+      }
+    }
+  }
+  return { gizmo, axis, sun, ball };
+}
+
+async function dragFrom(page, from, dx, dy = 0) {
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x + dx, from.y + dy, { steps: 10 });
+  await page.mouse.up();
+}
+
+test('the gizmo: drag the ball to orbit, drag the sun to move the light', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    files: [{ name: 'sun.glb', x: 100, y: 100, buffer: glb(sphere(24, 16), [0.7, 0.7, 0.7, 1]) }],
+  });
+  await openBoard(page, seeded);
+  const id = seeded.ids['sun.glb'];
+  await rendered(page, id);
+  assert.equal(await page.getByTestId('model-gizmo').count(), 0, 'nothing until selected');
+  const center = await nodeCenter(page, id);
+  await page.mouse.click(center.x, center.y);
+  await page.getByTestId('model-gizmo').waitFor();
+  const before = await settings(page, id);
+
+  // Drag the ball: the camera orbits, the sun stays where it was.
+  let marks = await gizmoMarks(page);
+  await dragFrom(page, marks.ball, 40);
+  const orbited = await settings(page, id);
+  assert.ok(orbited.yaw < before.yaw - 0.1, `orbited: ${orbited.yaw}`);
+  close(orbited.sunX, before.sunX, 1e-9, 'the sun did not move');
+
+  // Drag the sun: the light swings round; the camera stays.
+  const box = await painted(page, id);
+  const left = { x: box.x + box.width / 2 - box.height * 0.4, y: box.y + box.height / 2 };
+  const right = { x: box.x + box.width / 2 + box.height * 0.4, y: box.y + box.height / 2 };
+  const brightness = async (point) => (await pixel(page, point)).reduce((a, b) => a + b, 0);
+  await page.waitForTimeout(600);
+  const [leftBefore, rightBefore] = [await brightness(left), await brightness(right)];
+  marks = await gizmoMarks(page);
+  await dragFrom(page, marks.sun, -30);
+  const lit = await settings(page, id);
+  assert.notEqual(lit.sunX, orbited.sunX, 'the sun moved');
+  close(lit.yaw, orbited.yaw, 1e-9, 'the camera did not');
+  const placed = (await state(page)).nodes.find((n) => n.id === id);
+  assert.deepEqual([placed.x, placed.y], [100, 100], 'the gizmo never moves the item');
+  await page.waitForTimeout(800);
+  assert.ok((await brightness(left)) > leftBefore + 20, 'lit from the left now');
+  assert.ok((await brightness(right)) < rightBefore - 20, 'the right side falls into shade');
+
+  // Double-click the sun: back to the default; deselecting hides the gizmo.
+  marks = await gizmoMarks(page);
+  await page.mouse.dblclick(marks.sun.x, marks.sun.y);
+  await page.waitForTimeout(300);
+  close((await settings(page, id)).sunX, DEFAULT_SUN_X, 1e-6, 'default sun');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.getByTestId('model-gizmo').count(), 0);
+});
+
+test('clicking an axis eases to an ortho view down it; orbiting returns to persp', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    files: [{ name: 'axes.glb', x: 100, y: 100, buffer: glb(sphere(12, 8)) }],
+  });
+  await openBoard(page, seeded);
+  const id = seeded.ids['axes.glb'];
+  await rendered(page, id);
+  const center = await nodeCenter(page, id);
+  await page.mouse.click(center.x, center.y);
+  await page.getByTestId('model-gizmo').waitFor();
+
+  // X: the camera on the +X side, looking straight at it, orthographic.
+  let marks = await gizmoMarks(page);
+  const x = await marks.axis('X');
+  await page.mouse.click(x.x, x.y);
+  await page.waitForFunction(
+    (nodeId) => window.__refthing.modelSettings(nodeId).projection === 'orthographic',
+    id,
+  );
+  let view = await settings(page, id);
+  close(view.yaw, Math.PI / 2, 1e-6, 'facing +X');
+  close(view.pitch, 0, 1e-6, 'level');
+  assert.equal(view.axisView, true);
+
+  // Clicked again: the opposite side.
+  marks = await gizmoMarks(page);
+  const again = await marks.axis('X');
+  await page.mouse.click(again.x, again.y);
+  await page.waitForTimeout(500);
+  view = await settings(page, id);
+  close(Math.abs(view.yaw), Math.PI / 2, 1e-6, 'facing -X');
+  assert.ok(view.yaw < 0);
+
+  // Z (Blender's up): straight down from above.
+  marks = await gizmoMarks(page);
+  const z = await marks.axis('Z');
+  await page.mouse.click(z.x, z.y);
+  await page.waitForTimeout(500);
+  assert.ok((await settings(page, id)).pitch > Math.PI / 2 - 0.01, 'top view');
+
+  // Orbiting away from an axis view: back to perspective.
+  marks = await gizmoMarks(page);
+  await dragFrom(page, marks.ball, 30, 10);
+  view = await settings(page, id);
+  assert.equal(view.projection, 'perspective');
+  assert.equal(view.axisView, false);
+
+  // Ortho chosen in the menu stays through an orbit.
+  await menuPick(page, center, 'menuitemradio', 'Ortho');
+  assert.equal((await settings(page, id)).projection, 'orthographic');
+  await page.mouse.click(center.x, center.y);
+  marks = await gizmoMarks(page);
+  await dragFrom(page, marks.ball, 30);
+  assert.equal((await settings(page, id)).projection, 'orthographic', 'menu ortho sticks');
+  await menuPick(page, center, 'menuitemradio', 'Persp');
+  assert.equal((await settings(page, id)).projection, 'perspective');
+});
+
+/** Right-click → Textures → `label`, then pick `png` in the file chooser. */
+async function importTexture(page, at, label, png) {
+  await page.mouse.click(at.x, at.y, { button: 'right' });
+  await page.getByRole('menuitem', { name: 'Textures' }).hover();
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('menuitemcheckbox', { name: label, exact: true }).click();
+  await (await chooser).setFiles({ name: 'texture.png', mimeType: 'image/png', buffer: png });
+}
+
+test('textures from the menu: colour, metal + roughness (invertible), packed MRO', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    files: [{ name: 'tex.glb', x: 100, y: 100, buffer: glb(sphere(24, 16), [0.8, 0.8, 0.8, 1]) }],
+  });
+  await openBoard(page, seeded);
+  const id = seeded.ids['tex.glb'];
+  await rendered(page, id);
+  const center = await nodeCenter(page, id);
+  const box = await painted(page, id);
+  // A point on the sphere a little off-centre (lit, with some reflection).
+  const probe = { x: box.x + box.width / 2 - box.height * 0.12, y: box.y + box.height * 0.4 };
+  const bare = await pixel(page, probe);
+  const textures = async () => (await settings(page, id)).textures;
+
+  // Colour: a blue image paints the (white) model blue.
+  await importTexture(page, center, 'Color…', solidPng(8, 8, [40, 90, 230]));
+  await page.waitForFunction(
+    (nodeId) => !!window.__refthing.modelSettings(nodeId).textures.color,
+    id,
+  );
+  const blue = await pixelUntil(page, probe, (value) => value[2] > value[0] + 60);
+  assert.ok(blue[2] > blue[0] + 60, `blue now: ${blue}`);
+
+  // Fully metallic (still rough: no roughness map yet) — the look changes.
+  await importTexture(page, center, 'Metalness…', solidPng(8, 8, [255, 255, 255]));
+  await page.waitForFunction(
+    (nodeId) => !!window.__refthing.modelSettings(nodeId).textures.metalness,
+    id,
+  );
+  const roughMetal = await pixelUntil(page, probe, (value) => distance(value, blue) > 12);
+  assert.ok(distance(roughMetal, blue) > 12, `metal differs: ${roughMetal} vs ${blue}`);
+  // And smooth (a black roughness map): the sky shows in it. Each map's
+  // own change is awaited — a pixel read before the roughness map lands
+  // is still the rough-metal look.
+  await importTexture(page, center, 'Roughness…', solidPng(8, 8, [0, 0, 0]));
+  await page.waitForFunction(
+    (nodeId) => !!window.__refthing.modelSettings(nodeId).textures.roughness,
+    id,
+  );
+  const metal = await pixelUntil(page, probe, (value) => distance(value, roughMetal) > 6);
+  assert.ok(distance(metal, roughMetal) > 6, `smooth differs: ${metal} vs ${roughMetal}`);
+
+  // Invert Roughness (a smoothness map): black now means rough.
+  await page.mouse.click(center.x, center.y, { button: 'right' });
+  await page.getByRole('menuitem', { name: 'Textures' }).hover();
+  await page.getByRole('menuitemcheckbox', { name: 'Invert Roughness' }).click();
+  await page.keyboard.press('Escape');
+  assert.equal((await settings(page, id)).roughnessInvert, true);
+  const inverted = await pixelUntil(page, probe, (value) => distance(value, metal) > 6);
+  assert.ok(distance(inverted, metal) > 6, `rough now: ${inverted} vs ${metal}`);
+
+  // Packed MRO: one texture replaces metalness / roughness / AO.
+  await page.mouse.click(center.x, center.y, { button: 'right' });
+  await page.getByRole('menuitem', { name: 'Textures' }).hover();
+  await page.getByRole('menuitemcheckbox', { name: 'Packed MRO' }).click();
+  await page.keyboard.press('Escape');
+  assert.equal((await settings(page, id)).packedMro, true);
+  await importTexture(page, center, 'MRO…', solidPng(8, 8, [0, 255, 255]));
+  await page.waitForFunction(
+    (nodeId) => !!window.__refthing.modelSettings(nodeId).textures.mro,
+    id,
+  );
+
+  // The texture is a blob of its own, served like any other.
+  const hash = (await textures()).color;
+  const served = await context.request.get(`${BASE_URL}/blob/${hash}/full`);
+  assert.equal(served.status(), 200);
+
+  // Clear Textures: back to the model's own look; one undo brings them back.
+  await page.mouse.click(center.x, center.y, { button: 'right' });
+  await page.getByRole('menuitem', { name: 'Textures' }).hover();
+  await page.getByRole('menuitem', { name: 'Clear Textures' }).click();
+  assert.deepEqual(await textures(), {});
+  const back = await pixelUntil(page, probe, (value) => distance(value, bare) <= 4);
+  assert.ok(distance(back, bare) <= 4, `bare again: ${back} vs ${bare}`);
+  await page.keyboard.press('Control+z');
+  await page.waitForTimeout(300);
+  assert.ok((await textures()).color, 'undo restores them');
+});
+
+test('the Textures submenu opens with the keyboard and closes with ←', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    files: [{ name: 'keys.glb', x: 100, y: 100, buffer: glb(sphere(8, 6)) }],
+  });
+  await openBoard(page, seeded);
+  const id = seeded.ids['keys.glb'];
+  await rendered(page, id);
+  const center = await nodeCenter(page, id);
+  await page.mouse.click(center.x, center.y, { button: 'right' });
+  const row = page.getByRole('menuitem', { name: 'Textures' });
+  await row.focus();
+  await page.keyboard.press('ArrowRight');
+  const submenu = page.getByRole('menu', { name: 'Textures' });
+  await submenu.waitFor();
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.textContent),
+    'Color…',
+    'focus moves into the submenu',
+  );
+  await page.keyboard.press('ArrowLeft');
+  assert.equal(await submenu.count(), 0, 'closed');
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Textures');
+  await page.keyboard.press('Escape');
 });
 
 // ------------------------------------------------------------ Blender files

@@ -15,15 +15,37 @@ export type Appearance = {
   backdropOpacity: number;
   /** Mouse-wheel zoom speed multiplier (1 = default). */
   zoomSpeed: number;
+  /** Dragging the window's left / top edge: hold the board exactly in
+   *  place (Windows shows each step's previous frame shifted — a jitter),
+   *  or let it ride with the window and glide back once the drag stops. */
+  windowResize: WindowResizeMode;
+  /** Testing aid: cap the board's frame rate (0 = normal). */
+  frameCap: number;
 };
+export type WindowResizeMode = 'exact' | 'smooth';
 
 const KEY = 'refthing.appearance';
-const DEFAULTS: Appearance = { theme: 'system', glass: true, backdropOpacity: 0.85, zoomSpeed: 1 };
+/** The workspace is see-through by default so the window's blurred
+ *  background (desktop glass) actually shows. */
+const DEFAULTS: Appearance = {
+  theme: 'system',
+  glass: true,
+  backdropOpacity: 0.55,
+  zoomSpeed: 1,
+  windowResize: 'exact',
+  frameCap: 0,
+};
+/** The old default, saved along with any other change before the backdrop
+ *  became a real blur: it means "default", not a choice. */
+const OLD_DEFAULT_BACKDROP = 0.85;
 
 function load(): Appearance {
   try {
     const raw = globalThis.localStorage?.getItem(KEY);
-    return raw ? { ...DEFAULTS, ...(JSON.parse(raw) as Partial<Appearance>) } : DEFAULTS;
+    if (!raw) return DEFAULTS;
+    const stored = JSON.parse(raw) as Partial<Appearance>;
+    if (stored.backdropOpacity === OLD_DEFAULT_BACKDROP) delete stored.backdropOpacity;
+    return { ...DEFAULTS, ...stored };
   } catch {
     return DEFAULTS;
   }
@@ -54,8 +76,11 @@ export const useAppearance = create<AppearanceStore>((set, get) => {
     ...initial,
     resolved: resolveTheme(initial.theme),
     set(patch) {
-      const { theme, glass, backdropOpacity, zoomSpeed } = { ...get(), ...patch };
-      const next = { theme, glass, backdropOpacity, zoomSpeed };
+      const { theme, glass, backdropOpacity, zoomSpeed, windowResize, frameCap } = {
+        ...get(),
+        ...patch,
+      };
+      const next = { theme, glass, backdropOpacity, zoomSpeed, windowResize, frameCap };
       save(next);
       set({ ...next, resolved: resolveTheme(theme) });
     },

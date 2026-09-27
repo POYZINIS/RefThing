@@ -287,6 +287,27 @@ test('volume slides out from its button, works, and nothing sticks after a click
   await page.keyboard.press('Escape');
 });
 
+test('Space plays and pauses the selected audio or video', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    files: [{ name: 'space.wav', x: 200, y: 200, buffer: wav(3) }],
+  });
+  await openBoard(page, seeded);
+  const id = seeded.ids['space.wav'];
+  const center = await nodeCenter(page, id);
+  const player = page.locator('[data-testid="live-media"]');
+  // Nothing selected: Space does nothing.
+  await page.keyboard.press('Space');
+  assert.equal(await player.count(), 0);
+  await page.mouse.click(center.x, center.y);
+  await player.waitFor({ state: 'attached' });
+  await page.keyboard.press('Space');
+  await page.waitForFunction(() => !document.querySelector('[data-testid="live-media"]').paused);
+  await page.keyboard.press('Space');
+  await page.waitForFunction(() => document.querySelector('[data-testid="live-media"]').paused);
+  await page.keyboard.press('Escape');
+});
+
 test('Restore Proportions un-squashes an item in one undo step', async () => {
   const { page, context } = session;
   const seeded = await seedBoard(context.request, {

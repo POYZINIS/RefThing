@@ -113,6 +113,10 @@ export interface IngestResponse {
     height: number;
     dedup: boolean;
     poster: string;
+    /** The created item and its blob, as a snapshot holds them (shown at
+     *  once, no board refetch). */
+    item: Item;
+    blob: BlobInfo | null;
   }>;
 }
 
@@ -415,6 +419,21 @@ export function importBoard(file: File): Promise<ImportResult> {
   const form = new FormData();
   form.append('file', file, file.name);
   return request<ImportResult>('/api/boards:import', { method: 'POST', body: form });
+}
+
+/** A stored image with no item of its own (a 3D model's texture). */
+export interface StoredBlob {
+  hash: string;
+  mime_type: string;
+  byte_size: number;
+}
+
+/** Store an image as a blob (no item): a 3D model's texture, which the
+ *  model then refers to by hash from its metadata. */
+export function uploadTexture(file: File): Promise<StoredBlob> {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  return request<StoredBlob>('/api/blobs', { method: 'POST', body: form });
 }
 
 /** Board files RefThing imports whole, as new boards. */

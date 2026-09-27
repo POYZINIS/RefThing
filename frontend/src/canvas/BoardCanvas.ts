@@ -14,8 +14,25 @@ import { nodeKindRegistry } from './nodes/registry';
 import type { CanvasNode, NodeChange, SpriteNode } from './nodes/types';
 import { themeColor } from './theme';
 import type { Guide, Rect } from './transform';
+import {
+  type CropSample,
+  cropShift,
+  readWindowFrame,
+  sampleCropCurve,
+  type WindowFrame,
+} from './windowCrop';
 
 export type ViewportState = { x: number; y: number; zoom: number };
+
+/** An origin change held this long with no resize is a window move. */
+const WINDOW_MOVE_SETTLE_MS = 150;
+/** Smooth window resize: this long after the last edge step, settle. */
+const WINDOW_RESIZE_SETTLE_MS = 120;
+/** The crop curve is drawn this far behind the latest step (~a step or
+ *  two), so each segment has the point after it to curve toward. */
+const CROP_CURVE_DELAY_MS = 40;
+/** Steps kept for the curve (only the last few shape the current segment). */
+const CROP_SAMPLES_KEPT = 8;
 
 /** Numeric spatial-grid key (no string per cell per node per update). */
 const cellKey = (x: number, y: number) => (x + 1_048_576) * 2_097_152 + (y + 1_048_576);
@@ -149,11 +166,25 @@ export class BoardCanvas {
     this.applyViewport();
     this.app.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.app.canvas.addEventListener('pointermove', this.onPointerMove);
-    this.app.canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    // The wheel zooms over everything laid on the board too (the selection
+    // shell, media controls, the model gizmo), not just bare canvas — those
+    // overlays sit beside the canvas, so listen on the frame holding both.
+    this.wheelRoot = host.parentElement ?? this.app.canvas;
+    this.wheelRoot.addEventListener('wheel', this.onWheel, { passive: false });
     this.app.canvas.addEventListener('dblclick', this.onDoubleClick);
     window.addEventListener('pointerup', this.onPointerUp);
     window.addEventListener('pointercancel', this.onPointerUp);
+    window.addEventListener('resize', this.onWindowResize);
+    this.windowFrame = readWindowFrame();
     this.app.ticker.add(this.onTick);
+    // The canvas draws at the end of our own tick instead of on Pixi's, so
+    // a frame can be thrown away (onTick: pulled frames during a window
+    // edge drag keep showing the last good one) or capped (Settings →
+    // Frame rate). Sizing too: Pixi's own resize listener would redraw on
+    // every window resize, past both.
+    this.app.ticker.remove(this.app.render, this.app);
+    this.host = host;
+    this.app.resizeTo = null as unknown as HTMLElement;
     this.renderVisible();
   }
 
@@ -431,10 +462,11 @@ export class BoardCanvas {
     if (!this.initialized) return;
     this.app.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.app.canvas.removeEventListener('pointermove', this.onPointerMove);
-    this.app.canvas.removeEventListener('wheel', this.onWheel);
+    this.wheelRoot?.removeEventListener('wheel', this.onWheel);
     this.app.canvas.removeEventListener('dblclick', this.onDoubleClick);
     window.removeEventListener('pointerup', this.onPointerUp);
     window.removeEventListener('pointercancel', this.onPointerUp);
+    window.removeEventListener('resize', this.onWindowResize);
     this.app.ticker.remove(this.onTick);
     this.gifTextures.dispose();
     this.pyramidTextures.dispose();
@@ -578,8 +610,147 @@ export class BoardCanvas {
     this.scene.scale.set(this.renderedViewport.zoom);
   }
 
+  /** The window's client area as of the last resize (or settled move). */
+  private windowFrame: WindowFrame | null = null;
+  /** When the window's origin started differing from `windowFrame` at the
+   *  same size — a move, unless a resize follows (then it was an edge). */
+  private originMovedAt: number | null = null;
+  /** Settings → Window edge drag. */
+  private windowResizeMode: 'exact' | 'smooth' = 'exact';
+  /** Smooth mode, during an edge drag: the crop owed so far (sampled per
+   *  resize step, on a timeline) and how much of it the camera has taken. */
+  private cropSamples: CropSample[] = [];
+  private cropApplied = { x: 0, y: 0 };
+
+  setWindowResizeMode(mode: 'exact' | 'smooth'): void {
+    this.windowResizeMode = mode;
+  }
+
+  /**
+   * A resize that moved the window's top-left corner crops the board rather
+   * than dragging it (windowCrop.ts): the camera takes the opposite shift,
+   * so what's on screen stays where it is.
+   */
+  private readonly onWindowResize = (): void => {
+    const next = readWindowFrame();
+    const last = this.windowFrame;
+    this.windowFrame = next;
+    this.originMovedAt = null;
+    let shift = last ? cropShift(last, next, window.screen) : null;
+    if (shift && this.windowResizeMode === 'smooth') {
+      // Sample the step; the tick follows a smooth curve through the steps
+      // (and settles once they stop) instead of taking each one raw.
+      const now = performance.now();
+      const owed = this.cropSamples[this.cropSamples.length - 1] ?? {
+        time: now,
+        x: this.cropApplied.x,
+        y: this.cropApplied.y,
+      };
+      if (this.cropSamples.length === 0) {
+        // The curve starts where the camera is, one step-interval back.
+        this.cropSamples.push({ ...owed, time: now - CROP_CURVE_DELAY_MS });
+      }
+      this.cropSamples.push({ time: now, x: owed.x + shift.dx, y: owed.y + shift.dy });
+      if (this.cropSamples.length > CROP_SAMPLES_KEPT) this.cropSamples.shift();
+      shift = null;
+    }
+    if (shift) {
+      this.viewport.x -= shift.dx;
+      this.viewport.y -= shift.dy;
+      this.renderedViewport.x -= shift.dx;
+      this.renderedViewport.y -= shift.dy;
+      this.applyViewport();
+    }
+    // Redraw NOW, at the new size and camera, inside the resize event: the
+    // window has already moved on screen, and waiting for the next frame
+    // (Pixi queues its resize to one) showed the old picture shifted for a
+    // frame on every step of an edge drag — a jitter.
+    this.renderVisible();
+    if (this.frameCap > 0) {
+      // Testing cap: the resize waits for the next allowed frame too.
+      this.resizePending = true;
+    } else {
+      this.resizeCanvas();
+      this.app.render();
+      this.lastDrawAt = performance.now();
+    }
+    if (shift) {
+      this.publishRenderedViewport();
+      this.options.onViewportChange?.(this.getViewport(), 'pan');
+    }
+  };
+
+  /**
+   * Smooth edge drag, per frame. While steps keep coming, the camera takes
+   * the owed crop along a Bézier curve through them, drawn a little in the
+   * past so the curve always has its next point. Once they stop, the rest
+   * is planted with the camera's own easing, exactly where it belongs.
+   */
+  private followCrop(now: number): void {
+    const last = this.cropSamples[this.cropSamples.length - 1];
+    if (!last) return;
+    const move = (x: number, y: number, eased: boolean) => {
+      const dx = x - this.cropApplied.x;
+      const dy = y - this.cropApplied.y;
+      if (dx === 0 && dy === 0) return;
+      this.cropApplied = { x, y };
+      this.viewport.x -= dx;
+      this.viewport.y -= dy;
+      if (!eased) {
+        this.renderedViewport.x -= dx;
+        this.renderedViewport.y -= dy;
+      }
+    };
+    if (now - last.time <= WINDOW_RESIZE_SETTLE_MS) {
+      const point = sampleCropCurve(this.cropSamples, now - CROP_CURVE_DELAY_MS);
+      move(point.x, point.y, false);
+      return;
+    }
+    // Settle: the remainder eases in (renderedViewport follows viewport).
+    move(last.x, last.y, true);
+    this.cropSamples = [];
+    this.cropApplied = { x: 0, y: 0 };
+    this.options.onViewportChange?.(this.getViewport(), 'pan');
+  }
+
+  /** Whether the previous tick drew (frames are only ever skipped singly). */
+  private drewLastTick = true;
+
   private readonly onTick = (): void => {
     const frame = performance.now();
+    this.followCrop(frame);
+    // The window during a drag, as this frame sees it.
+    let pulled = false;
+    const current = this.windowFrame;
+    if (current) {
+      const sized = window.innerWidth !== current.width || window.innerHeight !== current.height;
+      const moved = window.screenX !== current.x || window.screenY !== current.y;
+      if (sized) {
+        // The resize reached the page before its event: correct it now
+        // rather than draw one frame uncorrected (the event then finds
+        // nothing left to do).
+        this.onWindowResize();
+      } else if (moved) {
+        // The origin moved but the size hasn't (yet): a window move, or the
+        // first half of an edge step. In "hold the board still" mode, drawn
+        // now it may show the board pulled by the window — throw it away
+        // and keep the last frame. (Smooth mode rides with the window on
+        // purpose, so it draws every frame.)
+        pulled = this.windowResizeMode === 'exact';
+        // Follow window moves between resizes (a move fires no event). An
+        // edge drag can report the new origin a moment before the new
+        // size, so an origin change only counts as a move once it has held
+        // without a resize for a moment.
+        if (this.originMovedAt === null) {
+          this.originMovedAt = frame;
+        } else if (frame - this.originMovedAt > WINDOW_MOVE_SETTLE_MS) {
+          this.windowFrame = readWindowFrame();
+          this.originMovedAt = null;
+        }
+      } else {
+        this.originMovedAt = null;
+      }
+    }
     if (this.gifTextures.tick(frame)) this.renderVisible();
     this.pyramidTextures.tick(); // frame clock for texture eviction
     this.modelTextures.tick();
@@ -596,7 +767,48 @@ export class BoardCanvas {
     this.applyViewport();
     this.renderVisible();
     this.publishRenderedViewport();
+    // A pulled frame isn't drawn — the canvas keeps the last good one — but
+    // never twice running (at worst half the frame rate while dragging, and
+    // a plain window move keeps animating).
+    if (pulled && this.drewLastTick) {
+      this.drewLastTick = false;
+      return;
+    }
+    this.drewLastTick = this.draw(frame);
   };
+
+  /** The canvas's host element (sized with the window). */
+  private host: HTMLElement | null = null;
+  /** Settings → Frame rate (testing): draws per second, 0 = every frame. */
+  private frameCap = 0;
+  private lastDrawAt = 0;
+  /** A window resize waiting for the next (capped) draw. */
+  private resizePending = false;
+
+  setFrameCap(fps: number): void {
+    this.frameCap = fps > 0 ? fps : 0;
+    if (this.frameCap === 0 && this.resizePending) {
+      this.resizeCanvas();
+      this.resizePending = false;
+    }
+  }
+
+  private resizeCanvas(): void {
+    const host = this.host;
+    if (host) this.app.renderer.resize(host.clientWidth, host.clientHeight);
+  }
+
+  /** Draw the frame, unless the frame-rate cap says it's too soon. */
+  private draw(now: number): boolean {
+    if (this.frameCap > 0 && now - this.lastDrawAt < 1000 / this.frameCap) return false;
+    if (this.resizePending) {
+      this.resizeCanvas();
+      this.resizePending = false;
+    }
+    this.app.render();
+    this.lastDrawAt = now;
+    return true;
+  }
 
   private publishRenderedViewport(): void {
     const next = this.renderedViewport;
@@ -709,7 +921,12 @@ export class BoardCanvas {
     );
   }
 
+  private wheelRoot: HTMLElement | null = null;
+
   private readonly onWheel = (event: WheelEvent): void => {
+    // Text (a note being edited, a field) scrolls instead; a surface with a
+    // wheel of its own (orbit mode) stops the event before it gets here.
+    if ((event.target as Element | null)?.closest?.('textarea, input, select')) return;
     event.preventDefault();
     // Multiply the TARGET zoom, so notches spun faster than the camera eases
     // all add up; anchor on the world point under the pointer as painted.

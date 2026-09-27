@@ -307,7 +307,7 @@ async fn models_are_recognized_and_served_for_the_viewer() {
         .id;
 
     // GLB by its magic; the viewer gets the bytes as stored.
-    let glb = [b"glTF   ".as_slice(), &[7u8; 64]].concat();
+    let glb = [b"glTF\x02\x00\x00\x00".as_slice(), &[7u8; 64]].concat();
     let landed = ingest(&app, board, "tiny.glb", glb.clone()).await;
     assert_eq!(landed["mime_type"], "model/gltf-binary");
     assert_eq!(
@@ -356,4 +356,128 @@ async fn models_are_recognized_and_served_for_the_viewer() {
         .expect("model");
     assert_eq!(response.status(), 422);
     assert!(!response.text().await.expect("reason").is_empty());
+}
+
+#[tokio::test]
+async fn models_ingested_as_files_are_retyped_at_startup() {
+    let app = spawn_app().await;
+    let board = boards::create(&app.state.pools.write, "b")
+        .await
+        .expect("board")
+        .id;
+    // A compressed .blend ingested before model support: a zstd "file".
+    let landed = ingest(
+        &app,
+        board,
+        "old.blend",
+        vec![0x28, 0xb5, 0x2f, 0xfd, 1, 2, 3],
+    )
+    .await;
+    let id = landed["item_id"].as_str().expect("id").to_string();
+    let hash = landed["blob_hash"].as_str().expect("hash").to_string();
+    sqlx::query("UPDATE items SET type = 'file' WHERE id = ?")
+        .bind(Uuid::parse_str(&id).expect("uuid"))
+        .execute(&app.state.pools.write)
+        .await
+        .expect("downgrade");
+    sqlx::query("UPDATE blobs SET mime_type = 'application/zstd' WHERE hash = ?")
+        .bind(&hash)
+        .execute(&app.state.pools.write)
+        .await
+        .expect("downgrade");
+    let before = item(&app, board, &id).await;
+
+    let changed = refthing_server::services::model_service::retype_models(
+        &app.state.pools,
+        &app.state.blob_store,
+    )
+    .await
+    .expect("retype");
+    assert_eq!(changed, 1);
+    let after = item(&app, board, &id).await;
+    assert_eq!(after["type"], "model");
+    assert_eq!(
+        (&after["x"], &after["width"]),
+        (&before["x"], &before["width"]),
+        "kept its place"
+    );
+    // Other files are left alone, and a second pass changes nothing.
+    ingest(&app, board, "notes.zip", b"PK\x03\x04 not a model".to_vec()).await;
+    assert_eq!(
+        refthing_server::services::model_service::retype_models(
+            &app.state.pools,
+            &app.state.blob_store
+        )
+        .await
+        .expect("retype"),
+        0
+    );
+}
+
+#[tokio::test]
+async fn model_textures_are_stored_kept_and_exported() {
+    let app = spawn_app().await;
+    let board = boards::create(&app.state.pools.write, "b")
+        .await
+        .expect("board")
+        .id;
+    let upload = |name: &'static str, bytes: Vec<u8>| {
+        let base = app.base.clone();
+        async move {
+            let form = reqwest::multipart::Form::new().part(
+                "file",
+                reqwest::multipart::Part::bytes(bytes).file_name(name),
+            );
+            reqwest::Client::new()
+                .post(format!("{base}/api/blobs"))
+                .multipart(form)
+                .send()
+                .await
+                .expect("upload")
+        }
+    };
+
+    // An image becomes a blob with no item; anything else is refused.
+    let response = upload("wood.png", png(8, 4)).await;
+    assert_eq!(response.status(), 201);
+    let stored: Value = response.json().await.expect("json");
+    let texture = stored["hash"].as_str().expect("hash").to_string();
+    assert_eq!(stored["mime_type"], "image/png");
+    assert_eq!(upload("notes.txt", b"hello".to_vec()).await.status(), 415);
+    let served = reqwest::get(format!("{}/blob/{texture}/full", app.base))
+        .await
+        .expect("texture");
+    assert_eq!(served.status(), 200);
+
+    // Unreferenced, it would be swept; referenced from a model's metadata,
+    // it is kept and travels with the board's export.
+    let unreferenced = || async {
+        refthing_core::db::blobs::unreferenced_hashes(&app.state.pools.read)
+            .await
+            .expect("sweep set")
+    };
+    assert!(unreferenced().await.contains(&texture));
+    let glb = [b"glTF\x02\x00\x00\x00".as_slice(), &[7u8; 64]].concat();
+    let model = ingest(&app, board, "tiny.glb", glb).await;
+    let id = Uuid::parse_str(model["item_id"].as_str().expect("id")).expect("uuid");
+    sqlx::query("INSERT INTO item_metadata (item_id, json) VALUES (?, ?)")
+        .bind(id)
+        .bind(serde_json::json!({ "model": { "textures": { "color": texture } } }).to_string())
+        .execute(&app.state.pools.write)
+        .await
+        .expect("metadata");
+    assert!(!unreferenced().await.contains(&texture));
+    let archive =
+        refthing_core::export::export_board(&app.state.pools, &app.dir.path().join("blobs"), board)
+            .await
+            .expect("export");
+    let names: Vec<String> = {
+        let file = std::fs::File::open(&archive).expect("archive");
+        let zip = zip::ZipArchive::new(file).expect("zip");
+        zip.file_names().map(str::to_string).collect()
+    };
+    assert!(
+        names.iter().any(|name| name.contains(&texture)),
+        "the texture is in the export: {names:?}"
+    );
 }

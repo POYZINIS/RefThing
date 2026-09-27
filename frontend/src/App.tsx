@@ -12,6 +12,7 @@ import {
   type Item,
   isBoardFile,
   type Note,
+  uploadTexture,
 } from '@/api/client';
 import { CLIENT_ID } from '@/api/clientId';
 import { BoardSync } from '@/api/ws';
@@ -28,8 +29,9 @@ import {
 } from '@/canvas/nodes/adapters';
 import {
   DEFAULT_MODEL_SETTINGS,
+  isDefaultView,
   type ModelSettings,
-  settingsKey,
+  type TextureChannel,
   viewOf,
 } from '@/canvas/nodes/modelView';
 import {
@@ -47,7 +49,8 @@ import { type Guide, recrop } from '@/canvas/transform';
 import { BoardContextMenu, type MenuEntry } from '@/components/BoardContextMenu';
 import { BoardSwitcher } from '@/components/BoardSwitcher';
 import { type MediaHandle, MediaPlayer } from '@/components/MediaPlayer';
-import { ModelOrbit } from '@/components/ModelOrbit';
+import { ModelGizmo } from '@/components/ModelGizmo';
+import { dragModelView, ModelOrbit } from '@/components/ModelOrbit';
 import { NoteEditor } from '@/components/NoteEditor';
 import SearchBar, { emptyFilter, type FilterState } from '@/components/SearchBar';
 import { SelectionOverlay } from '@/components/SelectionOverlay';
@@ -177,6 +180,18 @@ function BoardApp() {
   // Orbit mode: the selected 3D model whose camera presses turn (double-
   // click it). A new session = a new undo entry.
   const [orbit, setOrbit] = useState<{ id: string; session: string } | null>(null);
+  // Texture import: the picker, and which channel of which models it fills.
+  const textureInput = useRef<HTMLInputElement>(null);
+  const pendingTexture = useRef<{ channel: TextureChannel; ids: string[] } | null>(null);
+  // A model's view while a gesture changes it (orbit, Alt+drag, the sun
+  // trackball): the canvas renders it live and the gizmo follows it.
+  const [modelPreview, setModelPreview] = useState<{ id: string; settings: ModelSettings } | null>(
+    null,
+  );
+  const previewModel = (id: string, settings: ModelSettings | null) => {
+    boardCanvas.current?.setModelPreview(id, settings);
+    setModelPreview(settings ? { id, settings } : null);
+  };
   const drillRef = useRef(drillGroupId);
   drillRef.current = drillGroupId;
   const groupOfRef = useRef<(nodeId: string) => string | null>(() => null);
@@ -477,6 +492,8 @@ function BoardApp() {
     });
     boardCanvas.current = canvas;
     canvas.setZoomSpeed(useAppearance.getState().zoomSpeed);
+    canvas.setWindowResizeMode(useAppearance.getState().windowResize);
+    canvas.setFrameCap(useAppearance.getState().frameCap);
     void canvas.mount(canvasHost.current);
     return () => {
       if (viewportSaveTimer.current) clearTimeout(viewportSaveTimer.current);
@@ -485,6 +502,16 @@ function BoardApp() {
     };
   }, [saveViewport]);
 
+  // Window edge drag (Settings), live.
+  const windowResize = useAppearance((state) => state.windowResize);
+  useEffect(() => {
+    boardCanvas.current?.setWindowResizeMode(windowResize);
+  }, [windowResize]);
+  // Frame-rate cap (Settings, a testing aid), live.
+  const frameCap = useAppearance((state) => state.frameCap);
+  useEffect(() => {
+    boardCanvas.current?.setFrameCap(frameCap);
+  }, [frameCap]);
   // Scroll zoom speed (Settings), live.
   const zoomSpeed = useAppearance((state) => state.zoomSpeed);
   useEffect(() => {
@@ -706,6 +733,9 @@ function BoardApp() {
     );
     return [...selectedNodes, ...mates];
   }, [selectedNodes, selectedNodeIds, boardNodes, drillGroupId]);
+  /** The lone selected 3D model (its sun trackball, Alt+drag camera). */
+  const loneModel =
+    shellNodes.length === 1 && shellNodes[0]?.kind === 'model' ? shellNodes[0] : null;
   // §6 RULE 3: a locked group at group level (not drilled into) is frozen.
   const shellLocked = shellNodes.some((node) => node.locked && node.groupId !== drillGroupId);
 
@@ -717,6 +747,11 @@ function BoardApp() {
     applyOps(ops);
     batchQueue.current?.submit(ops);
   };
+  // Dropped files are placed through the same queue — read at arrival time
+  // (a first drop opens its board while the upload is on its way).
+  const sendOpsRef = useRef(sendOps);
+  sendOpsRef.current = sendOps;
+  const placeDropped = (ops: BatchRequestOp[]) => sendOpsRef.current(ops);
 
   commitBoardOps.current = (ops, label, coalesceKey) => {
     if (!snapshot) return;
@@ -892,6 +927,20 @@ function BoardApp() {
   const selectionGroupStyle = snapshot?.groups.find((group) => group.id === selectionGroupIds[0]);
   const selectionLocked =
     selectionGrouped && selectionGroupIds.every((groupId) => lockedGroupIds.has(groupId));
+  /** Upload an image and set it as a texture channel of `ids` (one undo). */
+  const addTexture = async (file: File, channel: TextureChannel, ids: string[]) => {
+    useBoardStore.setState({ busy: 'Adding texture…' });
+    try {
+      const { hash } = await uploadTexture(file);
+      actions.setModel({ textures: { [channel]: hash } }, 'Texture', ids);
+    } catch (reason) {
+      useBoardStore.setState({
+        error: `Couldn’t add that texture: ${reason instanceof Error ? reason.message : String(reason)}`,
+      });
+    } finally {
+      useBoardStore.setState({ busy: null });
+    }
+  };
   const actions = {
     escape: () => clearSelectionRef.current(),
     delete: () => deleteSelectionRef.current(),
@@ -1056,6 +1105,11 @@ function BoardApp() {
       });
       if (changes.length > 0) commitNodeChanges.current(changes, 'Restore Proportions');
     },
+    /** Space: play / pause the lone selected video or audio item. */
+    play_pause: () => {
+      const lone = shellNodes.length === 1 ? shellNodes[0] : undefined;
+      if (lone && (lone.kind === 'video' || lone.kind === 'audio')) playMediaRef.current(lone.id);
+    },
     /** Orbit mode for a model (selecting it first). */
     orbitModel: (nodeId: string) => {
       setNoteEditingId(null);
@@ -1065,7 +1119,8 @@ function BoardApp() {
     /** Merge `patch` into the selected models' view settings, one undo
      *  step (`coalesceKey` folds a whole orbit session into one). */
     setModel: (
-      patch: Partial<ModelSettings>,
+      // A merge patch: a null deletes a key (clearing textures).
+      patch: Partial<ModelSettings> | Record<string, unknown>,
       label: string,
       ids: readonly string[] = shellNodes.filter((node) => node.kind === 'model').map((n) => n.id),
       coalesceKey?: string,
@@ -1077,6 +1132,13 @@ function BoardApp() {
         fields: { metadata: { model: patch } },
       }));
       if (ops.length > 0) commitBoardOps.current(ops, label, coalesceKey);
+    },
+    /** Pick an image for a texture channel of the selected models. */
+    chooseTexture: (channel: TextureChannel) => {
+      const ids = shellNodes.filter((node) => node.kind === 'model').map((node) => node.id);
+      if (ids.length === 0) return;
+      pendingTexture.current = { channel, ids };
+      textureInput.current?.click();
     },
     setOpacity: (opacity: number) => {
       const changes: NodeChange[] = shellNodes.map((node) => ({
@@ -1120,7 +1182,9 @@ function BoardApp() {
       // A PureRef board comes in whole, as a board of its own.
       const boardFiles = accepted.filter(isBoardFile);
       const rest = accepted.filter((file) => !isBoardFile(file));
-      if (rest.length > 0) void ingest(rest, actionsRef.current.dropPoint(client), arrivalCamera());
+      if (rest.length > 0) {
+        void ingest(rest, actionsRef.current.dropPoint(client), arrivalCamera(), placeDropped);
+      }
       if (boardFiles.length > 0) void actionsRef.current.importBoards(boardFiles);
     },
     /** Import board files one after another; the last one stays open. */
@@ -1203,7 +1267,7 @@ function BoardApp() {
           files.push(new File([blob], `pasted.${type.split('/')[1] ?? 'png'}`, { type }));
         }
         if (files.length > 0)
-          void ingest(files, actionsRef.current.dropPoint(null), arrivalCamera());
+          void ingest(files, actionsRef.current.dropPoint(null), arrivalCamera(), placeDropped);
       } catch {
         // Clipboard permission denied or empty — Ctrl+V still works.
       }
@@ -1310,6 +1374,10 @@ function BoardApp() {
         return;
       const action = resolveKey(event);
       if (!action) return;
+      // Space on a focused control is that control's (the player's own Play
+      // button toggles by itself); held down, it doesn't flicker playback.
+      if (action === 'play_pause' && (event.repeat || target?.closest('button, [role="slider"]')))
+        return;
       event.preventDefault();
       const run = actionsRef.current;
       switch (action) {
@@ -1455,7 +1523,7 @@ function BoardApp() {
     if (accepted.length === 0) return;
     await createAndOpenBoard('Untitled board');
     // A new board opens framed on the world origin.
-    await ingest(accepted, { x: 0, y: 0 }, { ...arrivalCamera(), zoom: 1 });
+    await ingest(accepted, { x: 0, y: 0 }, { ...arrivalCamera(), zoom: 1 }, placeDropped);
   };
 
   // With no board yet (first run) the board group stays out: it's the way in.
@@ -1493,6 +1561,78 @@ function BoardApp() {
             })),
           },
           {
+            label: 'Textures',
+            action: () => undefined,
+            submenu: [
+              ...(
+                [
+                  ['Color…', 'color'],
+                  ...(selectedModels.some((node) => node.model?.packedMro)
+                    ? ([['MRO…', 'mro']] as const)
+                    : ([
+                        ['Metalness…', 'metalness'],
+                        ['Roughness…', 'roughness'],
+                      ] as const)),
+                  ['Normal…', 'normal'],
+                  ...(selectedModels.some((node) => node.model?.packedMro)
+                    ? []
+                    : ([['AO…', 'ao']] as const)),
+                ] as const
+              ).map(([label, channel]) => ({
+                label,
+                // A check: this map is set (choosing again replaces it).
+                checked: modelsAll((settings) => settings.textures[channel] !== undefined),
+                action: () => actions.chooseTexture(channel),
+              })),
+              { separator: true as const, label: 'texture-options' },
+              {
+                label: 'Invert Roughness',
+                checked: modelsAll((settings) => settings.roughnessInvert),
+                keepOpen: true,
+                action: () =>
+                  actions.setModel(
+                    { roughnessInvert: !modelsAll((settings) => settings.roughnessInvert) },
+                    'Invert Roughness',
+                  ),
+              },
+              {
+                label: 'Packed MRO',
+                checked: modelsAll((settings) => settings.packedMro),
+                keepOpen: true,
+                action: () =>
+                  actions.setModel(
+                    { packedMro: !modelsAll((settings) => settings.packedMro) },
+                    'Packed MRO',
+                  ),
+              },
+              { separator: true as const, label: 'texture-clear' },
+              {
+                label: 'Clear Textures',
+                disabled: !selectedModels.some(
+                  (node) => Object.keys(node.model?.textures ?? {}).length > 0,
+                ),
+                action: () => actions.setModel({ textures: null }, 'Clear Textures'),
+              },
+            ],
+          },
+          {
+            label: 'Projection',
+            keepOpen: true,
+            action: () => undefined,
+            choices: (
+              [
+                ['Persp', 'perspective'],
+                ['Ortho', 'orthographic'],
+              ] as const
+            ).map(([label, projection]) => ({
+              label,
+              active: modelsAll((settings) => settings.projection === projection),
+              // Chosen here, it stays (an axis view's ortho doesn't).
+              action: () =>
+                actions.setModel({ projection, axisView: false }, `${label} Projection`),
+            })),
+          },
+          {
             label: 'Background',
             checked: modelsAll((settings) => settings.background),
             keepOpen: true,
@@ -1515,11 +1655,7 @@ function BoardApp() {
             : []),
           {
             label: 'Reset View',
-            disabled: modelsAll(
-              (settings) =>
-                settingsKey({ ...settings, shading: 'original', background: true }) ===
-                settingsKey(DEFAULT_MODEL_SETTINGS),
-            ),
+            disabled: modelsAll(isDefaultView),
             action: () => actions.setModel(viewOf(DEFAULT_MODEL_SETTINGS), 'Reset View'),
           },
         ];
@@ -1811,6 +1947,15 @@ function BoardApp() {
                     )
                   }
                   onOutsidePress={(event) => boardCanvas.current?.overlayPointerDown(event)}
+                  onModelViewPress={(event) => {
+                    if (!loneModel) return;
+                    dragModelView(event, {
+                      node: loneModel,
+                      zoom: camera.zoom,
+                      onPreview: (settings) => previewModel(loneModel.id, settings),
+                      onCommit: (view) => actions.setModel(view, 'Orbit', [loneModel.id]),
+                    });
+                  }}
                   onChromePress={(event, action) =>
                     boardCanvas.current?.chromePointerDown(event, action)
                   }
@@ -1849,15 +1994,26 @@ function BoardApp() {
                   key={orbit.session}
                   node={orbitNode}
                   viewport={camera}
-                  onPreview={(settings) =>
-                    boardCanvas.current?.setModelPreview(orbitNode.id, settings)
-                  }
+                  onPreview={(settings) => previewModel(orbitNode.id, settings)}
                   onCommit={(view) =>
                     actions.setModel(view, 'Orbit', [orbitNode.id], `orbit:${orbit.session}`)
                   }
                   onBoardPress={(event, action) =>
                     boardCanvas.current?.chromePointerDown(event, action)
                   }
+                />
+              )}
+              {loneModel && (
+                <ModelGizmo
+                  node={loneModel}
+                  viewport={camera}
+                  settings={
+                    modelPreview?.id === loneModel.id
+                      ? modelPreview.settings
+                      : (loneModel.model ?? DEFAULT_MODEL_SETTINGS)
+                  }
+                  onPreview={(settings) => previewModel(loneModel.id, settings)}
+                  onCommit={(patch, label) => actions.setModel(patch, label, [loneModel.id])}
                 />
               )}
             </>
@@ -2123,6 +2279,22 @@ function BoardApp() {
         />
       )}
       <Toasts toasts={toasts} />
+      <input
+        ref={textureInput}
+        className="visually-hidden"
+        type="file"
+        accept="image/*"
+        tabIndex={-1}
+        aria-hidden="true"
+        data-testid="texture-input"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = '';
+          const target = pendingTexture.current;
+          pendingTexture.current = null;
+          if (file && target) void addTexture(file, target.channel, target.ids);
+        }}
+      />
       <input
         ref={fileInput}
         className="visually-hidden"

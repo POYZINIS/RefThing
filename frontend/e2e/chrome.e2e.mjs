@@ -514,3 +514,243 @@ test('note sizing: Size clips; width truncates; height scales text down once it 
   assert.ok(clippedAfter.height < clippedBefore.height - 5, 'it did resize');
   assert.equal(scaleOf(clippedAfter), scaleOf(clippedBefore), 'text size unchanged');
 });
+
+test('the wheel zooms over a selected item too (not only bare canvas)', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    images: [{ name: 'wheel.png', x: 0, y: 0, width: 400, height: 300 }],
+  });
+  await openBoard(page, seeded);
+  const center = await nodeCenter(page, seeded.ids['wheel.png']);
+  await page.mouse.click(center.x, center.y);
+  await page.locator('.selection-overlay').waitFor();
+  const before = await page.evaluate(() => window.__refthing.viewport.zoom);
+  await page.mouse.move(center.x, center.y);
+  await page.mouse.wheel(0, -100);
+  await page.waitForTimeout(500);
+  const after = await page.evaluate(() => window.__refthing.viewport.zoom);
+  assert.ok(after > before * 1.1, `zoomed in over the selection: ${before} -> ${after}`);
+});
+
+test('drops land at any time: over a selection, with a menu open, one after another', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    images: [{ name: 'base.png', x: 0, y: 0, width: 400, height: 300 }],
+  });
+  await openBoard(page, seeded);
+  const board = await (
+    await context.request.get(`${BASE_URL}/api/boards/${seeded.boardId}`)
+  ).json();
+  // Count board refetches: a drop must show its files without one.
+  let refetches = 0;
+  page.on('request', (request) => {
+    if (request.url().endsWith(`/api/boards/${board.board.id}`) && request.method() === 'GET') {
+      refetches += 1;
+    }
+  });
+  const dropAt = (point, name) =>
+    page.evaluate(
+      async ({ x, y, name: fileName }) => {
+        const canvas = new OffscreenCanvas(120, 80);
+        const context2d = canvas.getContext('2d');
+        context2d.fillStyle = '#c07030';
+        context2d.fillRect(0, 0, 120, 80);
+        const blob = await canvas.convertToBlob({ type: 'image/png' });
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([blob], fileName, { type: 'image/png' }));
+        const target = document.elementFromPoint(x, y);
+        for (const type of ['dragenter', 'dragover', 'drop']) {
+          target.dispatchEvent(
+            new DragEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              clientX: x,
+              clientY: y,
+              dataTransfer: transfer,
+            }),
+          );
+        }
+      },
+      { ...point, name },
+    );
+
+  // Onto the selected item (the selection shell is on top of it).
+  const base = await nodeCenter(page, seeded.ids['base.png']);
+  await page.mouse.click(base.x, base.y);
+  await dropAt(base, 'one.png');
+  await page.waitForFunction(() => window.__refthing.nodes.length === 2, null, {
+    timeout: 15000,
+  });
+  await page.waitForTimeout(600);
+  // A drop shows its file from the upload's own response: no board refetch.
+  // (Drops overlapping each other below may still resync once, when one's
+  // placement races another's upload — the queue's normal recovery.)
+  assert.equal(refetches, 0, 'no board refetch for a drop');
+  // With the context menu open (dropped onto the menu itself).
+  await page.mouse.click(base.x + 300, base.y + 200, { button: 'right' });
+  const menuBox = await page.locator('.board-context-menu').boundingBox();
+  await dropAt({ x: menuBox.x + 20, y: menuBox.y + 20 }, 'two.png');
+  // And straight away another, before the first ones have finished.
+  await dropAt({ x: base.x - 250, y: base.y }, 'three.png');
+  await page.waitForFunction(() => window.__refthing.nodes.length === 4, null, {
+    timeout: 15000,
+  });
+  await page.waitForTimeout(600);
+  // They stay where they were placed (a replayed create never snaps them back).
+  const nodes = (await state(page)).nodes.filter((node) => node.id !== seeded.ids['base.png']);
+  for (const node of nodes) {
+    assert.ok(
+      Math.abs(node.width - 120 / (await page.evaluate(() => window.__refthing.viewport.zoom))) < 1,
+      'camera-sized',
+    );
+  }
+  const server = await (
+    await context.request.get(`${BASE_URL}/api/boards/${seeded.boardId}`)
+  ).json();
+  for (const node of nodes) {
+    const stored = server.items.find((item) => item.id === node.id);
+    assert.ok(
+      Math.abs(stored.x - node.x) < 0.5 && Math.abs(stored.y - node.y) < 0.5,
+      'placement saved',
+    );
+  }
+});
+
+test('resizing the window from its left or top edge crops: items stay put on screen', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    images: [{ name: 'focus.png', x: 0, y: 0, width: 200, height: 150 }],
+  });
+  await openBoard(page, seeded);
+  const size = page.viewportSize();
+  // The window's screen position, as the page reads it (stubbed: a test
+  // browser can't drag its own window edge).
+  await page.evaluate(() => {
+    const frame = { x: 300, y: 200 };
+    window.__frame = frame;
+    Object.defineProperty(window, 'screenX', { configurable: true, get: () => frame.x });
+    Object.defineProperty(window, 'screenY', { configurable: true, get: () => frame.y });
+    // A headless browser's screen is the page's size (it would read as
+    // maximized): give it a real monitor.
+    Object.defineProperty(window.screen, 'availWidth', { configurable: true, get: () => 3840 });
+    Object.defineProperty(window.screen, 'availHeight', { configurable: true, get: () => 2160 });
+  });
+  await page.waitForTimeout(200);
+  const onScreen = async () => {
+    const box = await page.evaluate((id) => window.__refthing.painted(id), seeded.ids['focus.png']);
+    const frame = await page.evaluate(() => window.__frame);
+    return { x: box.x + frame.x, y: box.y + frame.y };
+  };
+  const before = await onScreen();
+
+  // Drag the top-left corner in by (120, 80): origin moves, window shrinks.
+  await page.evaluate(() => {
+    window.__frame.x += 120;
+    window.__frame.y += 80;
+  });
+  await page.setViewportSize({ width: size.width - 120, height: size.height - 80 });
+  await page.waitForTimeout(400);
+  const cropped = await onScreen();
+  assert.ok(Math.abs(cropped.x - before.x) < 1.5, `x stays on screen: ${before.x} -> ${cropped.x}`);
+  assert.ok(Math.abs(cropped.y - before.y) < 1.5, `y stays on screen: ${before.y} -> ${cropped.y}`);
+
+  // The bottom-right edge (origin fixed) keeps its usual behaviour too.
+  await page.setViewportSize({ width: size.width, height: size.height });
+  await page.waitForTimeout(400);
+  const grown = await onScreen();
+  assert.ok(Math.abs(grown.x - before.x) < 1.5 && Math.abs(grown.y - before.y) < 1.5);
+
+  // A plain window move carries the board along (no camera shift).
+  const camera = await page.evaluate(() => window.__refthing.viewport);
+  await page.evaluate(() => {
+    window.__frame.x += 200;
+  });
+  await page.waitForTimeout(300);
+  const after = await page.evaluate(() => window.__refthing.viewport);
+  assert.equal(after.x, camera.x, 'moving the window never pans the board');
+});
+
+test('Smooth edge drag: the camera eases after the window, then plants exactly', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    images: [{ name: 'smooth.png', x: 0, y: 0, width: 200, height: 150 }],
+  });
+  await page.evaluate(() => {
+    const saved = JSON.parse(localStorage.getItem('refthing.appearance') || '{}');
+    localStorage.setItem(
+      'refthing.appearance',
+      JSON.stringify({ ...saved, windowResize: 'smooth' }),
+    );
+  });
+  await openBoard(page, seeded);
+  const size = page.viewportSize();
+  await page.evaluate(() => {
+    const frame = { x: 300, y: 200 };
+    window.__frame = frame;
+    Object.defineProperty(window, 'screenX', { configurable: true, get: () => frame.x });
+    Object.defineProperty(window, 'screenY', { configurable: true, get: () => frame.y });
+    Object.defineProperty(window.screen, 'availWidth', { configurable: true, get: () => 3840 });
+    Object.defineProperty(window.screen, 'availHeight', { configurable: true, get: () => 2160 });
+  });
+  await page.waitForTimeout(200);
+  const onScreen = async () => {
+    const box = await page.evaluate(
+      (id) => window.__refthing.painted(id),
+      seeded.ids['smooth.png'],
+    );
+    const frame = await page.evaluate(() => window.__frame);
+    return { x: box.x + frame.x, y: box.y + frame.y };
+  };
+  const before = await onScreen();
+  await page.evaluate(() => {
+    window.__frame.x += 120;
+    window.__frame.y += 80;
+  });
+  await page.setViewportSize({ width: size.width - 120, height: size.height - 80 });
+  // Right after a step the curve hasn't caught up (it runs a little behind)...
+  const riding = await onScreen();
+  assert.ok(riding.x - before.x > 60, `eased, not snapped: ${before.x} -> ${riding.x}`);
+  // ...and once the edge stops it glides back to where it was on screen.
+  await page.waitForTimeout(1200);
+  const settled = await onScreen();
+  assert.ok(Math.abs(settled.x - before.x) < 1.5, `settled x: ${before.x} -> ${settled.x}`);
+  assert.ok(Math.abs(settled.y - before.y) < 1.5, `settled y: ${before.y} -> ${settled.y}`);
+
+  await page.setViewportSize(size);
+  await page.evaluate(() => {
+    const saved = JSON.parse(localStorage.getItem('refthing.appearance') || '{}');
+    delete saved.windowResize;
+    localStorage.setItem('refthing.appearance', JSON.stringify(saved));
+  });
+});
+
+test('the 10 fps testing cap still paints and still follows window resizes', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    images: [{ name: 'capped.png', x: 0, y: 0, width: 200, height: 150, color: [30, 160, 90] }],
+  });
+  await page.evaluate(() => {
+    const saved = JSON.parse(localStorage.getItem('refthing.appearance') || '{}');
+    localStorage.setItem('refthing.appearance', JSON.stringify({ ...saved, frameCap: 10 }));
+  });
+  await openBoard(page, seeded);
+  await page.waitForTimeout(600);
+  const center = await nodeCenter(page, seeded.ids['capped.png']);
+  const color = await pixel(page, center);
+  assert.ok(color[1] > color[0] + 60, `painted at 10 fps: ${color}`);
+  // A resize lands on the next allowed frame: the canvas takes the window.
+  const size = page.viewportSize();
+  await page.setViewportSize({ width: size.width - 200, height: size.height - 100 });
+  await page.waitForTimeout(400);
+  const canvasSize = await page.evaluate(() => {
+    const canvas = document.querySelector('#canvas-host canvas');
+    return { width: canvas.clientWidth, height: canvas.clientHeight };
+  });
+  assert.deepEqual(canvasSize, { width: size.width - 200, height: size.height - 100 });
+  await page.setViewportSize(size);
+  await page.evaluate(() => {
+    const saved = JSON.parse(localStorage.getItem('refthing.appearance') || '{}');
+    delete saved.frameCap;
+    localStorage.setItem('refthing.appearance', JSON.stringify(saved));
+  });
+});

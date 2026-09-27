@@ -1,4 +1,7 @@
 @import "tailwindcss";
+/* GlassKit (Liquid Glass): its design tokens follow our data-theme; the
+   panels below are built from them. */
+@import "@jungherz-de/glasskit/glasskit.css";
 
 /* ------------------------------------------------------------------ tokens
    One palette in two lights (ui-design.md): a pale gray-green workspace
@@ -48,16 +51,26 @@
 :root {
   /* Materials. Raised groups sit on soft opposing shadows; recessed wells
      (fields, the opening target) invert them. */
-  --panel-bg: rgb(240 243 240 / 78%);
+  /* Glass panels, GlassKit's recipe: a light tint over a readability scrim,
+     a luminous rim and a bright top edge, over a real blur of the board. */
+  --panel-bg: linear-gradient(var(--gl-surface-1), var(--gl-surface-1)), var(--gl-state-scrim);
   --panel-solid: #eef1ee;
-  --panel-edge: rgb(255 255 255 / 55%);
+  --panel-edge: var(--gl-border-milk);
+  --glass-saturate: 1.6;
+  /* The right-click menu reads over busy boards: mostly solid, frosted.
+     The blur is kept tight so what's behind stays recognisably blurred
+     shapes — a wide radius averages it all into one flat colour, which
+     reads as clear rather than frosted. */
+  --menu-bg: color-mix(in srgb, var(--panel-solid) 82%, transparent);
+  --menu-blur: 12px;
   --field-bg: rgb(52 61 56 / 6%);
   --hover-bg: rgb(52 61 56 / 8%);
   --press-bg: rgb(52 61 56 / 12%);
   --shade-hi: rgb(255 255 255 / 80%);
   --shade-lo: rgb(58 72 64 / 18%);
   --shadow-raised: -3px -3px 8px var(--shade-hi), 3px 4px 11px var(--shade-lo);
-  --shadow-float: -4px -4px 14px var(--shade-hi), 6px 10px 28px rgb(58 72 64 / 22%);
+  --shadow-float: -4px -4px 14px var(--shade-hi), 6px 10px 28px rgb(58 72 64 / 22%),
+    var(--gl-inset-strong);
   --shadow-inset: inset 2px 2px 5px var(--shade-lo), inset -2px -2px 5px var(--shade-hi);
   --sheen: rgb(255 255 255 / 35%);
   --grain-opacity: 0.07;
@@ -68,8 +81,8 @@
   --radius-group: 12px;
   --radius-sheet: 14px;
   --radius-target: 17px;
-  --blur-group: 20px;
-  --blur-sheet: 24px;
+  --blur-group: var(--gl-blur);
+  --blur-sheet: var(--gl-blur-heavy);
 
   /* Board stacking order — one explicit ladder, lowest to highest. Every node
      (image, GIF, note) paints INSIDE the canvas in its own z order, so no DOM
@@ -129,15 +142,16 @@
   --color-info: #8fb4d6;
   --color-guide: #e98fbd;
 
-  --panel-bg: rgb(44 48 46 / 76%);
+  --panel-bg: linear-gradient(var(--gl-surface-3), var(--gl-surface-3)), var(--gl-state-scrim);
   --panel-solid: #2b2f2d;
-  --panel-edge: rgb(255 255 255 / 6%);
+  --panel-edge: var(--gl-border-subtle);
   --field-bg: rgb(0 0 0 / 20%);
   --hover-bg: rgb(208 216 208 / 8%);
   --press-bg: rgb(208 216 208 / 12%);
   --shade-hi: rgb(255 255 255 / 4%);
   --shade-lo: rgb(0 0 0 / 42%);
-  --shadow-float: -3px -3px 12px var(--shade-hi), 6px 12px 30px rgb(0 0 0 / 48%);
+  --shadow-float: -3px -3px 12px var(--shade-hi), 6px 12px 30px rgb(0 0 0 / 48%),
+    var(--gl-inset-strong);
   --sheen: rgb(255 255 255 / 4%);
   --grain-opacity: 0.1;
 }
@@ -147,10 +161,14 @@
   --panel-bg: var(--panel-solid);
   --blur-group: 0px;
   --blur-sheet: 0px;
+  --glass-saturate: 1;
+  --menu-bg: var(--panel-solid);
+  --menu-blur: 0px;
 }
 
 /* The workspace is opaque except on the desktop shell with glass on, where
-   the native backdrop (Mica) shows through at the chosen opacity. */
+   the native backdrop (Acrylic: a real blur of what is behind the
+   window) shows through at the chosen opacity. */
 :root:not([data-shell="desktop"]),
 :root[data-glass="off"] {
   --backdrop-alpha: 1 !important;
@@ -344,7 +362,7 @@ button:disabled {
   border-radius: var(--radius-group);
   background: var(--panel-bg);
   box-shadow: var(--shadow-raised);
-  backdrop-filter: blur(var(--blur-group)) saturate(1.2);
+  backdrop-filter: blur(var(--blur-group)) saturate(var(--glass-saturate));
 }
 
 .chrome-divider {
@@ -482,7 +500,7 @@ button:disabled {
   color: var(--color-text-muted);
   background: var(--panel-bg);
   box-shadow: var(--shadow-raised);
-  backdrop-filter: blur(var(--blur-group));
+  backdrop-filter: blur(var(--blur-group)) saturate(var(--glass-saturate));
   font-size: 12px;
   pointer-events: none;
 }
@@ -595,7 +613,7 @@ button:disabled {
   color: var(--color-text);
   background: var(--panel-bg);
   box-shadow: var(--shadow-raised);
-  backdrop-filter: blur(var(--blur-group)) saturate(1.2);
+  backdrop-filter: blur(var(--blur-group)) saturate(var(--glass-saturate));
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
   transform: translateX(-50%);
@@ -710,7 +728,7 @@ button:disabled {
   border-radius: var(--radius-sheet);
   background: var(--panel-bg);
   box-shadow: var(--shadow-float);
-  backdrop-filter: blur(var(--blur-sheet)) saturate(1.2);
+  backdrop-filter: blur(var(--blur-sheet)) saturate(var(--glass-saturate));
   transform-origin: top left;
 }
 
@@ -1034,7 +1052,7 @@ button:disabled {
   color: var(--color-text);
   background: var(--panel-bg);
   box-shadow: var(--shadow-float);
-  backdrop-filter: blur(var(--blur-sheet)) saturate(1.2);
+  backdrop-filter: blur(var(--blur-sheet)) saturate(var(--glass-saturate));
   overflow: hidden;
 }
 
@@ -1283,9 +1301,9 @@ kbd {
   padding: 5px;
   border: 1px solid var(--panel-edge);
   border-radius: var(--radius-group);
-  background: var(--panel-bg);
+  background: var(--menu-bg);
   box-shadow: var(--shadow-float);
-  backdrop-filter: blur(var(--blur-group)) saturate(1.2);
+  backdrop-filter: blur(var(--menu-blur)) saturate(var(--glass-saturate));
   transform-origin: top left;
   /* A long menu (a note's text controls) scrolls rather than leaving the
      window. */
@@ -1318,6 +1336,25 @@ kbd {
 
 .board-context-menu button:disabled {
   opacity: 0.4;
+}
+
+/* The menu and its open submenu share one layer (outside clicks close both). */
+.board-context-menu-layer {
+  display: contents;
+}
+
+/* A row with a submenu stays lit while its submenu is open. */
+.board-context-menu button.open {
+  color: var(--color-text-strong);
+  background: var(--hover-bg);
+}
+
+.board-context-menu button[aria-haspopup="menu"] svg {
+  color: var(--color-text-muted);
+}
+
+.board-context-menu.submenu {
+  min-width: 180px;
 }
 
 .board-context-menu .menu-check {
@@ -1511,7 +1548,7 @@ kbd {
   color: var(--color-accent-strong);
   background: var(--panel-bg);
   box-shadow: var(--shadow-raised);
-  backdrop-filter: blur(var(--blur-group));
+  backdrop-filter: blur(var(--blur-group)) saturate(var(--glass-saturate));
   font-size: 14px;
   font-weight: 600;
 }
@@ -1543,7 +1580,7 @@ kbd {
   color: var(--color-text);
   background: var(--panel-bg);
   box-shadow: var(--shadow-float);
-  backdrop-filter: blur(var(--blur-group)) saturate(1.2);
+  backdrop-filter: blur(var(--blur-group)) saturate(var(--glass-saturate));
   font-size: 12.5px;
   line-height: 1.45;
   pointer-events: auto;
@@ -1630,6 +1667,96 @@ kbd {
 
 .model-orbit.dragging {
   cursor: grabbing;
+}
+
+/* Alt+drag on a selected model turns its camera (no orbit mode). */
+body.orbiting-view,
+body.orbiting-view * {
+  cursor: grabbing !important;
+}
+
+/* The sun trackball in a selected model's top-right corner. Board content,
+   so fixed colours (Blender's axis colours) rather than theme tokens. */
+.model-gizmo-frame {
+  position: absolute;
+  z-index: var(--z-media-controls);
+  pointer-events: none;
+  transform-origin: center;
+}
+
+.model-gizmo {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(16 20 18 / 14%);
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+  transition: background-color 120ms var(--ease-out);
+}
+
+.model-gizmo:hover,
+.model-gizmo.dragging {
+  background: rgb(16 20 18 / 30%);
+}
+
+.model-gizmo-axis.negative {
+  opacity: 0.4;
+}
+
+.model-gizmo-axis.negative.hot {
+  opacity: 0.9;
+}
+
+/* Under the pointer: a white ring (Blender highlights the same way). */
+.model-gizmo-axis.hot circle,
+.model-gizmo-axis.negative.hot,
+.model-gizmo-sun.hot circle {
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+
+.model-gizmo:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.model-gizmo svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.model-gizmo-label {
+  fill: #fff;
+  font-size: 8.5px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+}
+
+.model-gizmo-sun circle {
+  fill: #ffd34d;
+  stroke: rgb(40 30 0 / 45%);
+  stroke-width: 1;
+}
+
+.model-gizmo-sun line {
+  stroke: #ffd34d;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+}
+
+.model-gizmo-sun > line:first-child {
+  stroke-dasharray: 2 2;
+  opacity: 0.75;
+}
+
+.model-gizmo-sun.behind {
+  opacity: 0.45;
 }
 
 .live-media {

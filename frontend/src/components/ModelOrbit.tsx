@@ -17,6 +17,63 @@ import type { SpriteNode } from '@/canvas/nodes/types';
 /** A wheel pause this long ends one dolly (one commit). */
 const WHEEL_SETTLE_MS = 250;
 
+/** A client-space pointer delta in an item's own (rotated) frame. */
+function localDelta(dx: number, dy: number, rotation: number) {
+  const radians = (-rotation * Math.PI) / 180;
+  return {
+    x: dx * Math.cos(radians) - dy * Math.sin(radians),
+    y: dx * Math.sin(radians) + dy * Math.cos(radians),
+  };
+}
+
+/**
+ * A one-off camera turn without orbit mode (Alt+drag on a selected model,
+ * bindings `orbit_view`): window-level moves orbit the view until release,
+ * which commits it (nothing if the pointer never moved).
+ */
+export function dragModelView(
+  press: PointerEvent,
+  {
+    node,
+    zoom,
+    onPreview,
+    onCommit,
+  }: {
+    node: SpriteNode;
+    zoom: number;
+    onPreview: (settings: ModelSettings | null) => void;
+    onCommit: (view: ModelView) => void;
+  },
+): void {
+  const stored = node.model ?? modelSettings(undefined);
+  let view = viewOf(stored);
+  let last = { x: press.clientX, y: press.clientY };
+  let moved = false;
+  const height = node.height * zoom;
+  const move = (event: PointerEvent) => {
+    if (event.pointerId !== press.pointerId) return;
+    const delta = localDelta(event.clientX - last.x, event.clientY - last.y, node.rotation);
+    last = { x: event.clientX, y: event.clientY };
+    if (delta.x === 0 && delta.y === 0) return;
+    moved = true;
+    view = orbit(view, delta.x, delta.y, height);
+    onPreview({ ...stored, ...view });
+  };
+  const end = (event: PointerEvent) => {
+    if (event.pointerId !== press.pointerId) return;
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', end);
+    window.removeEventListener('pointercancel', end);
+    document.body.classList.remove('orbiting-view');
+    if (moved) onCommit(view);
+    onPreview(null);
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
+  document.body.classList.add('orbiting-view');
+}
+
 /**
  * Orbit mode for a selected 3D model (double-click it; Escape or a click
  * elsewhere ends it). A transparent surface over the item takes the
@@ -97,14 +154,7 @@ export function ModelOrbit({
     };
   }, []);
 
-  /** A client-space pointer delta in the item's own (rotated) frame. */
-  const local = (dx: number, dy: number) => {
-    const radians = (-latest.current.rotation * Math.PI) / 180;
-    return {
-      x: dx * Math.cos(radians) - dy * Math.sin(radians),
-      y: dx * Math.sin(radians) + dy * Math.cos(radians),
-    };
-  };
+  const local = (dx: number, dy: number) => localDelta(dx, dy, latest.current.rotation);
 
   const centerX = viewport.x + (node.x + node.width / 2) * viewport.zoom;
   const centerY = viewport.y + (node.y + node.height / 2) * viewport.zoom;
@@ -130,7 +180,7 @@ export function ModelOrbit({
           onBoardPress(native, action);
           return;
         }
-        if (action !== 'orbit' && action !== 'orbit_pan') return;
+        if (action !== 'orbit' && action !== 'orbit_pan' && action !== 'orbit_view') return;
         event.preventDefault();
         event.stopPropagation();
         event.currentTarget.setPointerCapture(event.pointerId);

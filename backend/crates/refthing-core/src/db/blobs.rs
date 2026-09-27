@@ -50,17 +50,22 @@ pub async fn get(pool: &SqlitePool, hash: &str) -> Result<Option<Blob>, CoreErro
     .map_err(|error| CoreError::Db(error.to_string()))
 }
 
-/// Lists hashes no item references anymore — the sweep set for blob GC
-/// (grace period and file deletion are the caller's concern).
+/// Lists hashes nothing references anymore — the sweep set for blob GC
+/// (grace period and file deletion are the caller's concern). A blob is
+/// referenced by an item, or as a 3D model's texture from an item's
+/// metadata (`model.textures.<channel>`).
 pub async fn unreferenced_hashes(pool: &SqlitePool) -> Result<Vec<String>, CoreError> {
-    let rows = sqlx::query!(
-        "SELECT hash AS \"hash!\" FROM blobs \
-         WHERE hash NOT IN (SELECT blob_id FROM items WHERE blob_id IS NOT NULL)",
+    sqlx::query_scalar::<_, String>(
+        "SELECT hash FROM blobs \
+         WHERE hash NOT IN (SELECT blob_id FROM items WHERE blob_id IS NOT NULL) \
+           AND hash NOT IN ( \
+               SELECT t.value FROM item_metadata m, \
+                      json_each(m.json, '$.model.textures') t \
+               WHERE t.type = 'text')",
     )
     .fetch_all(pool)
     .await
-    .map_err(|error| CoreError::Db(error.to_string()))?;
-    Ok(rows.into_iter().map(|row| row.hash).collect())
+    .map_err(|error| CoreError::Db(error.to_string()))
 }
 
 #[cfg(test)]

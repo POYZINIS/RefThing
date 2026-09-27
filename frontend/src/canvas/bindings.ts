@@ -91,6 +91,14 @@ button = "left"
 modifiers = ["shift"]
 target = "orbit"
 
+# A selected 3D model (target "model" = its body while it is the lone
+# selection): Alt+drag turns the camera without entering orbit mode —
+# turntable, up stays up, like Blender. Also works in orbit mode.
+[actions.orbit_view]
+button = "left"
+modifiers = ["alt"]
+target = ["model", "orbit"]
+
 # Double-clicks, by what is under the pointer.
 [double_click]
 note = "enter_note_edit"
@@ -148,6 +156,10 @@ optional = ["shift"]
 [keys.escape]
 key = "Escape"
 
+# A lone selected video or audio item plays / pauses.
+[keys.play_pause]
+key = " "
+
 [keys.add_files]
 key = "o"
 modifiers = ["primary"]
@@ -168,7 +180,7 @@ modifiers = ["primary"]
 
 /** `space` and `z` are held keys (PointerEvent doesn't carry them). */
 export type Modifier = 'shift' | 'alt' | 'primary' | 'space' | 'z';
-export type PressTarget = 'item' | 'empty' | 'selection' | 'handle' | 'orbit';
+export type PressTarget = 'item' | 'empty' | 'selection' | 'handle' | 'orbit' | 'model';
 export type PressAction =
   | 'pan'
   | 'drag_zoom'
@@ -182,7 +194,8 @@ export type PressAction =
   | 'scale'
   | 'move_window'
   | 'orbit'
-  | 'orbit_pan';
+  | 'orbit_pan'
+  | 'orbit_view';
 export type KeyAction =
   | 'delete'
   | 'group'
@@ -198,7 +211,8 @@ export type KeyAction =
   | 'add_files'
   | 'find'
   | 'bold'
-  | 'italic';
+  | 'italic'
+  | 'play_pause';
 export type DoubleClickTarget = 'note' | 'group' | 'item' | 'media' | 'model' | 'file' | 'empty';
 
 type PressBinding = {

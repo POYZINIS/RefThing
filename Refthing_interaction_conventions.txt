@@ -89,6 +89,27 @@ conflict in this file; confirm or overrule them here.
    waveform) — there is no separate ruler or seek bar. Per Section 0
    Rule 8 the playhead exists only while the item is selected; grabbing
    it never moves the item.
+17. Resizing the window crops the board: dragging the left or top edge
+   (or any corner but bottom-right) keeps everything where it is on
+   screen — the camera takes the opposite shift — so the thing you are
+   looking at never slides away. The right and bottom edges already
+   behaved that way. Moving the window carries the board with it;
+   maximize / restore keep the board anchored to the window
+   (canvas/windowCrop.ts). Windows' compositor shows each step of a
+   left/top drag with the previous frame, pinned top-left, before the
+   page's new frame lands (DWM; no app can fully avoid it — PureRef shows
+   it too), so holding the board exactly still jitters. Settings → Window
+   → Left / top edge drag: "Hold the board still" (default) or "Smooth,
+   settle after". Smooth samples each resize step as a point on a
+   timeline and moves the camera along a monotone cubic Bézier through
+   them (Catmull-Rom tangents, drawn ~40 ms behind so each segment has its
+   next point, never overshooting), so bursty steps become one continuous
+   motion; ~120 ms after the edge stops, the rest is planted with the
+   camera's own easing, exactly where it belongs.
+16. Space plays / pauses the lone selected video or audio item (bindings
+   [keys.play_pause]); it does nothing otherwise, never repeats while held,
+   and a focused control keeps its own Space. Files can be dropped at any
+   time — over items, the selection, an open menu — and appear at once.
 15. 3D models. The model is never edited; only how it is viewed. A press
    on a model is an ordinary item press (select / move — Section 0 Rule
    8), selected or not. Double-click (bindings [double_click] model)
@@ -97,8 +118,36 @@ conflict in this file; confirm or overrule them here.
    the wheel moves the camera in and out, middle-drag still pans the
    board. Escape, a click elsewhere or any other selection ends it. Each
    gesture commits; one orbit session is one undo step. The context menu
-   holds the rest: Shade Original / Smooth / Flat, Background (the sky;
-   off = transparent, lighting unchanged), Orbit, Reset View.
+   holds the rest: Shade Original / Smooth / Flat, a Textures submenu,
+   Projection Persp / Ortho, Background (the sky; off = transparent,
+   lighting unchanged), Orbit, Reset View.
+   TEXTURES (submenu; hover, click or → opens it, ← closes it): Color…,
+   Metalness…, Roughness…, Normal…, AO… each pick an image for that map
+   over the model's UVs (a check = set; choosing again replaces it);
+   Invert Roughness (the map is smoothness); Packed MRO (one texture:
+   metalness R, roughness G, AO B — replaces the three entries with MRO…);
+   Clear Textures. Each is one undo step. Normal maps are OpenGL-style
+   (green up).
+   Once a model is selected (never before), Alt+DRAG on it turns the
+   camera without orbit mode — turntable, up stays up (Blender's Z lock);
+   bindings target "model". Alt+CLICK keeps its meaning (reset aspect):
+   the press only becomes a camera turn once it travels past the click
+   epsilon. A selected model also shows the NAVIGATION GIZMO in its
+   top-right corner: X/Y/Z axes in Blender's colours and orientation
+   (Z up), turning with the camera, with the sun on it.
+   - drag the ball (anywhere but the sun): orbit the camera;
+   - drag the sun: swing the light around the model (right/left about the
+     view's up axis, up/down about its right axis); double-click it to
+     reset;
+   - click an axis ball (either end): the camera eases (~0.3 s) to look
+     straight down that axis, orthographic; clicking the axis already
+     faced flips to the opposite side. Orbiting away from such an axis
+     view returns to perspective (Blender's auto perspective); an Ortho
+     picked in the menu stays;
+   - arrows orbit 15 degrees, Shift+arrows turn the sun.
+   It is the one piece of per-item UI a model carries, and only while
+   selected; it hides when the model is too small on screen to hold it
+   (under 180x140 px).
 
 PURPOSE
 --------------------------------------------------------------------

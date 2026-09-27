@@ -305,11 +305,17 @@ be killed).
       "mime_type": "image/png",
       "width": 256.0, "height": 256.0,
       "dedup": false,
-      "poster": "pending"
+      "poster": "pending",
+      "item": { "…": "the created Item, as in a snapshot" },
+      "blob": { "…": "its BlobInfo, as in a snapshot (ready levels)" }
     }
   ]
 }
 ```
+
+- `item` / `blob` let a client show the files at once without refetching
+  the board (the app inserts them, then places them through its batch
+  queue; the WebSocket catch-up skips creates it already holds).
 
 - One entry per file, in multipart order. `seq` is the board seq after the
   last committed file (each file commits its own transaction: blob row +
@@ -327,6 +333,7 @@ be killed).
   | `image/…`   | `image` | true size, long edge capped at 1600 (else 256²) | `pyramid`      |
   | `video/…`   | `video` | frame size via ffprobe, capped at 1600 (else 480×270) | `media_poster` |
   | `audio/…`   | `audio` | 480×120 (a waveform strip)                    | `media_poster` |
+  | `model/…`, `application/x-blender` | `model` | 640×480 viewport | none (the client renders) |
   | anything    | `file`  | 200×240 card                                  | none           |
 
   Video/audio also get `metadata.duration` (seconds) from ffprobe.
@@ -338,6 +345,15 @@ be killed).
 - Errors: 404 unknown board, 400 invalid `meta` part, 413 over the 1 GiB
   limit. A crash between store and commit leaves at worst an unreferenced
   blob, which the GC sweeps.
+
+### Texture upload — `POST /api/blobs`
+
+Multipart; the first file part is streamed into the blob store and the
+`blobs` registry (idempotent, deduplicated like ingest) with **no item**.
+Images only (415 otherwise). **201** `{ hash, mime_type, byte_size }`. A 3D
+model item refers to the hash from its metadata
+(`model.textures.<color|metalness|roughness|normal|ao|mro>`), which keeps
+the blob out of GC and puts it in the board's zip export.
 
 ### Blobs — `GET /blob/{hash}/{level}`
 

@@ -7,7 +7,11 @@ use std::time::{Duration, Instant};
 
 use refthing_core::AppConfig;
 use tauri::ipc::CapabilityBuilder;
-use tauri::window::{Effect, EffectsBuilder};
+use tauri::window::{Color, Effect, EffectsBuilder};
+
+/// Acrylic's own tint, kept faint: the page's workspace colour (with the
+/// Settings → Background opacity) does the tinting on top of the blur.
+const ACRYLIC_TINT: Color = Color(30, 34, 32, 24);
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// What the page may do with its own window. The page is served over HTTP
@@ -139,8 +143,9 @@ fn main() {
 
             // Frameless and transparent: the page draws its own window
             // controls and drag strip (ui-design.md), and the workspace shows
-            // the Mica backdrop through it when glass is on (the page turns
-            // the effect off with the glass setting).
+            // Acrylic through it when glass is on — a real blur of whatever
+            // is behind the window (Mica only tints from the wallpaper). The
+            // page turns the effect off with the glass setting.
             let url = WebviewUrl::External(origin.parse().expect("app url"));
             WebviewWindowBuilder::new(app, "main", url)
                 .title("RefThing")
@@ -149,7 +154,16 @@ fn main() {
                 .decorations(false)
                 .shadow(true)
                 .transparent(true)
-                .effects(EffectsBuilder::new().effect(Effect::Mica).build())
+                .effects(
+                    EffectsBuilder::new()
+                        .effect(Effect::Acrylic)
+                        .color(ACRYLIC_TINT)
+                        .build(),
+                )
+                // Files dropped on the window reach the page as HTML drag and
+                // drop (the board places them where they land). Tauri's own
+                // drop handler would swallow them on Windows.
+                .disable_drag_drop_handler()
                 .build()?;
 
             Ok(())

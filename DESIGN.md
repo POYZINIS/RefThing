@@ -46,15 +46,22 @@ Selection outlines, hover outlines and the box-select rectangle all read
 
 ## Materials and depth
 
-- **Raised** (floating groups): translucent panel (`--panel-bg`), 20px
-  backdrop blur, soft opposing shadows (light top-left, dark bottom-right).
-- **Floating** (popovers, menus, sheets, toasts): same panel, 24px blur,
-  a deeper drop shadow.
+- **Glass** comes from GlassKit (`@jungherz-de/glasskit`, imported first
+  in `index.css`; its `--gl-*` tokens follow our `data-theme`). A panel is
+  a thin tint (`--gl-surface-1` light / `--gl-surface-3` dark) over
+  GlassKit's readability scrim (`--gl-state-scrim`), a luminous rim
+  (`--gl-border-*`), its bright top edge (`--gl-inset-strong`) and a real
+  blur of the board (`--gl-blur`, 24px) with saturation (1.6).
+- **Raised** (floating groups): that glass, soft opposing shadows (light
+  top-left, dark bottom-right).
+- **Floating** (popovers, menus, sheets, toasts): the same glass, a deeper
+  drop shadow; sheets blur heavier (`--gl-blur-heavy`).
 - **Recessed** (fields, the opening target): inset shadows, no border.
 - **Glass off** swaps every translucent panel for a solid raised surface.
 - **Workspace**: flat colour, a faint top sheen and a static grain overlay
   (breaks up banding). On desktop with glass on, the workspace is partly
-  transparent over Windows Mica (Settings → Background opacity).
+  transparent over Windows Acrylic — a live blur of whatever is behind the
+  window (Settings → Background opacity, 55% by default).
 
 ## Geometry
 
@@ -70,8 +77,18 @@ figures.
 
 ## Icons
 
-Authored inline SVG (`ui/Icon.tsx`): 24-unit viewBox, 1.65 stroke, round
-caps and joins, `currentColor`. No icon font, no emoji or glyph stand-ins.
+Lucide (`lucide-react`), through one component (`ui/Icon.tsx`) that maps
+job names (`close`, `addFiles`, `loop`…) to glyphs: 1.75 stroke,
+`currentColor`, 17px by default. The rotate cursor is Lucide's rotate-cw
+(white over a dark outline). No icon font, no emoji or glyph stand-ins.
+
+## Board text
+
+Every string the app lays out itself — note text, file/media cards
+(filename, detail line, extension badge) — goes through pretext
+(`@chenglou/pretext`): line breaking, measuring, ellipsizing and fitting;
+the canvas only paints the lines pretext produced. Chrome text is HTML and
+laid out by the browser.
 
 ## States
 

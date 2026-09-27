@@ -16,23 +16,31 @@ use std::time::Duration;
 use dashmap::DashMap;
 use tokio::sync::Mutex;
 
-use crate::item_types::BLEND_MIME;
+use refthing_core::db::Pools;
+use refthing_core::storage::BlobStore;
+
+use crate::item_types::{self, BLEND_MIME};
 use crate::state::AppState;
 
 /// Longest a conversion may run.
 const CONVERT_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Exports every visible object as one GLB. A file Blender couldn't read
-/// leaves its startup scene open — that must fail, not export a default
-/// cube. Keyword arguments differ across Blender versions, so the extras
-/// are tried first and dropped if refused.
+/// Exports the visible objects as one GLB — or everything, when nothing
+/// with a surface is visible (a file saved with its mesh hidden). UVs,
+/// normals and materials come straight from the .blend; modifiers are
+/// applied, as in "Apply Modifiers". A file Blender couldn't read leaves
+/// its startup scene open — that must fail, not export a default cube.
+/// Keyword arguments differ across Blender versions, so the extras are
+/// tried first and dropped if refused.
 const EXPORT_SCRIPT: &str = r#"
 import bpy, sys
 if not bpy.data.filepath:
     sys.exit(1)
 out = sys.argv[sys.argv.index("--") + 1]
+surfaces = {"MESH", "CURVE", "SURFACE", "META", "FONT"}
+visible = any(o.type in surfaces and o.visible_get() for o in bpy.context.scene.objects)
 base = dict(filepath=out, export_format="GLB", export_apply=True)
-extras = dict(use_visible=True, export_animations=False, export_cameras=False, export_lights=False)
+extras = dict(use_visible=visible, export_animations=False, export_cameras=False, export_lights=False)
 try:
     bpy.ops.export_scene.gltf(**base, **extras)
 except TypeError:
@@ -94,6 +102,43 @@ pub async fn model_source(
     let blender = blender_path().ok_or(ModelError::NoBlender)?;
     convert(&blender, &original, &cached).await?;
     Ok(ModelSource::Converted(cached))
+}
+
+/// Files ingested before their 3D type was recognized (a .blend or .glb
+/// dropped before model support) become model items, keeping their place
+/// and size. Runs at startup; only `file` items are looked at, and a board
+/// with none costs one query. Returns how many items changed.
+///
+/// # Errors
+/// Database failures.
+pub async fn retype_models(pools: &Pools, blob_store: &BlobStore) -> Result<u64, sqlx::Error> {
+    let files: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT DISTINCT b.hash, b.mime_type, b.original_filename          FROM items i JOIN blobs b ON b.hash = i.blob_id WHERE i.type = 'file'",
+    )
+    .fetch_all(&pools.read)
+    .await?;
+    let mut changed = 0;
+    for (hash, mime, filename) in files {
+        let head = read_head(&blob_store.path(&hash)).await.unwrap_or_default();
+        let refined = item_types::refine_mime(&mime, filename.as_deref(), &head);
+        if item_types::handler_for(&refined).item_type() != "model" {
+            continue;
+        }
+        let mut tx = pools.write.begin().await?;
+        sqlx::query("UPDATE blobs SET mime_type = ? WHERE hash = ?")
+            .bind(&refined)
+            .bind(&hash)
+            .execute(&mut *tx)
+            .await?;
+        let items =
+            sqlx::query("UPDATE items SET type = 'model' WHERE blob_id = ? AND type = 'file'")
+                .bind(&hash)
+                .execute(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        changed += items.rows_affected();
+    }
+    Ok(changed)
 }
 
 async fn read_head(path: &Path) -> std::io::Result<Vec<u8>> {

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import {
   type BatchOp,
+  type BatchRequestOp,
   type BoardEvent,
   type BoardSnapshot,
   type BoardSummary,
@@ -10,6 +11,7 @@ import {
   deleteTag as deleteTagApi,
   fetchBoard,
   type ImportResult,
+  type IngestResponse,
   importBoard as importBoardApi,
   ingestFiles,
   listBoards,
@@ -54,7 +56,15 @@ type BoardState = {
   importBoard: (file: File) => Promise<ImportResult | null>;
   /** Upload files; `at` (world) centres them on the drop point, sized
    *  relative to `camera` (see arrivalSize). */
-  ingest: (files: File[], at?: { x: number; y: number }, camera?: Camera) => Promise<void>;
+  ingest: (
+    files: File[],
+    at?: { x: number; y: number },
+    camera?: Camera,
+    /** Deliver the placement ops (the app's optimistic write queue). */
+    place?: (ops: BatchRequestOp[]) => void,
+  ) => Promise<void>;
+  /** Put freshly ingested items and blobs into the open board's snapshot. */
+  addIngested: (boardId: string, response: IngestResponse) => void;
   saveViewport: (viewportState: { x: number; y: number; zoom: number }) => Promise<void>;
   saveDrawing: (noteId: string, strokes: Array<Array<{ x: number; y: number }>>) => Promise<void>;
   createTag: (name: string, color?: string | null) => Promise<Tag>;
@@ -99,6 +109,9 @@ function rememberBoard(boardId: string | null): void {
 }
 
 const plural = (count: number, one: string) => `${count} ${one}${count === 1 ? '' : 's'}`;
+
+/** poster_ready notices for items not in the snapshot yet (by item id). */
+const earlyPosters = new Map<string, (string | number)[]>();
 
 /** Unacknowledged optimistic ops (registered by the active BatchQueue). */
 let pendingOpsSource: (() => BatchOp[]) | null = null;
@@ -230,38 +243,38 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     }
   },
 
-  async ingest(files, at, camera = { zoom: 1, width: 0, height: 0 }) {
+  async ingest(files, at, camera = { zoom: 1, width: 0, height: 0 }, place) {
     const boardId = get().activeBoardId;
     if (!boardId || files.length === 0) return;
     set({ busy: `Adding ${plural(files.length, 'file')}…`, error: null });
     try {
       const response = await ingestFiles(boardId, files, at);
+      // Show the files at once from what the server sent back — no board
+      // refetch (a big board took seconds to come back before a drop showed).
+      get().addIngested(boardId, response);
       // Size each file to the camera (natural pixels on screen, capped to
       // the view) and centre the drop on the point it landed — sizes are
-      // known only now, after the server probed each file. Best effort:
-      // they already sit at the drop point if this fails.
+      // known only now, after the server probed each file.
       if (at && response.items.length > 0) {
         const sizes = response.items.map((item) => arrivalSize(item, camera));
         const corners = arrangeDrop(sizes, at, DROP_GAP / (camera.zoom > 0 ? camera.zoom : 1));
-        await submitBatch(boardId, {
-          base_seq: response.seq,
-          client_id: CLIENT_ID,
-          ops: response.items.map((item, index) => ({
-            kind: 'update' as const,
-            op_id: crypto.randomUUID(),
-            item_id: item.item_id,
-            fields: { ...(corners[index] ?? at), ...sizes[index] },
-          })),
-        }).catch(() => undefined);
+        const ops = response.items.map((item, index) => ({
+          kind: 'update' as const,
+          op_id: crypto.randomUUID(),
+          item_id: item.item_id,
+          fields: { ...(corners[index] ?? at), ...sizes[index] },
+        }));
+        if (place) {
+          place(ops);
+        } else {
+          const { seq } = await submitBatch(boardId, {
+            base_seq: get().snapshot?.seq ?? response.seq,
+            client_id: CLIENT_ID,
+            ops,
+          });
+          get().applyOps(ops, seq);
+        }
       }
-      await get().openBoard(boardId);
-      set((state) => ({
-        boards: state.boards.map((board) =>
-          board.id === boardId
-            ? { ...board, item_count: state.snapshot?.items.length ?? board.item_count }
-            : board,
-        ),
-      }));
     } catch (error: unknown) {
       set({
         loading: false,
@@ -270,6 +283,42 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     } finally {
       set({ busy: null });
     }
+  },
+
+  addIngested(boardId, response) {
+    set((state) => {
+      const snapshot = state.snapshot;
+      // Another board is open now (or it is still loading): its own fetch
+      // brings the files.
+      if (!snapshot || state.activeBoardId !== boardId) return state;
+      const items = new Map(snapshot.items.map((item) => [item.id, item]));
+      const blobs = new Map(snapshot.blobs.map((blob) => [blob.hash, blob]));
+      for (const { item, blob } of response.items) {
+        items.set(item.id, item);
+        if (blob) blobs.set(blob.hash, { ...blobs.get(blob.hash), ...blob });
+      }
+      // Posters that finished before these items were known.
+      queueMicrotask(() => {
+        for (const { item } of response.items) {
+          const ready = earlyPosters.get(item.id);
+          if (!ready) continue;
+          earlyPosters.delete(item.id);
+          get().markPosterReady(item.id, ready);
+        }
+      });
+      return {
+        snapshot: {
+          ...snapshot,
+          items: [...items.values()],
+          blobs: [...blobs.values()],
+          // The ingest's own events: this client's writes, nothing to replay.
+          seq: Math.max(snapshot.seq, response.seq),
+        },
+        boards: state.boards.map((board) =>
+          board.id === boardId ? { ...board, item_count: items.size } : board,
+        ),
+      };
+    });
   },
 
   async saveViewport(viewportState) {
@@ -307,8 +356,13 @@ export const useBoardStore = create<BoardState>((set, get) => ({
   },
 
   applyChanges(seq, events) {
+    // Items this client already shows (its own ingest, placed since) keep
+    // their state: replaying their create would snap them back.
+    const known = new Set(get().snapshot?.items.map((item) => item.id));
     get().applyOps(
-      events.flatMap((event) => event.ops),
+      events
+        .flatMap((event) => event.ops)
+        .filter((op) => !(op.kind === 'create' && known.has(op.item.id))),
       seq,
     );
   },
@@ -319,7 +373,12 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       if (!snapshot || ready.length === 0) return state;
       const item = snapshot.items.find((candidate) => candidate.id === itemId);
       const hash = item?.blob_hash;
-      if (!hash) return state;
+      if (!hash) {
+        // A poster can finish before its drop's upload response lands (the
+        // first file of several): keep it for when the item arrives.
+        earlyPosters.set(itemId, ready);
+        return state;
+      }
       let touched = false;
       const blobs = snapshot.blobs.map((blob) => {
         if (blob.hash !== hash) return blob;

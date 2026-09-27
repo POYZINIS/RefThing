@@ -178,10 +178,18 @@ async fn fetch_snapshot(pools: &Pools, board_id: Uuid) -> Result<BoardSnapshot, 
     .fetch_all(&pools.read)
     .await?;
 
+    // The items' own blobs, and the textures 3D models refer to from their
+    // metadata (`model.textures.<channel>` = a blob hash).
     let blobs = sqlx::query_as::<_, Blob>(
-        "SELECT b.* FROM blobs b \
-         JOIN items i ON i.blob_id = b.hash \
-         WHERE i.board_id = ? GROUP BY b.hash ORDER BY b.hash",
+        "SELECT b.* FROM blobs b WHERE b.hash IN ( \
+             SELECT i.blob_id FROM items i \
+             WHERE i.board_id = ?1 AND i.blob_id IS NOT NULL \
+             UNION \
+             SELECT t.value FROM items i \
+             JOIN item_metadata m ON m.item_id = i.id, \
+                  json_each(m.json, '$.model.textures') t \
+             WHERE i.board_id = ?1 AND t.type = 'text' \
+         ) ORDER BY b.hash",
     )
     .bind(board_id)
     .fetch_all(&pools.read)

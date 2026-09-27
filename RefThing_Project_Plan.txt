@@ -441,7 +441,18 @@ Done:
   menu: Shade Original / Smooth / Flat, Background, Orbit, Reset View.
   Orbit mode: double-click a model; drag orbits, Shift+drag pans, the
   wheel dollies; Escape or a click elsewhere ends it; one undo step per
-  session. FBX colours are read as linear (Blender writes them so).
+  session. A selected model also turns with Alt+drag (turntable, like
+  Blender; Alt+click still resets aspect) and carries a navigation gizmo
+  (X/Y/Z, top-right): drag it to orbit, drag its sun to move the light,
+  click an axis for an eased orthographic view down it. The context menu
+  toggles Persp / Ortho. The sky shows the sun where it is.
+  Textures (context menu submenu): colour, metalness, roughness (with an
+  invert for smoothness maps), normal and AO maps, or one packed MRO
+  texture. Each is an image blob with no item (POST /api/blobs) that the
+  model's metadata refers to; GC and the zip export follow those
+  references. Shading stays cheap: a model pays only for the maps it has
+  (defines); metalness/roughness add a small GGX specular with sky
+  reflections; normal maps need no tangents (derivative frame). FBX colours are read as linear (Blender writes them so).
 Differences from the plan text: the audio mini-player is the native
 <audio> element, not a custom Web Audio transport. The waveform comes
 from ffmpeg, not symphonia.

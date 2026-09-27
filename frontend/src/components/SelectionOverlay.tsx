@@ -72,6 +72,10 @@ type SelectionOverlayProps = {
   locked?: boolean;
   /** Forwarded double-click (the shell covers selected nodes). */
   onDoubleClick?: (event: React.MouseEvent) => void;
+  /** A lone selected 3D model: a body press bound to `orbit_view` (Alt)
+   *  that DRAGS turns its camera; one that stays a click keeps its usual
+   *  meaning (Alt+click: reset aspect). */
+  onModelViewPress?: (event: PointerEvent) => void;
 };
 
 /** §1 MULTI-SELECTED: exactly ONE box. A lone node's box is the node itself
@@ -153,6 +157,8 @@ type ActiveGesture = {
   last: NodeChange[] | null;
   moved: boolean;
   pressEvent: PointerEvent;
+  /** Hand the press to the model camera once it travels (Alt on a model). */
+  viewOnDrag: boolean;
 };
 
 /**
@@ -174,6 +180,7 @@ export function SelectionOverlay({
   locked = false,
   cropping = false,
   onDoubleClick,
+  onModelViewPress,
 }: SelectionOverlayProps) {
   const box = selectionBox(nodes);
   const [hovered, setHovered] = useState<Zone | null>(null);
@@ -191,8 +198,18 @@ export function SelectionOverlay({
     snapTargets,
     onGuides,
     cropping,
+    onModelViewPress,
   });
-  latest.current = { viewport, onPreview, onCommit, onBodyClick, snapTargets, onGuides, cropping };
+  latest.current = {
+    viewport,
+    onPreview,
+    onCommit,
+    onBodyClick,
+    snapTargets,
+    onGuides,
+    cropping,
+    onModelViewPress,
+  };
 
   const collapsed =
     locked || (box ? zonesCollapsed(box, viewport.zoom, MIN_SCREEN_SIZE_PX) : false);
@@ -218,6 +235,14 @@ export function SelectionOverlay({
     if (editing || !box || active.current) return;
     const native = event.nativeEvent;
     const zone = zoneAt(event.clientX, event.clientY);
+    // The body of a lone selected model is also target `model`: a drag
+    // there bound to `orbit_view` turns its camera (a click doesn't).
+    const viewOnDrag =
+      zone === 'body' &&
+      !!onModelViewPress &&
+      nodes.length === 1 &&
+      nodes[0]?.kind === 'model' &&
+      resolvePress(event.button, heldModifiers(event, isHeld), 'model') === 'orbit_view';
     // What this press means comes from the bindings table (canvas/bindings.ts),
     // never from hard-coded buttons or modifiers.
     const action =
@@ -273,6 +298,7 @@ export function SelectionOverlay({
       last: null,
       moved: false,
       pressEvent: native,
+      viewOnDrag,
     };
     setDragMode(gesture.mode);
   };
@@ -297,6 +323,14 @@ export function SelectionOverlay({
         current.lastClient.y - current.pressClient.y,
       );
       if (travel >= CLICK_EPSILON_PX) current.moved = true;
+      if (current.viewOnDrag && current.moved) {
+        // Not a click after all: the model's camera takes the drag.
+        active.current = null;
+        setDragMode(null);
+        latest.current.onPreview([]);
+        latest.current.onModelViewPress?.(current.pressEvent);
+        return;
+      }
       // No drag threshold for moving (plan: "immediate, no threshold"), but
       // nothing previews until the pointer actually moves.
       if (travel === 0 && current.last === null) return;

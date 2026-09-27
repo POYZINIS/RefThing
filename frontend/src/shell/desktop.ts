@@ -15,7 +15,10 @@ type TauriWindow = {
   outerPosition(): Promise<Position>;
   setPosition(position: unknown): Promise<void>;
   scaleFactor(): Promise<number>;
-  setEffects(effects: { effects: string[] }): Promise<void>;
+  setEffects(effects: {
+    effects: string[];
+    color?: [number, number, number, number];
+  }): Promise<void>;
   clearEffects(): Promise<void>;
   onResized(handler: () => void): Promise<() => void>;
 };
@@ -33,11 +36,13 @@ if (isDesktop && typeof document !== 'undefined') {
   document.documentElement.dataset.shell = 'desktop';
 }
 
-/** Native backdrop material behind the transparent workspace (Windows 11). */
+/** Native backdrop behind the transparent workspace: Acrylic, a real blur
+ *  of what's behind the window (the src-tauri window starts with it; the
+ *  tint matches ACRYLIC_TINT there). */
 export function setNativeGlass(enabled: boolean): void {
   if (!desktopWindow) return;
   const done = enabled
-    ? desktopWindow.setEffects({ effects: ['mica'] })
+    ? desktopWindow.setEffects({ effects: ['acrylic'], color: [30, 34, 32, 24] })
     : desktopWindow.clearEffects();
   done.catch(() => undefined); // older Windows: no material, the solid workspace stands
 }

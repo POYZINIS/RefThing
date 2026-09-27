@@ -85,9 +85,10 @@ data/
   nice with NTFS + antivirus scanning.
 - **Dedup is free:** identical content hashes to the same path and the
   same `blobs` row, no matter how many items or boards reference it.
-- **GC:** delete blobs whose hash no item references
-  (`hash NOT IN (SELECT blob_id FROM items WHERE blob_id IS NOT NULL)`),
-  after a grace period. Never inline-delete on item removal — undo and
+- **GC:** delete blobs whose hash nothing references — no item
+  (`items.blob_id`) and no 3D model's texture (a hash string under
+  `item_metadata.json` → `$.model.textures`, read with `json_each`) —
+  after a grace period. The zip export collects the same two sets. Never inline-delete on item removal — undo and
   snapshots come later.
 
 ## Phase 11 promotion rule

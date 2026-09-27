@@ -56,6 +56,10 @@ pub struct IngestedItem {
     /// hash); a fresh item row still points at the existing blob.
     pub dedup: bool,
     pub poster: &'static str,
+    /// The created item and its blob, exactly as a snapshot would hold them:
+    /// the client shows the file straight away, without refetching the board.
+    pub item: crate::dto::Item,
+    pub blob: Option<crate::dto::BlobInfo>,
 }
 
 /// 202 body: the board seq after the last committed file plus one entry per
@@ -131,6 +135,63 @@ pub async fn ingest(
         state.jobs.notify();
     }
     Ok(IngestResponse { seq, items })
+}
+
+/// A stored blob with no item of its own (a 3D model's texture, referenced
+/// from the item's metadata instead).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StoredBlob {
+    pub hash: String,
+    pub mime_type: String,
+    pub byte_size: u64,
+}
+
+/// Handles `POST /api/blobs`: the first file part goes into the blob store
+/// and the registry (idempotent, like ingest), with no item. Images only —
+/// these are textures.
+pub async fn store_blob(state: &AppState, mut multipart: Multipart) -> AppResult<StoredBlob> {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| multipart_error(&error))?
+    {
+        if field.file_name().is_none() {
+            continue;
+        }
+        let filename = field.file_name().map(str::to_string);
+        let blob = state.blob_store.put(FieldReader::new(field)).await?;
+        if !blob.mime.starts_with("image/") {
+            return Err(AppError::UnsupportedMedia(blob.mime));
+        }
+        let stored = state.blob_store.path(&blob.hash);
+        let dims = tokio::task::spawn_blocking(move || {
+            crate::jobs::pyramid::probe_dimensions(&stored).ok()
+        })
+        .await
+        .ok()
+        .flatten();
+        let byte_size = i64::try_from(blob.byte_size)
+            .map_err(|error| AppError::BadRequest(format!("blob too large: {error}")))?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO blobs \
+                 (hash, original_filename, mime_type, byte_size, width, height) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&blob.hash)
+        .bind(filename.as_deref())
+        .bind(&blob.mime)
+        .bind(byte_size)
+        .bind(dims.map(|(width, _)| i64::from(width)))
+        .bind(dims.map(|(_, height)| i64::from(height)))
+        .execute(&state.pools.write)
+        .await?;
+        return Ok(StoredBlob {
+            hash: blob.hash,
+            mime_type: blob.mime,
+            byte_size: blob.byte_size,
+        });
+    }
+    Err(AppError::BadRequest("no file part".to_string()))
 }
 
 /// Where a committed file lands on its board.
@@ -229,6 +290,7 @@ pub(crate) async fn commit_file(
     }
     let item = to_dto(row, metadata);
     let ops = create_event_ops(&item)?;
+    let created = item.clone();
     let seq = append_event(&mut tx, board_id, None, &ops).await?;
 
     if let Some(job) = handler.poster_job() {
@@ -249,6 +311,8 @@ pub(crate) async fn commit_file(
 
     tx.commit().await?;
     broadcast_gap(state, board_id, seq);
+    let blob_info =
+        crate::services::board_service::blob_info(&state.pools.read, &blob.hash).await?;
 
     Ok((
         seq,
@@ -260,6 +324,8 @@ pub(crate) async fn commit_file(
             height,
             dedup,
             poster: "pending",
+            item: created,
+            blob: blob_info,
         },
     ))
 }

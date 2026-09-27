@@ -6,6 +6,7 @@
 /** A UV sphere: positions, smooth normals, outward (CCW) triangles. */
 export function sphere(segments = 16, rings = 10) {
   const positions = [];
+  const uvs = [];
   for (let ring = 0; ring <= rings; ring += 1) {
     const phi = (ring / rings) * Math.PI;
     for (let segment = 0; segment <= segments; segment += 1) {
@@ -15,6 +16,7 @@ export function sphere(segments = 16, rings = 10) {
         Math.cos(phi),
         Math.sin(phi) * Math.sin(theta),
       );
+      uvs.push(segment / segments, ring / rings);
     }
   }
   const at = (index) => positions.slice(index * 3, index * 3 + 3);
@@ -43,11 +45,11 @@ export function sphere(segments = 16, rings = 10) {
     }
   }
   // On a unit sphere the smooth normal is the position.
-  return { positions, normals: [...positions], indices };
+  return { positions, normals: [...positions], uvs, indices };
 }
 
 /** Pack a mesh into a .glb with one material of `baseColor` (linear RGBA). */
-export function glb({ positions, normals, indices }, baseColor = [0.8, 0.25, 0.2, 1]) {
+export function glb({ positions, normals, uvs, indices }, baseColor = [0.8, 0.25, 0.2, 1]) {
   const f32 = (values) => Buffer.from(new Float32Array(values).buffer);
   const u16 = (values) => Buffer.from(new Uint16Array(values).buffer);
   const pad4 = (buffer, fill = 0) =>
@@ -55,13 +57,14 @@ export function glb({ positions, normals, indices }, baseColor = [0.8, 0.25, 0.2
       ? buffer
       : Buffer.concat([buffer, Buffer.alloc(4 - (buffer.length % 4), fill)]);
   const views = [pad4(f32(positions)), pad4(f32(normals)), pad4(u16(indices))];
+  if (uvs) views.push(pad4(f32(uvs)));
   let offset = 0;
   const bufferViews = views.map((view, index) => {
     const entry = {
       buffer: 0,
       byteOffset: offset,
       byteLength: view.length,
-      target: index < 2 ? 34962 : 34963,
+      target: index === 2 ? 34963 : 34962,
     };
     offset += view.length;
     return entry;
@@ -75,7 +78,17 @@ export function glb({ positions, normals, indices }, baseColor = [0.8, 0.25, 0.2
     scene: 0,
     scenes: [{ nodes: [0] }],
     nodes: [{ mesh: 0 }],
-    meshes: [{ primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, indices: 2, material: 0 }] }],
+    meshes: [
+      {
+        primitives: [
+          {
+            attributes: { POSITION: 0, NORMAL: 1, ...(uvs ? { TEXCOORD_0: 3 } : {}) },
+            indices: 2,
+            material: 0,
+          },
+        ],
+      },
+    ],
     materials: [{ pbrMetallicRoughness: { baseColorFactor: baseColor } }],
     buffers: [{ byteLength: bin.length }],
     bufferViews,
@@ -83,6 +96,7 @@ export function glb({ positions, normals, indices }, baseColor = [0.8, 0.25, 0.2
       { bufferView: 0, componentType: 5126, count, type: 'VEC3', min, max },
       { bufferView: 1, componentType: 5126, count, type: 'VEC3' },
       { bufferView: 2, componentType: 5123, count: indices.length, type: 'SCALAR' },
+      ...(uvs ? [{ bufferView: 3, componentType: 5126, count, type: 'VEC2' }] : []),
     ],
   };
   const jsonChunk = pad4(Buffer.from(JSON.stringify(json)), 0x20);

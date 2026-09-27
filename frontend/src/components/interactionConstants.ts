@@ -18,12 +18,13 @@ export const ACTIVE_EDGE_OUTLINE_PX = 2.5;
 export const MIN_SCREEN_SIZE_PX = 24;
 /** Selection/hover accent colour — the design token (index.css @theme). */
 export const ACCENT = 'var(--color-accent)';
-/** §5 custom rotate cursor: a circular arrow, hotspot at its center. */
+/** §5 custom rotate cursor: Lucide's rotate-cw, white over a dark outline
+ *  so it reads on any image; hotspot at its center. */
+const ROTATE_PATHS = ['M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8', 'M21 3v5h-5'];
 const ROTATE_CURSOR_SVG =
-  "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'>" +
+  "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='-2 -2 28 28'>" +
   "<g fill='none' stroke-linecap='round' stroke-linejoin='round'>" +
-  "<path d='M19 12a7 7 0 1 1-2.05-4.95' stroke='black' stroke-width='4'/>" +
-  "<path d='M19 4v4h-4' stroke='black' stroke-width='4'/>" +
-  "<path d='M19 12a7 7 0 1 1-2.05-4.95' stroke='white' stroke-width='2'/>" +
-  "<path d='M19 4v4h-4' stroke='white' stroke-width='2'/></g></svg>";
+  ROTATE_PATHS.map((d) => `<path d='${d}' stroke='black' stroke-width='4.5'/>`).join('') +
+  ROTATE_PATHS.map((d) => `<path d='${d}' stroke='white' stroke-width='2'/>`).join('') +
+  '</g></svg>';
 export const ROTATE_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(ROTATE_CURSOR_SVG)}") 12 12, crosshair`;

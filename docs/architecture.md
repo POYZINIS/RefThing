@@ -121,7 +121,7 @@ by CSS while a panel they opened is up or they hold keyboard focus). See
 Popovers (`ui/Popover.tsx`) portal to `<body>`. Preferences (theme, glass,
 backdrop opacity, scroll zoom speed) live in `ui/appearance.ts` and applies as attributes on
 `<html>`; `index.html` sets the saved theme before first paint. The Pixi
-canvas is transparent, so the themed workspace (and, on desktop, the Mica
+canvas is transparent, so the themed workspace (and, on desktop, the Acrylic
 backdrop) sits behind it and a theme switch never repaints the board.
 
 **Desktop shell** (`src-tauri`): a frameless, transparent window. The page

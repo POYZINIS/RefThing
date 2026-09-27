@@ -37,7 +37,7 @@ export type Bucket = {
   normals: Int8Array;
   /** sRGB-encoded vertex colour (material colour × vertex colour). */
   colors: Uint8Array;
-  uvs: Float32Array | null;
+  uvs: Float32Array;
   indices: Uint16Array | Uint32Array;
   map: Texture | null;
   /** Cut out texels below half alpha (foliage cards, fences). */
@@ -73,7 +73,9 @@ export async function loadModel(bytes: ArrayBuffer): Promise<ModelAsset> {
   if (!format) throw new Error('Not a model this viewer reads (GLB, glTF or FBX)');
   const root = format === 'fbx' ? await parseFbx(bytes) : await parseGltf(bytes);
   try {
-    return bake(root);
+    // FBX UVs run bottom-up; everything is baked to glTF's top-down UVs so
+    // one image orientation serves every format (and imported maps).
+    return bake(root, format === 'fbx');
   } finally {
     dispose(root);
   }
@@ -145,8 +147,8 @@ class BitmapTextureLoader extends Loader<Texture> {
 
   override load(url: string): Texture {
     const texture = new Texture();
-    // FBX UVs are bottom-up: flip the bitmap itself (WebGL ignores
-    // UNPACK_FLIP_Y for ImageBitmap uploads).
+    // Images stay top-down (the bake flips FBX's UVs to match); WebGL
+    // ignores UNPACK_FLIP_Y for ImageBitmap uploads anyway.
     texture.flipY = false;
     texture.colorSpace = SRGBColorSpace;
     const full = this.path && !/^(blob|data):/.test(url) ? this.path + url : url;
@@ -156,7 +158,7 @@ class BitmapTextureLoader extends Loader<Texture> {
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           return response.blob();
         })
-        .then((blob) => createImageBitmap(blob, { imageOrientation: 'flipY' }))
+        .then((blob) => createImageBitmap(blob))
         .then((bitmap) => {
           texture.image = bitmap;
           texture.needsUpdate = true;
@@ -173,7 +175,7 @@ type Draft = {
   positions: GrowF32;
   normals: GrowI8;
   colors: GrowU8;
-  uvs: GrowF32 | null;
+  uvs: GrowF32;
   indices: GrowU32;
   vertexCount: number;
   map: Texture | null;
@@ -188,7 +190,7 @@ function baseMap(material: Material): Texture | null {
   return image && (image.width ?? 0) > 0 ? map : null;
 }
 
-function bake(root: Object3D): ModelAsset {
+function bake(root: Object3D, flipV: boolean): ModelAsset {
   root.updateMatrixWorld(true);
   const drafts = new Map<string, Draft>();
   const normalMatrix = new Matrix3();
@@ -236,7 +238,8 @@ function bake(root: Object3D): ModelAsset {
           positions: new GrowF32(),
           normals: new GrowI8(),
           colors: new GrowU8(),
-          uvs: map ? new GrowF32() : null,
+          // Always kept: maps given in the menu use them too.
+          uvs: new GrowF32(),
           indices: new GrowU32(),
           vertexCount: 0,
           map,
@@ -270,7 +273,8 @@ function bake(root: Object3D): ModelAsset {
             normal.fromBufferAttribute(normals, source).applyMatrix3(normalMatrix).normalize();
             draft.normals.push3(snorm(normal.x), snorm(normal.y), snorm(normal.z));
             if (draft.uvs) {
-              draft.uvs.push2(uvs ? uvs.getX(source) : 0, uvs ? uvs.getY(source) : 0);
+              const v = uvs ? uvs.getY(source) : 0;
+              draft.uvs.push2(uvs ? uvs.getX(source) : 0, flipV ? 1 - v : v);
             }
             vertexTint.copy(tint);
             if (useVertexColors && colors) {
@@ -304,7 +308,7 @@ function bake(root: Object3D): ModelAsset {
       positions: draft.positions.view(),
       normals: draft.normals.view(),
       colors: draft.colors.view(),
-      uvs: draft.uvs?.view() ?? null,
+      uvs: draft.uvs.view(),
       indices: draft.vertexCount <= 65535 ? Uint16Array.from(indices) : indices,
       map: draft.map,
       cutout: draft.cutout,

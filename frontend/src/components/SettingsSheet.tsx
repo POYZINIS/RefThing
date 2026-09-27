@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Tag } from '@/api/client';
 import { bindings, type KeyAction } from '@/canvas/bindings';
 import { isDesktop } from '@/shell/desktop';
-import { type ThemeMode, useAppearance } from '@/ui/appearance';
+import { type ThemeMode, useAppearance, type WindowResizeMode } from '@/ui/appearance';
 import { Icon } from '@/ui/Icon';
 import { enter } from '@/ui/motion';
 
@@ -190,6 +190,45 @@ export function SettingsSheet({ tags, onRenameTag, onDeleteTag, onClose }: Setti
               <output htmlFor="settings-zoom-speed">{appearance.zoomSpeed.toFixed(2)}×</output>
             </span>
           </div>
+        </section>
+
+        <section className="sheet-section" aria-labelledby="settings-window">
+          <h3 id="settings-window">Window</h3>
+          <div className="setting-row">
+            <label htmlFor="settings-window-resize">Left / top edge drag</label>
+            <select
+              id="settings-window-resize"
+              className="select"
+              value={appearance.windowResize}
+              onChange={(event) =>
+                appearance.set({ windowResize: event.target.value as WindowResizeMode })
+              }
+            >
+              <option value="exact">Hold the board still</option>
+              <option value="smooth">Smooth, settle after</option>
+            </select>
+          </div>
+          <p className="setting-hint">
+            Either way the board ends up where it was on screen. Held still, Windows can make it
+            jitter while you drag; smooth eases it along a curve through each step and settles it in
+            place when you stop.
+          </p>
+          <div className="setting-row">
+            <label htmlFor="settings-frame-cap">Frame rate</label>
+            <select
+              id="settings-frame-cap"
+              className="select"
+              value={appearance.frameCap}
+              onChange={(event) => appearance.set({ frameCap: Number(event.target.value) })}
+            >
+              <option value={0}>Normal</option>
+              <option value={10}>10 fps (testing)</option>
+            </select>
+          </div>
+          <p className="setting-hint">
+            A testing aid: at 10 fps each frame the board draws stays up long enough to see, so what
+            Windows shows between them during an edge drag stands out.
+          </p>
         </section>
 
         {tags && (
