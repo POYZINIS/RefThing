@@ -1,6 +1,6 @@
 import { Texture } from 'pixi.js';
-import { BASE_INDEX, HARMONY_LABELS, hexToHsv, hsvToHex, hsvToHsl } from '@/color/harmony';
-import type { WheelState } from '@/color/items';
+import { BASE_INDEX, HARMONY_LABELS, hsvToHex, hsvToHsl } from '@/color/harmony';
+import { type WheelState, wheelBase } from '@/color/items';
 import {
   FIELD_RADIUS,
   PANEL_RADIUS,
@@ -372,7 +372,7 @@ export class WheelTextureSource extends PaintedSource {
     const detail = wheelDetail(node.width * zoom);
     // Dots are a screen size: repaint with the zoom while they show.
     const dots = detail === 'full' ? '' : zoom.toFixed(3);
-    return `${toolTheme().key}|${detail}|${dots}|${wheel.base}|${wheel.harmony}|${wheel.mode}|${wheel.colors.join(',')}|${wheel.library
+    return `${toolTheme().key}|${detail}|${dots}|${wheel.base}|${wheel.harmony}|${wheel.mode}|${wheel.points.map(({ h, s, v }) => `${h},${s},${v}`).join(';')}|${wheel.library
       .map((row) => row.join(','))
       .join(';')}`;
   }
@@ -544,7 +544,7 @@ function paintSlider(
   zoom: number,
 ): void {
   const px = 1 / Math.max(zoom, 0.01);
-  const base = hexToHsv(wheel.base);
+  const base = wheelBase(wheel);
   const gradient = context.createLinearGradient(0, rect.y, 0, rect.y + rect.height);
   if (wheel.mode === 'hsl') {
     const pure = hsvToHex({ h: base.h, s: hsvToHsl(base).s > 0 ? 1 : 0, v: 1 });
@@ -597,7 +597,7 @@ function paintWheel(
   white.addColorStop(1, 'rgb(255 255 255 / 0%)');
   context.fillStyle = white;
   context.fill();
-  const value = hexToHsv(wheel.base).v;
+  const value = wheelBase(wheel).v;
   context.fillStyle = `rgb(0 0 0 / ${Math.round((1 - value) * 100)}%)`;
   context.fill();
 
@@ -608,8 +608,9 @@ function paintWheel(
   const px = 1 / Math.max(zoom, 0.01);
   const ringRadius = Math.max(5 * px, rect.width * 0.04);
   const reach = radius - ringRadius;
-  wheel.colors.forEach((hex, index) => {
-    const color = hexToHsv(hex);
+  // Exact points, as the live wheel places its handles.
+  wheel.points.forEach((color, index) => {
+    const hex = hsvToHex(color);
     const angle = (color.h * Math.PI) / 180;
     const x = cx + Math.cos(angle) * color.s * reach;
     const y = cy - Math.sin(angle) * color.s * reach;

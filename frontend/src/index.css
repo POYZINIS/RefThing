@@ -1799,6 +1799,54 @@ kbd {
   transform: scale(var(--dot-scale-active));
 }
 
+/* The fine-tune grip behind a hovered handle (away from the rest, clear
+   of the set): an arrow to a line, pointing at the others; drag it that way
+   to draw them in. Quiet until reached for — a faint icon that fades in
+   after a beat; under the pointer it becomes a small glass button. */
+.color-wheel-panel > .color-wheel-grips {
+  pointer-events: none;
+}
+
+.color-wheel-grip {
+  position: absolute;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  color: var(--color-text-muted);
+  background: transparent;
+  opacity: 0.6;
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+  animation: grip-in 200ms var(--ease-out) 250ms both;
+  transition: opacity 140ms var(--ease-out), color 140ms var(--ease-out),
+    background-color 140ms var(--ease-out), border-color 140ms var(--ease-out),
+    box-shadow 140ms var(--ease-out);
+}
+
+.color-wheel-grip:hover,
+.color-wheel-grip.active {
+  border-color: var(--panel-edge);
+  color: var(--color-accent);
+  background: var(--menu-bg);
+  box-shadow: 2px 2px 5px var(--shade-lo), -2px -2px 4px var(--tool-hi);
+  opacity: 1;
+}
+
+.color-wheel-grip.active {
+  cursor: grabbing;
+}
+
+@keyframes grip-in {
+  from {
+    opacity: 0;
+  }
+}
+
 /* The controls row: chrome fields (recessed tint, the theme's text). */
 .color-wheel-harmony button,
 .color-wheel-random,
@@ -2075,6 +2123,7 @@ kbd {
 @media (prefers-reduced-motion: reduce) {
   .color-wheel-panel,
   .color-wheel-panel *,
+  .color-wheel-grip,
   .palette-ghost,
   .palette-hex-tip {
     animation: none !important;

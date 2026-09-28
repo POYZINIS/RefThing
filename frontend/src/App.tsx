@@ -63,7 +63,7 @@ import { outlineRadius } from '@/canvas/nodes/registry';
 import type { CanvasNode, NodeChange, NodePatch, SpriteNode } from '@/canvas/nodes/types';
 import { CameraBound, renderedCamera } from '@/canvas/renderedCamera';
 import { type Guide, recrop } from '@/canvas/transform';
-import { harmonyHexes, hexToHsv } from '@/color/harmony';
+import { harmonize, hexToHsv, hsvToHex } from '@/color/harmony';
 import {
   DEFAULT_WHEEL,
   isBoardItem,
@@ -1657,8 +1657,9 @@ function BoardApp() {
     actionsRef.current.copyHex(hit.hex);
     const wheel = wheelNode?.wheel;
     if (wheelNode && wheel) {
+      const points = harmonize(hexToHsv(hit.hex), wheel.harmony);
       actionsRef.current.setWheel(
-        { base: hit.hex, colors: harmonyHexes(hexToHsv(hit.hex), wheel.harmony) },
+        { base: hit.hex, colors: points.map(hsvToHex), points },
         'Sample Color',
         wheelNode.id,
       );

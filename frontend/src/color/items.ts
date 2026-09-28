@@ -10,7 +10,15 @@
  * adding one is an undo step like any other.
  */
 import type { Item } from '@/api/client';
-import { HARMONIES, type Harmony, harmonyHexes, hexToHsv } from './harmony';
+import {
+  BASE_INDEX,
+  HARMONIES,
+  type Harmony,
+  type Hsv,
+  harmonize,
+  hexToHsv,
+  hsvToHex,
+} from './harmony';
 
 export const PALETTE_TYPE = 'palette';
 export const WHEEL_TYPE = 'colorwheel';
@@ -36,17 +44,49 @@ export type WheelState = {
   mode: WheelMode;
   /** The current five (the harmony of `base`, or a random palette). */
   colors: string[];
+  /** The same five as exact HSV — where the handles sit. Hex can't carry
+   *  that (near black, 8-bit channels make hue and saturation jump), so
+   *  the wheel keeps both; points that no longer match `colors` (an older
+   *  save, or a patch that set only colours) are rebuilt from them. */
+  points: Hsv[];
   /** Saved palettes, newest first. */
   library: string[][];
 };
+
+const DEFAULT_POINTS = harmonize(hexToHsv('#3b82c4'), 'analogous');
 
 export const DEFAULT_WHEEL: WheelState = {
   base: '#3b82c4',
   harmony: 'analogous',
   mode: 'hsv',
-  colors: harmonyHexes(hexToHsv('#3b82c4'), 'analogous'),
+  colors: DEFAULT_POINTS.map(hsvToHex),
+  points: DEFAULT_POINTS,
   library: [],
 };
+
+const isUnit = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+
+/** Stored points, when they're five valid HSV points that still match
+ *  `colors`; otherwise the colours' own. */
+function wheelPoints(raw: unknown, colors: string[]): Hsv[] {
+  if (Array.isArray(raw) && raw.length === colors.length) {
+    const points = raw.map((point) => {
+      const { h, s, v } = (point ?? {}) as Record<string, unknown>;
+      return typeof h === 'number' && Number.isFinite(h) && isUnit(s) && isUnit(v)
+        ? { h: ((h % 360) + 360) % 360, s, v }
+        : null;
+    });
+    if (points.every((point, index) => point && hsvToHex(point) === colors[index])) {
+      return points as Hsv[];
+    }
+  }
+  return colors.map(hexToHsv);
+}
+
+/** The wheel's base as exact HSV. */
+export const wheelBase = (wheel: WheelState): Hsv =>
+  wheel.points[BASE_INDEX] ?? hexToHsv(wheel.base);
 
 const HEX = /^#[0-9a-f]{6}$/;
 const isHex = (value: unknown): value is string =>
@@ -67,12 +107,14 @@ export function wheelState(metadata: Record<string, unknown>): WheelState {
   const harmony = HARMONIES.includes(raw.harmony as Harmony)
     ? (raw.harmony as Harmony)
     : DEFAULT_WHEEL.harmony;
-  const colors = hexList(raw.colors);
+  const stored = hexList(raw.colors);
+  const colors = stored.length === 5 ? stored : harmonize(hexToHsv(base), harmony).map(hsvToHex);
   return {
     base,
     harmony,
     mode: raw.mode === 'hsl' ? 'hsl' : 'hsv',
-    colors: colors.length === 5 ? colors : harmonyHexes(hexToHsv(base), harmony),
+    colors,
+    points: wheelPoints(raw.points, colors),
     library: Array.isArray(raw.library)
       ? raw.library.map(hexList).filter((colors) => colors.length > 0)
       : [],

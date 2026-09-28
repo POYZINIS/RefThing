@@ -189,20 +189,98 @@ export function harmonize(base: Hsv, harmony: Harmony): Hsv[] {
 
 export const harmonyHexes = (base: Hsv, harmony: Harmony) => harmonize(base, harmony).map(hsvToHex);
 
-/** The colour at `index` moved to `moved` re-bases the harmony (dragging
- *  any handle turns the whole set, as in Adobe Color). */
-export function rebase(base: Hsv, harmony: Harmony, index: number, moved: Hsv): Hsv {
-  if (index === BASE_INDEX) return moved;
-  const before = harmonize(base, harmony)[index];
-  if (!before) return moved;
-  // Keep the dragged colour's offset from the base; carry its saturation
-  // and value change over to the base proportionally.
-  const hueOffset = before.h - base.h;
-  return {
-    h: wrapHue(moved.h - hueOffset),
-    s: before.s > 0 ? clamp01((moved.s / before.s) * base.s) : moved.s,
-    v: before.v > 0 ? clamp01((moved.v / before.v) * base.v) : moved.v,
-  };
+// ------------------------------------------------------- moving the set
+//
+// The wheel's colours are points (exact HSV — never rebuilt from hex, whose
+// 8-bit channels make hue and saturation jump about near black). A harmony
+// only places them; after that every edit moves the set from where it was
+// when the gesture began (Adobe Color), so a random palette or a tweak
+// keeps its shape until a harmony is chosen again.
+
+/** Handle `index` dragged from `start[index]` to `moved`: the others turn
+ *  by the same hue and scale by the same saturation (added instead when it
+ *  starts at the centre, where a ratio means nothing); brightness stays. */
+export function moveSet(start: readonly Hsv[], index: number, moved: Hsv): Hsv[] {
+  const from = start[index];
+  if (!from) return [...start];
+  const turn = moved.h - from.h;
+  const ratio = from.s > 0.02 ? moved.s / from.s : null;
+  return start.map((point, at) =>
+    at === index
+      ? { h: wrapHue(moved.h), s: clamp01(moved.s), v: point.v }
+      : {
+          h: wrapHue(point.h + turn),
+          s: clamp01(ratio === null ? point.s + (moved.s - from.s) : point.s * ratio),
+          v: point.v,
+        },
+  );
+}
+
+/** One level (HSV value or HSL lightness) moved from `before` to `after`,
+ *  proportionally toward whichever end it heads for: the base lands on
+ *  `after` exactly and the others keep their spacing without clipping. */
+function shiftLevel(level: number, before: number, after: number): number {
+  if (after >= before) {
+    return before >= 1 ? level : clamp01(level + ((1 - level) * (after - before)) / (1 - before));
+  }
+  return before <= 0 ? level : clamp01((level * after) / before);
+}
+
+/** The brightness slider: the base's level set to `level` (HSV value, or
+ *  HSL lightness), the rest following proportionally. */
+export function shiftBrightness(
+  start: readonly Hsv[],
+  baseIndex: number,
+  level: number,
+  mode: 'hsv' | 'hsl',
+): Hsv[] {
+  const base = start[baseIndex];
+  if (!base) return [...start];
+  if (mode === 'hsv') {
+    return start.map((point) => ({ ...point, v: shiftLevel(point.v, base.v, level) }));
+  }
+  const baseL = hsvToHsl(base).l;
+  return start.map((point) => {
+    const hsl = hsvToHsl(point);
+    const shifted = hslToHsv({ ...hsl, l: shiftLevel(hsl.l, baseL, level) });
+    // A grey has no hue of its own: keep the one it had.
+    return { h: point.h, s: shifted.s, v: shifted.v };
+  });
+}
+
+/** Where a point sits on the wheel's disc (unit radius; hue 0° at 3
+ *  o'clock, anticlockwise — as the wheel draws it). */
+export function wheelXY({ h, s }: Hsv): { x: number; y: number } {
+  const radians = (h * Math.PI) / 180;
+  return { x: Math.cos(radians) * s, y: -Math.sin(radians) * s };
+}
+
+function fromWheelXY(x: number, y: number, v: number, fallbackHue: number): Hsv {
+  const s = Math.hypot(x, y);
+  const h = s < 1e-6 ? fallbackHue : wrapHue((Math.atan2(-y, x) * 180) / Math.PI);
+  return { h, s: clamp01(s), v };
+}
+
+/** The fine-tune grip: every other point pulled toward (factor < 1) or
+ *  pushed away from (> 1) the one at `anchor`, across the disc; each keeps
+ *  its brightness. */
+export function compressToward(start: readonly Hsv[], anchor: number, factor: number): Hsv[] {
+  const at = start[anchor];
+  if (!at) return [...start];
+  const centre = wheelXY(at);
+  return start.map((point, index) => {
+    if (index === anchor) return point;
+    const p = wheelXY(point);
+    let x = centre.x + (p.x - centre.x) * factor;
+    let y = centre.y + (p.y - centre.y) * factor;
+    // Pushed past the rim: back onto it.
+    const reach = Math.hypot(x, y);
+    if (reach > 1) {
+      x /= reach;
+      y /= reach;
+    }
+    return fromWheelXY(x, y, point.v, point.h);
+  });
 }
 
 // ------------------------------------------------------------------ random
@@ -213,6 +291,7 @@ export function rebase(base: Hsv, harmony: Harmony, index: number, moved: Hsv): 
 export function randomPalette(random: () => number = Math.random): {
   base: Hsv;
   harmony: Harmony;
+  points: Hsv[];
   colors: string[];
 } {
   const pick = <T>(list: readonly T[]): T => list[Math.floor(random() * list.length)] as T;
@@ -228,5 +307,10 @@ export function randomPalette(random: () => number = Math.random): {
   if (dark) colors[0] = { h: dark.h, s: Math.min(0.9, dark.s + 0.1), v: 0.18 + random() * 0.12 };
   const light = colors[4];
   if (light) colors[4] = { h: light.h, s: 0.08 + random() * 0.12, v: 0.9 + random() * 0.07 };
-  return { base, harmony, colors: colors.map(hsvToHex) };
+  return {
+    base: colors[BASE_INDEX] ?? base,
+    harmony,
+    points: colors,
+    colors: colors.map(hsvToHex),
+  };
 }

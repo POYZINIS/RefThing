@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   BASE_INDEX,
+  compressToward,
   HARMONIES,
   harmonize,
   hexToHsv,
@@ -9,8 +10,10 @@ import {
   hslToHsv,
   hsvToHex,
   hsvToHsl,
+  moveSet,
   randomPalette,
-  rebase,
+  shiftBrightness,
+  wheelXY,
 } from '../src/color/harmony.ts';
 import { extractPalette, oklabToHex, toOklab } from '../src/color/sample.ts';
 
@@ -69,13 +72,68 @@ test('the harmonies put their hues where the rules say', () => {
   assert.ok(harmonize(base, 'shades').every((color) => color.s === base.s));
 });
 
-test('dragging any handle turns the whole harmony', () => {
-  const base = { h: 100, s: 0.6, v: 0.7 };
-  const colors = harmonize(base, 'analogous');
-  // Drag the +30° handle to 170°: the base follows to 140°.
-  const next = rebase(base, 'analogous', 3, { ...colors[3], h: 170 });
-  assert.ok(Math.abs(next.h - 140) < 1e-9);
-  assert.equal(rebase(base, 'analogous', BASE_INDEX, { h: 5, s: 0.2, v: 0.3 }).h, 5);
+test('dragging any handle moves the whole set from where it began', () => {
+  const start = harmonize({ h: 100, s: 0.6, v: 0.7 }, 'analogous');
+  // The +30° handle to 170°: everything turns by the same 40°.
+  const next = moveSet(start, 3, { ...start[3], h: 170 });
+  next.forEach((point, index) => {
+    assert.ok(hueDistance(point.h, (start[index].h + 40) % 360) < 1e-9, `hue ${index}`);
+    assert.equal(point.v, start[index].v, 'brightness stays');
+  });
+  // Saturation scales with the dragged handle.
+  const out = moveSet(start, BASE_INDEX, { ...start[BASE_INDEX], s: 0.3 });
+  assert.ok(Math.abs((out[0]?.s ?? 0) - (start[0]?.s ?? 0) * 0.5) < 1e-9);
+});
+
+test("a tweak keeps a set's own shape (a random palette doesn't snap to its harmony)", () => {
+  const { points, harmony } = randomPalette(() => 0.37);
+  const tweaked = moveSet(points, 4, { ...points[4], h: (points[4].h + 10) % 360 });
+  const harmonyAgain = harmonize(tweaked[BASE_INDEX], harmony);
+  // The anchors keep their own brightness, which the harmony wouldn't give.
+  assert.equal(tweaked[0].v, points[0].v);
+  assert.equal(tweaked[4].v, points[4].v);
+  assert.notEqual(harmonyAgain[0].v, tweaked[0].v);
+});
+
+test('near black, the handles stay exactly where they were (no hex round trip)', () => {
+  const start = harmonize({ h: 212, s: 0.63, v: 0.5 }, 'triad');
+  let set = start;
+  // Walk the slider down to almost black and back, one step at a time.
+  for (const level of [0.4, 0.2, 0.08, 0.03, 0.01, 0.03, 0.08, 0.2, 0.4, 0.5]) {
+    set = shiftBrightness(start, BASE_INDEX, level, 'hsv');
+  }
+  set.forEach((point, index) => {
+    assert.equal(point.h, start[index].h, 'hue untouched');
+    assert.equal(point.s, start[index].s, 'saturation untouched');
+    assert.ok(Math.abs(point.v - start[index].v) < 1e-12, 'back where it began');
+  });
+  const dark = shiftBrightness(start, BASE_INDEX, 0.02, 'hsv');
+  assert.ok(Math.abs(dark[BASE_INDEX].v - 0.02) < 1e-12, 'the base lands on the level');
+  const light = shiftBrightness(start, BASE_INDEX, 0.9, 'hsl');
+  assert.ok(Math.abs(hsvToHsl(light[BASE_INDEX]).l - 0.9) < 1e-9, 'HSL lightness too');
+  for (const point of light) assert.ok(point.v <= 1 && point.s <= 1);
+});
+
+test('the fine-tune grip draws the others toward one colour, and back out', () => {
+  const start = harmonize({ h: 30, s: 0.7, v: 0.8 }, 'triad');
+  const anchor = 1;
+  const pulled = compressToward(start, anchor, 0.25);
+  const distance = (a, b) => {
+    const p = wheelXY(a);
+    const q = wheelXY(b);
+    return Math.hypot(p.x - q.x, p.y - q.y);
+  };
+  start.forEach((point, index) => {
+    if (index === anchor) {
+      assert.deepEqual(pulled[index], point, 'the anchor stays');
+      return;
+    }
+    const before = distance(point, start[anchor]);
+    assert.ok(Math.abs(distance(pulled[index], start[anchor]) - before * 0.25) < 1e-9);
+    assert.equal(pulled[index].v, point.v, 'brightness stays');
+  });
+  const pushed = compressToward(start, anchor, 3);
+  for (const point of pushed) assert.ok(point.s <= 1, 'never past the rim');
 });
 
 test('random palettes stay in pleasant bands with a dark and a light anchor', () => {

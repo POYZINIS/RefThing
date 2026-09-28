@@ -4,19 +4,21 @@ import { createPortal } from 'react-dom';
 import type { SpriteNode } from '@/canvas/nodes/types';
 import {
   BASE_INDEX,
+  compressToward,
   HARMONIES,
   HARMONY_LABELS,
   type Harmony,
   type Hsv,
   harmonize,
   hexToHsv,
-  hslToHsv,
   hsvToHex,
   hsvToHsl,
+  moveSet,
   randomPalette,
-  rebase,
+  shiftBrightness,
+  wheelXY,
 } from '@/color/harmony';
-import { DEFAULT_WHEEL, type WheelState } from '@/color/items';
+import { DEFAULT_WHEEL, type WheelState, wheelBase } from '@/color/items';
 import {
   FIELD_RADIUS,
   PANEL_RADIUS,
@@ -87,12 +89,17 @@ export function ColorWheelPanel({
   onDragOut: (colors: string[], clientX: number, clientY: number) => void;
 }) {
   const stored = node.wheel ?? DEFAULT_WHEEL;
-  // The live state (a drag in progress) over the stored one.
-  const [live, setLive] = useState<{ base: Hsv; colors: string[] } | null>(null);
-  const base = live?.base ?? hexToHsv(stored.base);
-  const colors = live?.colors ?? stored.colors;
-  const latest = useRef({ stored, base, colors, onCommit });
-  latest.current = { stored, base, colors, onCommit };
+  // The live points (a gesture in progress) over the stored ones — exact
+  // HSV throughout, never rebuilt from hex (see color/harmony.ts).
+  const [live, setLive] = useState<Hsv[] | null>(null);
+  const points = live ?? stored.points;
+  const base = points[BASE_INDEX] ?? wheelBase(stored);
+  const colors = points.map(hsvToHex);
+  const latest = useRef({ stored, points, onCommit });
+  latest.current = { stored, points, onCommit };
+  /** The points when the gesture under way began: every edit moves the set
+   *  from there, so nothing drifts or snaps back to the harmony. */
+  const gestureStart = useRef<Hsv[] | null>(null);
 
   const zoom = viewport.zoom;
   const detail = wheelDetail(node.width * zoom);
@@ -110,6 +117,7 @@ export function ColorWheelPanel({
   const wheelHost = useRef<HTMLDivElement>(null);
   const picker = useRef<iro.ColorPicker | null>(null);
   const glideFrame = useRef(0);
+  const [wheelDragging, setWheelDragging] = useState(false);
   // Before the first paint: the canvas picture is already hidden.
   // biome-ignore lint/correctness/useExhaustiveDependencies: created once; sized and fed below
   useLayoutEffect(() => {
@@ -117,7 +125,7 @@ export function ColorWheelPanel({
     if (!host) return;
     const instance = iro.ColorPicker(host, {
       width: wheelPx,
-      colors: colors,
+      colors: points.map(toIro),
       layout: [{ component: iro.ui.Wheel }],
       handleRadius,
       activeHandleRadius: handleRadius * 1.25,
@@ -125,19 +133,26 @@ export function ColorWheelPanel({
       padding: 0,
     });
     instance.setActiveColor(BASE_INDEX);
-    const onStart = () => cancelAnimationFrame(glideFrame.current);
+    const onStart = () => {
+      cancelAnimationFrame(glideFrame.current);
+      setWheelDragging(true);
+    };
     const onInput = (color: iro.Color) => {
-      const { stored: current, base: from } = latest.current;
-      const next = rebase(from, current.harmony, color.index, fromIro(color.hsv as IroHsv));
-      const set = harmonize(next, current.harmony);
-      set.forEach((hsv, index) => {
+      gestureStart.current ??= latest.current.points;
+      const next = moveSet(gestureStart.current, color.index, fromIro(color.hsv as IroHsv));
+      next.forEach((hsv, index) => {
         if (index === color.index) return;
         const handle = instance.colors[index];
         if (handle) handle.hsv = toIro(hsv);
       });
-      setLive({ base: next, colors: set.map(hsvToHex) });
+      setLive(next);
     };
-    const onEnd = () => save('Color');
+    const onEnd = () => {
+      setWheelDragging(false);
+      const moved = gestureStart.current !== null;
+      gestureStart.current = null;
+      if (moved) save('Color');
+    };
     instance.on('input:start', onStart);
     instance.on('input:change', onInput);
     instance.on('input:end', onEnd);
@@ -157,23 +172,29 @@ export function ColorWheelPanel({
     picker.current?.resize(wheelPx);
     picker.current?.setOptions({ handleRadius, activeHandleRadius: handleRadius * 1.25 });
   }, [wheelPx, handleRadius]);
-  const colorsKey = colors.join(',');
-  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the colours' value
+  const pointsKey = points.map(({ h, s, v }) => `${h},${s},${v}`).join(';');
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the points' value
   useEffect(() => {
     const instance = picker.current;
     if (!instance || live) return;
-    glide(instance, colors);
-  }, [colorsKey]);
+    glide(instance, points);
+  }, [pointsKey]);
 
   /** Ease every handle to `target` (hue the short way round). */
-  const glide = (instance: iro.ColorPicker, target: string[]) => {
+  const glide = (instance: iro.ColorPicker, target: Hsv[]) => {
     cancelAnimationFrame(glideFrame.current);
     const from = instance.colors.map((color) => fromIro(color.hsv as IroHsv));
-    const to = target.map(hexToHsv);
-    const same = from.every((hsv, index) => hsvToHex(hsv) === target[index]);
+    const to = target;
+    const near = (a: number, b: number) => Math.abs(a - b) < 1e-4;
+    const same =
+      from.length === to.length &&
+      from.every((a, index) => {
+        const b = to[index];
+        return !!b && near(a.h, b.h) && near(a.s, b.s) && near(a.v, b.v);
+      });
     if (same) return;
     if (from.length !== to.length || reducedMotion()) {
-      instance.setColors(target, BASE_INDEX);
+      instance.setColors(target.map(toIro), BASE_INDEX);
       return;
     }
     const start = performance.now();
@@ -181,7 +202,7 @@ export function ColorWheelPanel({
       const t = Math.min(1, (now - start) / GLIDE_MS);
       const eased = 1 - (1 - t) ** 3;
       if (t >= 1) {
-        instance.setColors(target, BASE_INDEX);
+        instance.setColors(target.map(toIro), BASE_INDEX);
         return;
       }
       from.forEach((a, index) => {
@@ -200,13 +221,112 @@ export function ColorWheelPanel({
 
   /** Commit the live state; a palette the wheel produced joins the library. */
   const save = (label: string, extra: Partial<WheelState> = {}) => {
-    const { stored: current, base: at, colors: set, onCommit: commit } = latest.current;
+    const { stored: current, points: set, onCommit: commit } = latest.current;
+    const hexes = set.map(hsvToHex);
     const newest = current.library[0];
     const library =
-      newest && newest.join() === set.join() ? current.library : [set, ...current.library];
-    commit({ base: hsvToHex(at), colors: set, library, ...extra }, label);
+      newest && newest.join() === hexes.join() ? current.library : [hexes, ...current.library];
+    commit(
+      {
+        base: hexes[BASE_INDEX] ?? current.base,
+        colors: hexes,
+        points: set,
+        library,
+        ...extra,
+      },
+      label,
+    );
     setLive(null);
   };
+
+  // ------------------------------------------------------- the fine-tune grip
+  // Hovering a handle shows a grip behind it (an arrow to a line, pointing
+  // at the rest of the set); dragging the grip that way draws every other
+  // colour toward this one, back the other way spreads them out again.
+  const [hovered, setHovered] = useState<number | null>(null);
+  const [gripping, setGripping] = useState<number | null>(null);
+  const hideGrip = useRef(0);
+  const reach = wheelPx / 2 - handleRadius;
+  /** A point's centre on the disc, px from its top-left. */
+  const onDisc = (point: Hsv) => {
+    const { x, y } = wheelXY(point);
+    return { x: wheelPx / 2 + x * reach, y: wheelPx / 2 + y * reach };
+  };
+  /** Which way the grip at `index` points: toward the others' middle (out
+   *  from the disc's centre when they sit on top of it). */
+  const gripDirection = (index: number) => {
+    const at = onDisc(points[index] ?? base);
+    const others = points.filter((_, other) => other !== index).map(onDisc);
+    const middle = {
+      x: others.reduce((sum, point) => sum + point.x, 0) / Math.max(1, others.length),
+      y: others.reduce((sum, point) => sum + point.y, 0) / Math.max(1, others.length),
+    };
+    let dx = middle.x - at.x;
+    let dy = middle.y - at.y;
+    let length = Math.hypot(dx, dy);
+    if (length < 2) {
+      dx = at.x - wheelPx / 2;
+      dy = at.y - wheelPx / 2;
+      length = Math.hypot(dx, dy);
+      if (length < 1) return { x: 1, y: 0, distance: 0 };
+    }
+    return {
+      x: dx / length,
+      y: dy / length,
+      distance: Math.hypot(middle.x - at.x, middle.y - at.y),
+    };
+  };
+  const hover = (clientX: number, clientY: number) => {
+    const rect = wheelHost.current?.getBoundingClientRect();
+    if (!rect || wheelDragging || gripping !== null) return;
+    const local = { x: clientX - rect.left, y: clientY - rect.top };
+    let nearest: number | null = null;
+    let best = handleRadius * 1.7;
+    points.forEach((point, index) => {
+      const at = onDisc(point);
+      const distance = Math.hypot(at.x - local.x, at.y - local.y);
+      if (distance < best) {
+        best = distance;
+        nearest = index;
+      }
+    });
+    window.clearTimeout(hideGrip.current);
+    if (nearest !== null) setHovered(nearest);
+    else hideGrip.current = window.setTimeout(() => setHovered(null), 700);
+  };
+  const pressGrip = (event: React.PointerEvent<HTMLButtonElement>, index: number) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    event.preventDefault();
+    const direction = gripDirection(index);
+    const start = latest.current.points;
+    const from = { x: event.clientX, y: event.clientY };
+    // One grip-length of travel per this much of the gap to the others.
+    const span = Math.max(24, direction.distance);
+    gestureStart.current = start;
+    cancelAnimationFrame(glideFrame.current);
+    setGripping(index);
+    const move = (moveEvent: PointerEvent) => {
+      const along =
+        (moveEvent.clientX - from.x) * direction.x + (moveEvent.clientY - from.y) * direction.y;
+      const factor = Math.min(3, Math.max(0.02, (span - along) / span));
+      const next = compressToward(start, index, factor);
+      picker.current?.setColors(next.map(toIro), BASE_INDEX);
+      setLive(next);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      gestureStart.current = null;
+      setGripping(null);
+      if (latest.current.points !== start) save('Fine Tune');
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+  const gripIndex = gripping ?? hovered;
+  const showGrip =
+    gripIndex !== null && !wheelDragging && !leaving && detail === 'full' && !!points[gripIndex];
 
   // ------------------------------------------------------------ the slider
   const [sliding, setSliding] = useState(false);
@@ -214,13 +334,12 @@ export function ColorWheelPanel({
   const setLevel = (clientY: number, element: HTMLElement) => {
     const rect = element.getBoundingClientRect();
     const value = Math.min(1, Math.max(0, 1 - (clientY - rect.top) / rect.height));
-    const { base: from, stored: current } = latest.current;
-    const next =
-      current.mode === 'hsl' ? hslToHsv({ ...hsvToHsl(from), l: value }) : { ...from, v: value };
-    const set = harmonize(next, current.harmony).map(hsvToHex);
+    const { stored: current, points: now } = latest.current;
+    // The rest follow the base proportionally, from where the drag began.
+    const next = shiftBrightness(gestureStart.current ?? now, BASE_INDEX, value, current.mode);
     cancelAnimationFrame(glideFrame.current);
-    picker.current?.setColors(set, BASE_INDEX);
-    setLive({ base: next, colors: set });
+    picker.current?.setColors(next.map(toIro), BASE_INDEX);
+    setLive(next);
   };
   const pure = hsvToHex({ h: base.h, s: stored.mode === 'hsl' ? 1 : base.s, v: 1 });
   const track =
@@ -313,6 +432,7 @@ export function ColorWheelPanel({
           event.stopPropagation();
           event.currentTarget.setPointerCapture(event.pointerId);
           setSliding(true);
+          gestureStart.current = latest.current.points;
           setLevel(event.clientY, event.currentTarget);
         }}
         onPointerMove={(event) => {
@@ -324,6 +444,7 @@ export function ColorWheelPanel({
           if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
           event.currentTarget.releasePointerCapture(event.pointerId);
           setSliding(false);
+          gestureStart.current = null;
           save('Color');
         }}
         onKeyDown={(event) => {
@@ -349,7 +470,45 @@ export function ColorWheelPanel({
         className="color-wheel-iro"
         style={px(layout.wheel)}
         onPointerDown={(event) => event.stopPropagation()}
+        onPointerMove={(event) => hover(event.clientX, event.clientY)}
+        onPointerLeave={() => {
+          window.clearTimeout(hideGrip.current);
+          hideGrip.current = window.setTimeout(() => setHovered(null), 700);
+        }}
       />
+      <div className="color-wheel-grips" style={px(layout.wheel)}>
+        {showGrip &&
+          gripIndex !== null &&
+          (() => {
+            const point = points[gripIndex] ?? base;
+            const at = onDisc(point);
+            const direction = gripDirection(gripIndex);
+            // Behind the handle (away from the others), clear of the set.
+            const offset = handleRadius * (gripIndex === BASE_INDEX ? 1.25 : 1) + 15;
+            return (
+              <button
+                key={gripIndex}
+                type="button"
+                className={`color-wheel-grip${gripping !== null ? ' active' : ''}`}
+                aria-label="Fine-tune: drag to draw the other colours toward this one"
+                title="Drag to draw the other colours toward this one"
+                tabIndex={-1}
+                style={{
+                  left: at.x - direction.x * offset,
+                  top: at.y - direction.y * offset,
+                  transform: `translate(-50%, -50%) rotate(${Math.atan2(direction.y, direction.x)}rad)`,
+                }}
+                onPointerEnter={() => window.clearTimeout(hideGrip.current)}
+                onPointerLeave={() => {
+                  hideGrip.current = window.setTimeout(() => setHovered(null), 700);
+                }}
+                onPointerDown={(event) => pressGrip(event, gripIndex)}
+              >
+                <Icon name="compress" size={12} />
+              </button>
+            );
+          })()}
+      </div>
       <div className="color-wheel-harmony color-wheel-extra" style={px(layout.harmony)}>
         <button
           ref={harmonyButton}
@@ -373,8 +532,12 @@ export function ColorWheelPanel({
           anchor={harmonyButton}
           value={stored.harmony}
           onPick={(harmony) => {
-            const set = harmonize(base, harmony).map(hsvToHex);
-            onCommit({ harmony, base: hsvToHex(base), colors: set }, 'Harmony');
+            // Choosing a harmony (again) lays the set out by it afresh.
+            const set = harmonize(base, harmony);
+            onCommit(
+              { harmony, base: hsvToHex(base), colors: set.map(hsvToHex), points: set },
+              'Harmony',
+            );
           }}
           onClose={() => setHarmonyOpen(false)}
         />
@@ -423,8 +586,7 @@ export function ColorWheelPanel({
             );
           }
           const random = randomPalette();
-          latest.current.base = random.base;
-          latest.current.colors = random.colors;
+          latest.current.points = random.points;
           save('Random Palette', { harmony: random.harmony });
         }}
       >
@@ -486,9 +648,18 @@ export function ColorWheelPanel({
               onPointerDown={(event) =>
                 dragOrClick(event, row, () => {
                   // Load it: the wheel picks up this palette.
-                  const middle = row[Math.floor(row.length / 2)] ?? stored.base;
+                  // Five colours load as they are; any other count lends
+                  // its middle colour as the base of the current harmony.
+                  const set =
+                    row.length === 5
+                      ? row.map(hexToHsv)
+                      : harmonize(
+                          hexToHsv(row[Math.floor(row.length / 2)] ?? stored.base),
+                          stored.harmony,
+                        );
+                  const hexes = set.map(hsvToHex);
                   onCommit(
-                    { colors: row.length === 5 ? row : stored.colors, base: middle },
+                    { colors: hexes, points: set, base: hexes[BASE_INDEX] ?? stored.base },
                     'Load Palette',
                   );
                 })
@@ -617,7 +788,7 @@ function HarmonyMenu({
           role="menuitemradio"
           aria-checked={harmony === value}
           onClick={() => {
-            if (harmony !== value) onPick(harmony);
+            onPick(harmony);
             close();
           }}
         >

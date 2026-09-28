@@ -95,11 +95,18 @@ conflict in this file; confirm or overrule them here.
    not on the board yet, it arrives in the middle of the view; off
    screen, it moves there; on screen, the view pans to centre it.
    - The wheel's controls are live only while it is the lone selection
-     (Rule 8); unselected, the canvas paints the same layout. Dragging any
-     handle turns the whole harmony (Analogous, Monochromatic, Triad,
-     Complementary, Split complementary, Square, Compound, Shades,
-     Tetrad); the slider beside it is HSV value or HSL lightness (extends
-     to white). Letting go of the wheel or the slider saves the palette
+     (Rule 8); unselected, the canvas paints the same layout. A harmony
+     (Analogous, Monochromatic, Triad, Complementary, Split complementary,
+     Square, Compound, Shades, Tetrad) lays the five colours out; after
+     that, dragging any handle moves the whole set from where it was —
+     same hue turn, same saturation scale — so a random palette or a
+     tweak keeps its shape until a harmony is chosen again (choosing the
+     current one re-applies it). The slider beside it is HSV value or HSL
+     lightness (extends to white); the others follow proportionally.
+     Hovering a handle shows a fine-tune grip (an arrow to a line, pointing
+     at the rest): dragging it that way draws every other colour toward
+     this one, back the other way spreads them out. The colours are kept
+     as exact HSV, so nothing jumps near black. Letting go of the wheel or the slider saves the palette
      to the wheel's library (newest first, never pruned); Random makes a
      palette from the harmonies, kept in pleasant bands with a dark and a
      light anchor. The current palette and every saved one drag out onto

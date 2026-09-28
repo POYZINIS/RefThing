@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { hsvToHex } from '../src/color/harmony.ts';
 import {
   DEFAULT_WHEEL,
   isBoardItem,
@@ -36,6 +37,18 @@ test('palette and wheel metadata are validated', () => {
   assert.equal(wheel.mode, 'hsl');
   assert.deepEqual(wheel.library, [['#000000']]);
   assert.equal(wheel.colors.length, 5, 'colours default to the harmony');
+  assert.equal(wheel.points.length, 5, 'and so do its points');
+  // Exact points are kept while they match the colours; stale ones (a
+  // patch that set only colours) are rebuilt from the colours.
+  const exact = { h: 212.25, s: 0.6312, v: 0.0421 };
+  const kept = wheelState({
+    colorwheel: { colors: Array(5).fill(hsvToHex(exact)), points: Array(5).fill(exact) },
+  });
+  assert.deepEqual(kept.points[2], exact);
+  const stale = wheelState({
+    colorwheel: { colors: Array(5).fill('#ff0000'), points: Array(5).fill(exact) },
+  });
+  assert.equal(hsvToHex(stale.points[2]), '#ff0000');
   const junk = wheelState({ colorwheel: { harmony: 'rainbow', mode: 'cmyk' } });
   assert.equal(junk.harmony, DEFAULT_WHEEL.harmony);
   assert.equal(junk.mode, 'hsv');

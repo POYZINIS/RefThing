@@ -1,4 +1,5 @@
 import {
+  ArrowRightToLine,
   Check,
   ChevronDown,
   ChevronRight,
@@ -66,6 +67,7 @@ const ICONS = {
   loop: Repeat,
   palette: Palette,
   dice: Dices,
+  compress: ArrowRightToLine,
 } satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof ICONS;

@@ -336,3 +336,94 @@ test('a hovered palette swatch shows its hex', async () => {
   await page.mouse.move(box.x + box.width / 2, box.y - 120);
   await tip.waitFor({ state: 'detached' });
 });
+
+test('the wheel: steady near black, tweaks keep their shape, the grip draws colours in', async () => {
+  const { page, context } = session;
+  const seeded = await seedBoard(context.request, {
+    images: [{ name: 'anchor.png', x: -1000, y: 0, width: 100, height: 100 }],
+  });
+  await openBoard(page, seeded);
+  await page.getByRole('button', { name: 'Color wheel' }).click();
+  await page.getByTestId('color-wheel-panel').waitFor();
+  const disc = await page.locator('.color-wheel-iro').boundingBox();
+  /** Where a point's handle sits on screen. */
+  const handleAt = ({ h, s }) => {
+    const reach = disc.width / 2 - Math.max(5, disc.width * 0.04);
+    const radians = (h * Math.PI) / 180;
+    return {
+      x: disc.x + disc.width / 2 + Math.cos(radians) * s * reach,
+      y: disc.y + disc.height / 2 - Math.sin(radians) * s * reach,
+    };
+  };
+
+  // Slide the brightness to almost black and back: hue and saturation stay.
+  const before = (await wheelOf(page)).wheel.points;
+  const slider = await page.getByRole('slider', { name: 'Brightness' }).boundingBox();
+  const sx = slider.x + slider.width / 2;
+  await page.mouse.move(sx, slider.y + slider.height * 0.3);
+  await page.mouse.down();
+  for (let step = 0; step <= 20; step += 1) {
+    await page.mouse.move(sx, slider.y + slider.height * (0.3 + (0.69 * step) / 20));
+  }
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+  const dark = (await wheelOf(page)).wheel.points;
+  dark.forEach((point, index) => {
+    assert.equal(point.h, before[index].h, `hue ${index} steady near black`);
+    assert.equal(point.s, before[index].s, `saturation ${index} steady near black`);
+  });
+  assert.ok(dark[2].v < 0.05, `dark: ${dark[2].v}`);
+
+  // Random, then drag a handle: the anchors keep their own brightness (no
+  // snap back to the harmony).
+  await page.getByRole('button', { name: 'Random palette' }).click();
+  await page.waitForTimeout(500);
+  const random = (await wheelOf(page)).wheel.points;
+  const from = handleAt(random[2]);
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x + 14, from.y - 10, { steps: 6 });
+  await page.mouse.up();
+  await page.waitForTimeout(500);
+  const tweaked = (await wheelOf(page)).wheel.points;
+  assert.notEqual(tweaked[2].h, random[2].h, 'the handle moved');
+  assert.equal(tweaked[0].v, random[0].v, 'the dark anchor keeps its brightness');
+  assert.equal(tweaked[4].v, random[4].v, 'the light anchor keeps its brightness');
+
+  // The grip: hover a handle, drag its grip toward the others.
+  const spread = (points, anchor) =>
+    points.reduce((sum, point, index) => {
+      if (index === anchor) return sum;
+      const a = handleAt(point);
+      const b = handleAt(points[anchor]);
+      return sum + Math.hypot(a.x - b.x, a.y - b.y);
+    }, 0);
+  const at = handleAt(tweaked[0]);
+  await page.mouse.move(at.x + 2, at.y + 2, { steps: 3 });
+  const grip = page.locator('.color-wheel-grip');
+  await grip.waitFor();
+  const box = await grip.boundingBox();
+  const gx = box.x + box.width / 2;
+  const gy = box.y + box.height / 2;
+  // The grip sits behind the handle; toward the others is past the handle.
+  const dx = (at.x - gx) / Math.hypot(gx - at.x, gy - at.y);
+  const dy = (at.y - gy) / Math.hypot(gx - at.x, gy - at.y);
+  await page.mouse.move(gx, gy);
+  await page.mouse.down();
+  await page.mouse.move(gx + dx * 40, gy + dy * 40, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForTimeout(500);
+  const drawn = (await wheelOf(page)).wheel.points;
+  assert.ok(spread(drawn, 0) < spread(tweaked, 0) * 0.8, 'the others drew in');
+  assert.deepEqual(drawn[0], tweaked[0], 'the gripped colour stays');
+
+  // Choosing the harmony again lays the set out by it afresh.
+  await page.getByRole('button', { name: /^Harmony/ }).click();
+  await page
+    .getByRole('menu', { name: 'Harmony' })
+    .getByRole('menuitemradio', { checked: true })
+    .click();
+  await page.waitForTimeout(500);
+  const fresh = (await wheelOf(page)).wheel;
+  assert.notDeepEqual(fresh.points, drawn, 're-laid out by the harmony');
+});
