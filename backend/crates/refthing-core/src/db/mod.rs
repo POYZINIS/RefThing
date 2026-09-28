@@ -16,6 +16,8 @@ pub mod views;
 use std::path::Path;
 use std::time::Duration;
 
+use sha2::{Digest, Sha384};
+use sqlx::migrate::Migrator;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{SqlitePool, migrate};
 
@@ -73,13 +75,64 @@ pub async fn connect(path: &Path) -> Result<Pools, CoreError> {
     let write = open_pool(&options, 1).await?;
     // Migrations run on the single-connection write pool; the schema is
     // current before any reader connects.
-    migrate!("../../migrations")
+    let migrator = migrate!("../../migrations");
+    reconcile_line_endings(&write, &migrator).await?;
+    migrator
         .run(&write)
         .await
         .map_err(|error| CoreError::Db(error.to_string()))?;
     let read = open_pool(&options, MAX_READ_CONNECTIONS).await?;
 
     Ok(Pools { read, write })
+}
+
+/// sqlx checksums a migration's raw bytes, so the same SQL checked out with
+/// the other line endings (a Windows checkout before `.gitattributes` fixed
+/// them to LF) reads as "modified" and the server refuses to start. Line
+/// endings aren't content: where a recorded checksum matches this
+/// migration's SQL with CRLF and LF swapped, record the current checksum.
+/// Any other mismatch is left for the migrator to report.
+async fn reconcile_line_endings(pool: &SqlitePool, migrator: &Migrator) -> Result<(), CoreError> {
+    let db = |error: sqlx::Error| CoreError::Db(error.to_string());
+    let (exists,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(db)?;
+    if exists == 0 {
+        return Ok(());
+    }
+    let applied: Vec<(i64, Vec<u8>)> =
+        sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations")
+            .fetch_all(pool)
+            .await
+            .map_err(db)?;
+    for migration in migrator.iter() {
+        let Some((_, recorded)) = applied
+            .iter()
+            .find(|(version, _)| *version == migration.version)
+        else {
+            continue;
+        };
+        if recorded.as_slice() == migration.checksum.as_ref() {
+            continue;
+        }
+        let lf = migration.sql.replace("\r\n", "\n");
+        let crlf = lf.replace('\n', "\r\n");
+        let same = [lf, crlf]
+            .iter()
+            .any(|sql| Sha384::digest(sql.as_bytes()).as_slice() == recorded.as_slice());
+        if same {
+            sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+                .bind(migration.checksum.as_ref())
+                .bind(migration.version)
+                .execute(pool)
+                .await
+                .map_err(db)?;
+        }
+    }
+    Ok(())
 }
 
 async fn open_pool(
@@ -146,6 +199,44 @@ mod tests {
             .run(&pools.write)
             .await
             .expect("migrations are idempotent");
+    }
+
+    #[tokio::test]
+    async fn line_ending_only_changes_are_not_modified_migrations() {
+        let (dir, pools) = temp_pools().await;
+        // Record migration 1 as though it had been applied from a CRLF
+        // checkout, and another as though its SQL had really changed.
+        let migrator = migrate!("../../migrations");
+        let first = migrator.iter().next().expect("a migration");
+        let crlf = first.sql.replace("\r\n", "\n").replace('\n', "\r\n");
+        let crlf_sum = Sha384::digest(crlf.as_bytes()).to_vec();
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+            .bind(&crlf_sum)
+            .bind(first.version)
+            .execute(&pools.write)
+            .await
+            .expect("fake a CRLF checksum");
+        pools.write.close().await;
+        pools.read.close().await;
+        connect(&dir.path().join("test.db"))
+            .await
+            .expect("a line-ending difference is not a modified migration");
+
+        let pools = connect(&dir.path().join("test.db"))
+            .await
+            .expect("reconnect");
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+            .bind(vec![0_u8; 48])
+            .bind(first.version)
+            .execute(&pools.write)
+            .await
+            .expect("fake a real edit");
+        pools.write.close().await;
+        pools.read.close().await;
+        assert!(
+            connect(&dir.path().join("test.db")).await.is_err(),
+            "a real edit still fails"
+        );
     }
 
     #[tokio::test]
