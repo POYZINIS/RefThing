@@ -380,7 +380,7 @@ function BoardFilesSection() {
       <div className="setting-row">
         <span className="setting-path" title={folder ?? undefined}>
           {/* Marks keep the path's own order inside the right-aligned ellipsis. */}
-          {`\u200e${folder ?? 'Documents'}\u200e`}
+          {`\u200e${folder ?? 'Documents\\RefThing'}\u200e`}
         </span>
         <button className="button small" type="button" disabled={moving} onClick={change}>
           {moving ? 'Moving…' : 'Change…'}

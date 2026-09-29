@@ -140,7 +140,7 @@ determined (there is no password to lose).
 
 Every board is kept in a file. The boards folder is the Settings choice
 (`app_settings.boards_folder`), else the app's default — the desktop app
-passes the user's Documents (`AppConfig::boards_dir`); plain servers and
+passes `<Documents>\RefThing`, created on first write (`AppConfig::boards_dir`); plain servers and
 tests have none, so boards there get files only when asked. The sync gives
 a board without a file `<folder>/<name>.ref` (`<name> (2).ref` when taken —
 never another file's name); a board created in the app asks for its folder

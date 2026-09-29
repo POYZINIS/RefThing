@@ -81,9 +81,13 @@ fn board_file_arg(args: &[String]) -> Option<String> {
 }
 
 fn server_config(app: &tauri::App) -> AppConfig {
-    // Every board is kept as a .ref file, by default in the user's
-    // Documents (Settings → Board files changes it).
-    let boards_dir = app.path().document_dir().ok();
+    // Every board is kept as a .ref file, by default in Documents\RefThing
+    // (created on first write; Settings → Board files changes it).
+    let boards_dir = app
+        .path()
+        .document_dir()
+        .ok()
+        .map(|documents| documents.join("RefThing"));
     // `cfg!(dev)` is on for `tauri dev` builds (the CLI drops default
     // features) and off for release builds. (NOT `tauri::is_dev()` — that
     // only reflects the custom-protocol feature.)

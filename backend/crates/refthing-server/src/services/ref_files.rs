@@ -3,7 +3,7 @@
 //!
 //! Every board is kept in a file: the sync gives a board with none a
 //! `<boards folder>/<name>.ref` (the Settings folder, else the app's
-//! default — the user's Documents; with neither, as on plain servers and in
+//! default — `<Documents>\RefThing`; with neither, as on plain servers and in
 //! tests, only boards asked for get files). A new board can name its folder
 //! (the app asks when one is created).
 //!

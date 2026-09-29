@@ -16,7 +16,7 @@ pub struct AppConfig {
     /// deployments leave it unset).
     pub static_dir: Option<PathBuf>,
     /// Where every board is kept as a `.ref` file by default (the desktop
-    /// app passes the user's Documents folder; the Settings choice, kept in
+    /// app passes `<Documents>\RefThing`; the Settings choice, kept in
     /// the database, overrides it). `None` — plain servers, tests — keeps
     /// no board files unless one is asked for.
     pub boards_dir: Option<PathBuf>,
