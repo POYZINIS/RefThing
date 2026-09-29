@@ -76,6 +76,11 @@ Linking works through a shim that lives entirely inside
    `ucrtshim.o`, a no-op `atexit`, built from `ucrtshim.rs`), which satisfy
    the loader's `/DEFAULTLIB` directives.
 
+6. `stdioshim.o` — a no-op `fprintf` (build from `stdioshim.rs` like
+   `stubs.rs`, wired as a link arg in `.cargo/config.toml`). Tauri's
+   static-vcruntime link drops `msvcrt.lib`, which supplied `fprintf`;
+   libwebp's animation encoder (unused) still references it.
+
 If `cargo build` suddenly fails with `LNK1181`-style "cannot open
 kernel32.lib" / missing symbol errors after a clean, this section is why.
 

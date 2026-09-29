@@ -96,6 +96,16 @@ WebSocket (api/ws.ts) is receive-only: other clients' diffs and job events.
   and the live panel). `canvas/nodes/ColorTextureSources.ts` paints both
   kinds; `components/ColorWheelPanel.tsx` is the wheel's live controls
   (iro.js), shown only while it is the lone selection.
+- **Board files** (`.ref`): the board archive + previews behind AES-128-CTR
+  (`refthing-core/src/export/` — `crypt.rs`, `write_ref_file`,
+  `import_ref_file`); linking, the background writer and opening by path
+  in `refthing-server/src/services/ref_files.rs` (routes
+  `/api/boards/{id}/file`, `/api/boards:open-file`,
+  `/api/boards/{id}/download.ref` — the path routes answer only the app's
+  own pages). The desktop shell registers `.ref` with Windows, opens a
+  launched file (`?open=`), forwards later ones to the running window
+  (single-instance), and waits for the final write on exit. See
+  `docs/data-model.md`.
 - **Board import** (`refthing-core/src/pureref.rs`, `POST /api/boards:import`):
   a PureRef 2 `.pur` is a displaced SQLite database of Qt-serialized items;
   the core reads it into placements and the server commits them through the

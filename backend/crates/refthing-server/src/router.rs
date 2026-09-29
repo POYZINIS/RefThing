@@ -45,6 +45,10 @@ pub fn build_router(state: AppState) -> Router {
     // be killed).
     let ingest = routes::ingest::router().layer(DefaultBodyLimit::max(INGEST_BODY_LIMIT));
 
+    // `.ref` board files: no timeout (writing a big board takes a while),
+    // no compression (the file is encrypted — nothing to squeeze).
+    let board_files = routes::board_files::router();
+
     // WebSocket: no timeout, no compression.
     let realtime = routes::ws::router();
 
@@ -59,6 +63,7 @@ pub fn build_router(state: AppState) -> Router {
     let app = Router::new()
         .merge(json_api)
         .merge(ingest)
+        .merge(board_files)
         .merge(realtime)
         .merge(blobs)
         .with_state(state)

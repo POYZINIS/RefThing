@@ -12,6 +12,7 @@
 //! | `notes`   | `/api/boards/{id}/notes...`   | `TimeoutLayer`(30s) + `CompressionLayer` |
 //! | `tags`    | `/api/tags...`                | `TimeoutLayer`(30s) + `CompressionLayer` |
 //! | `ingest`  | `/api/boards/{id}/items:ingest`, `/api/boards:import` | `DefaultBodyLimit` 1 GiB; NO timeout |
+//! | `board_files` | `/api/boards/{id}/file`, `/api/boards:open-file`, `/api/boards/{id}/download.ref` | NO timeout (big boards) |
 //! | `ws`      | `/api/boards/{id}/ws`         | none (timeout would kill the socket)     |
 //! | `blobs`   | `/blob/{hash}/{level}`        | none (no compression on media bytes)     |
 //!
@@ -19,6 +20,7 @@
 
 pub mod auth;
 pub mod blobs;
+pub mod board_files;
 pub mod boards;
 pub mod groups;
 pub mod ingest;

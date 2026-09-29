@@ -15,6 +15,7 @@ import {
   importBoard as importBoardApi,
   ingestFiles,
   listBoards,
+  openBoardFile as openBoardFileApi,
   renameBoard as renameBoardApi,
   submitBatch,
   type Tag,
@@ -37,11 +38,15 @@ type BoardState = {
   clearError: () => void;
   loadBoards: () => Promise<void>;
   openBoard: (boardId: string) => Promise<void>;
-  createAndOpenBoard: (name: string) => Promise<void>;
+  /** `fileFolder` (desktop): where the board's `.ref` file goes. */
+  createAndOpenBoard: (name: string, fileFolder?: string) => Promise<void>;
   renameBoard: (boardId: string, name: string) => Promise<void>;
   deleteBoard: (boardId: string) => Promise<void>;
-  /** Import a board file (PureRef `.pur`) as a new board and open it. */
+  /** Import a board file (a `.ref`, or PureRef's `.pur`) as a new board
+   *  and open it. */
   importBoard: (file: File) => Promise<ImportResult | null>;
+  /** Open the `.ref` file at `path` (desktop): its board, kept in it. */
+  openBoardFile: (path: string) => Promise<void>;
   /** Upload files; `at` (world) centres them on the drop point, sized
    *  relative to `camera` (see arrivalSize). */
   ingest: (
@@ -163,8 +168,8 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     }
   },
 
-  async createAndOpenBoard(name) {
-    const board = await createBoard(name.trim() || 'Untitled board');
+  async createAndOpenBoard(name, fileFolder) {
+    const board = await createBoard(name.trim() || 'Untitled board', fileFolder);
     set((state) => ({
       boards: [
         { id: board.id, name: board.name, item_count: 0, updated_at: board.updated_at },
@@ -226,6 +231,22 @@ export const useBoardStore = create<BoardState>((set, get) => ({
         }`,
       });
       return null;
+    } finally {
+      set({ busy: null });
+    }
+  },
+
+  async openBoardFile(path) {
+    const name = path.split(/[\\/]/).pop() ?? path;
+    set({ busy: `Opening ${name}…`, error: null });
+    try {
+      const opened = await openBoardFileApi(path);
+      set({ boards: await listBoards() });
+      await get().openBoard(opened.board_id);
+    } catch (error: unknown) {
+      set({
+        error: `Could not open ${name}: ${error instanceof Error ? error.message : 'unknown error'}`,
+      });
     } finally {
       set({ busy: null });
     }

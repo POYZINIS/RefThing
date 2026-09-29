@@ -22,9 +22,23 @@ type TauriWindow = {
   clearEffects(): Promise<void>;
   onResized(handler: () => void): Promise<() => void>;
 };
+type FileFilter = { name: string; extensions: string[] };
 type TauriGlobal = {
   window?: { getCurrentWindow?: () => TauriWindow };
   dpi?: { PhysicalPosition: new (x: number, y: number) => unknown };
+  dialog?: {
+    save(options: { defaultPath?: string; filters?: FileFilter[] }): Promise<string | null>;
+    open(options: {
+      multiple?: boolean;
+      directory?: boolean;
+      defaultPath?: string;
+      title?: string;
+      filters?: FileFilter[];
+    }): Promise<string | string[] | null>;
+  };
+  event?: {
+    listen(name: string, handler: (event: { payload: unknown }) => void): Promise<() => void>;
+  };
 };
 
 const tauri = (globalThis as { __TAURI__?: TauriGlobal }).__TAURI__;
@@ -114,4 +128,64 @@ export function beginWindowMove(event: PointerEvent, threshold: number): boolean
   globalThis.addEventListener('pointerup', end);
   globalThis.addEventListener('pointercancel', end);
   return true;
+}
+
+// ------------------------------------------------------------ board files
+
+const BOARD_FILTER: FileFilter[] = [{ name: 'RefThing board', extensions: ['ref'] }];
+
+/** Where to keep a board's `.ref` file (the native save dialog); null when
+ *  cancelled or not on the desktop. */
+export async function chooseBoardFileToSave(defaultName: string): Promise<string | null> {
+  const dialog = tauri?.dialog;
+  if (!dialog) return null;
+  return dialog.save({ defaultPath: defaultName, filters: BOARD_FILTER });
+}
+
+/** A `.ref` file to open (the native open dialog). */
+export async function chooseBoardFileToOpen(): Promise<string | null> {
+  const dialog = tauri?.dialog;
+  if (!dialog) return null;
+  const picked = await dialog.open({ multiple: false, filters: BOARD_FILTER });
+  return Array.isArray(picked) ? (picked[0] ?? null) : picked;
+}
+
+/** A folder (the native folder dialog), starting at `defaultPath`; null
+ *  when cancelled or not on the desktop. */
+export async function chooseFolder(title: string, defaultPath?: string): Promise<string | null> {
+  const dialog = tauri?.dialog;
+  if (!dialog) return null;
+  const picked = await dialog.open({ directory: true, multiple: false, defaultPath, title });
+  return Array.isArray(picked) ? (picked[0] ?? null) : picked;
+}
+
+/** `.ref` files opened from Explorer while the app runs (a second launch
+ *  hands its file to this window — src-tauri). */
+export function onBoardFileOpened(handler: (path: string) => void): () => void {
+  const listen = tauri?.event?.listen;
+  if (!listen) return () => undefined;
+  let stop: (() => void) | null = null;
+  let alive = true;
+  void listen('open-board-file', (event) => {
+    if (typeof event.payload === 'string') handler(event.payload);
+  }).then((unlisten) => {
+    if (alive) stop = unlisten;
+    else unlisten();
+  });
+  return () => {
+    alive = false;
+    stop?.();
+  };
+}
+
+/** The `.ref` file the app was launched to open (`?open=`), taken off the
+ *  URL so a reload doesn't open it again. */
+export function takeLaunchBoardFile(): string | null {
+  if (typeof location === 'undefined') return null;
+  const url = new URL(location.href);
+  const path = url.searchParams.get('open');
+  if (!path) return null;
+  url.searchParams.delete('open');
+  history.replaceState(history.state, '', url);
+  return path;
 }

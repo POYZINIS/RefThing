@@ -13,13 +13,17 @@ import { BatchQueue } from '@/api/batchQueue';
 import {
   type BatchRequestOp,
   type BlobInfo,
+  type BoardFileStatus,
   blobUrl,
   createSession,
   fetchBindingsOverride,
+  fetchBoardFile,
+  fetchBoardsFolder,
   fetchHealth,
   type HealthStatus,
   type Item,
   isBoardFile,
+  linkBoardFile,
   type Note,
   uploadTexture,
 } from '@/api/client';
@@ -93,7 +97,16 @@ import { SettingsSheet } from '@/components/SettingsSheet';
 import { SnapshotManager } from '@/components/SnapshotManager';
 import { OpenTarget, type Toast, Toasts } from '@/components/Toasts';
 import { WindowControls } from '@/components/WindowControls';
-import { beginWindowMove, setNativeGlass } from '@/shell/desktop';
+import {
+  beginWindowMove,
+  chooseBoardFileToOpen,
+  chooseBoardFileToSave,
+  chooseFolder,
+  isDesktop,
+  onBoardFileOpened,
+  setNativeGlass,
+  takeLaunchBoardFile,
+} from '@/shell/desktop';
 import { useBoardStore } from '@/state/boardStore';
 import {
   type Camera,
@@ -182,6 +195,10 @@ function BoardApp() {
   const canvasHost = useRef<HTMLDivElement>(null);
   const boardCanvas = useRef<BoardCanvas | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  // "Open board file…" in the browser (the desktop uses its own dialog).
+  const boardFileInput = useRef<HTMLInputElement>(null);
+  // The open board's .ref file (desktop), polled while the board is open.
+  const [boardFile, setBoardFile] = useState<BoardFileStatus | null>(null);
   // Search opens where it was asked for (right-click point / cursor).
   const [searchAt, setSearchAt] = useState<{ x: number; y: number } | null>(null);
   // The corner groups hide until the pointer comes near (useProximityReveal).
@@ -316,10 +333,32 @@ function BoardApp() {
   const loadBoards = useBoardStore((state) => state.loadBoards);
   const openBoard = useBoardStore((state) => state.openBoard);
   const createAndOpenBoard = useBoardStore((state) => state.createAndOpenBoard);
+  /** A board asked for (the menu, the first-run target): on the desktop,
+   *  where its .ref file goes first — cancelling makes no board. */
+  const newBoard = async (name: string) => {
+    if (!isDesktop) {
+      await createAndOpenBoard(name);
+      return;
+    }
+    const current = await fetchBoardsFolder().catch(() => ({ folder: null }));
+    const folder = await chooseFolder(
+      'Where should this board’s file go?',
+      current.folder ?? undefined,
+    );
+    if (folder) await createAndOpenBoard(name, folder);
+  };
   const renameBoard = useBoardStore((state) => state.renameBoard);
   const deleteBoard = useBoardStore((state) => state.deleteBoard);
   const ingest = useBoardStore((state) => state.ingest);
   const importBoard = useBoardStore((state) => state.importBoard);
+  const openBoardFile = useBoardStore((state) => state.openBoardFile);
+  // .ref files opened from Explorer: at launch (?open=), and while running
+  // (a second launch hands its file over — src-tauri).
+  useEffect(() => {
+    const launched = takeLaunchBoardFile();
+    if (launched) void openBoardFile(launched);
+    return onBoardFileOpened((path) => void openBoardFile(path));
+  }, [openBoardFile]);
   const saveViewport = useBoardStore((state) => state.saveViewport);
   /** The camera things arrive under: painted zoom + the view's size. */
   const arrivalCamera = (): Camera => {
@@ -822,6 +861,27 @@ function BoardApp() {
   const panelWheel =
     liveWheel ?? (leavingWheel?.kind === 'colorwheel' ? (leavingWheel as SpriteNode) : null);
   const panelWheelId = panelWheel?.id ?? null;
+  // The open board's .ref file and whether it's caught up (desktop only —
+  // the browser can't keep a file).
+  useEffect(() => {
+    if (!isDesktop || !activeBoardId) {
+      setBoardFile(null);
+      return;
+    }
+    let alive = true;
+    const load = () =>
+      fetchBoardFile(activeBoardId)
+        .then((status) => {
+          if (alive) setBoardFile(status);
+        })
+        .catch(() => undefined);
+    void load();
+    const timer = window.setInterval(load, 2500);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [activeBoardId]);
   // The note being edited is drawn by its DOM editor, not the canvas; the
   // wheel by its glass panel while that's up.
   useEffect(() => {
@@ -2486,7 +2546,7 @@ function BoardApp() {
             dropLabel="Drop to start a board"
             hint="or drop images and files anywhere"
             dragging={fileDrag > 0}
-            onActivate={() => void createAndOpenBoard('Untitled board')}
+            onActivate={() => void newBoard('Untitled board')}
           />
         )}
         {activeBoardId && boardIsEmpty && (
@@ -2523,10 +2583,41 @@ function BoardApp() {
                   : null
               }
               onOpen={(boardId) => void openBoard(boardId)}
-              onCreate={(name) => createAndOpenBoard(name)}
+              onCreate={(name) => newBoard(name)}
               onRename={renameBoard}
               onDelete={deleteBoard}
               onSnapshots={() => setSnapshotsOpen(true)}
+              file={boardFile}
+              canKeepFiles={isDesktop}
+              onOpenFile={() => {
+                if (!isDesktop) {
+                  boardFileInput.current?.click();
+                  return;
+                }
+                void chooseBoardFileToOpen().then((path) => {
+                  if (path) void openBoardFile(path);
+                });
+              }}
+              onSaveToFile={() => {
+                const board = boards.find((candidate) => candidate.id === activeBoardId);
+                if (!board) return;
+                void chooseBoardFileToSave(`${board.name}.ref`).then(async (path) => {
+                  if (!path) return;
+                  try {
+                    const status = await linkBoardFile(board.id, path);
+                    setBoardFile(status);
+                    setNotice({
+                      title: `Saved as ${status.path.split(/[\\/]/).pop()}`,
+                      message: 'RefThing keeps this file up to date as you work.',
+                    });
+                  } catch (error) {
+                    setNotice({
+                      title: 'Could not save the board file',
+                      message: error instanceof Error ? error.message : undefined,
+                    });
+                  }
+                });
+              }}
             />
             <span className="chrome-divider" />
             <button
@@ -2798,6 +2889,19 @@ function BoardApp() {
           const target = pendingTexture.current;
           pendingTexture.current = null;
           if (file && target) void addTexture(file, target.channel, target.ids);
+        }}
+      />
+      <input
+        ref={boardFileInput}
+        className="visually-hidden"
+        type="file"
+        accept=".ref,.pur"
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={(event) => {
+          const files = event.target.files ? [...event.target.files] : [];
+          event.target.value = '';
+          if (files.length > 0) void actions.importBoards(files);
         }}
       />
       <input

@@ -15,6 +15,11 @@ pub struct AppConfig {
     /// desktop app points this at the bundled `frontend/dist`; plain server
     /// deployments leave it unset).
     pub static_dir: Option<PathBuf>,
+    /// Where every board is kept as a `.ref` file by default (the desktop
+    /// app passes the user's Documents folder; the Settings choice, kept in
+    /// the database, overrides it). `None` — plain servers, tests — keeps
+    /// no board files unless one is asked for.
+    pub boards_dir: Option<PathBuf>,
 }
 
 impl Default for AppConfig {
@@ -24,13 +29,15 @@ impl Default for AppConfig {
             port: DEFAULT_PORT,
             data_dir: PathBuf::from(DEFAULT_DATA_DIR),
             static_dir: None,
+            boards_dir: None,
         }
     }
 }
 
 impl AppConfig {
     /// Builds a config from `REFTHING_HOST`, `REFTHING_PORT`,
-    /// `REFTHING_DATA_DIR` and `REFTHING_STATIC_DIR` environment variables,
+    /// `REFTHING_DATA_DIR`, `REFTHING_STATIC_DIR` and `REFTHING_BOARDS_DIR`
+    /// environment variables,
     /// falling back to defaults.
     ///
     /// # Errors
@@ -60,6 +67,10 @@ impl AppConfig {
 
         if let Some(dir) = lookup("REFTHING_STATIC_DIR").filter(|v| !v.is_empty()) {
             config.static_dir = Some(PathBuf::from(dir));
+        }
+
+        if let Some(dir) = lookup("REFTHING_BOARDS_DIR").filter(|v| !v.is_empty()) {
+            config.boards_dir = Some(PathBuf::from(dir));
         }
 
         Ok(config)

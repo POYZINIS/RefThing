@@ -36,13 +36,27 @@ pub fn router() -> Router<AppState> {
 async fn create_board(
     _principal: Principal,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<board_service::NewBoard>,
 ) -> AppResult<Response> {
     let name = body.name.trim();
     if name.is_empty() {
         return Err(AppError::BadRequest("name must not be empty".to_string()));
     }
+    // A folder is a path on this machine: only the app's own pages name one.
+    if body.file_folder.is_some() {
+        crate::routes::board_files::own_origin(&headers)?;
+    }
     let board = refthing_core::db::boards::create(&state.pools.write, name).await?;
+    if let Some(folder) = &body.file_folder {
+        services::ref_files::link_in_folder(
+            &state.pools,
+            &state.config.data_dir,
+            board.id,
+            std::path::Path::new(folder.trim()),
+        )
+        .await?;
+    }
     Ok((StatusCode::CREATED, Json(services::board_dto(board))).into_response())
 }
 

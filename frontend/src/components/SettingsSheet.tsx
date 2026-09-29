@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Tag } from '@/api/client';
+import { fetchBoardsFolder, setBoardsFolder, type Tag } from '@/api/client';
 import { bindings, type KeyAction } from '@/canvas/bindings';
-import { isDesktop } from '@/shell/desktop';
+import { chooseFolder, isDesktop } from '@/shell/desktop';
 import { type ThemeMode, useAppearance, type WindowResizeMode } from '@/ui/appearance';
 import { Icon } from '@/ui/Icon';
 import { enter } from '@/ui/motion';
@@ -231,6 +231,8 @@ export function SettingsSheet({ tags, onRenameTag, onDeleteTag, onClose }: Setti
           </p>
         </section>
 
+        {isDesktop && <BoardFilesSection />}
+
         {tags && (
           <section className="sheet-section" aria-labelledby="settings-tags">
             <h3 id="settings-tags">Tags</h3>
@@ -340,5 +342,60 @@ export function SettingsSheet({ tags, onRenameTag, onDeleteTag, onClose }: Setti
         </section>
       </div>
     </dialog>
+  );
+}
+
+/** Settings → Board files: where boards are kept as .ref files. */
+function BoardFilesSection() {
+  const [folder, setFolder] = useState<string | null>(null);
+  const [moving, setMoving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetchBoardsFolder()
+      .then((result) => {
+        if (alive) setFolder(result.folder);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const change = async () => {
+    const picked = await chooseFolder('Keep board files in…', folder ?? undefined);
+    if (!picked) return;
+    setMoving(true);
+    setError(null);
+    try {
+      setFolder((await setBoardsFolder(picked)).folder);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not use that folder');
+    } finally {
+      setMoving(false);
+    }
+  };
+  return (
+    <section className="sheet-section" aria-labelledby="settings-board-files">
+      <h3 id="settings-board-files">Board files</h3>
+      <div className="setting-row">
+        <span className="setting-path" title={folder ?? undefined}>
+          {/* Marks keep the path's own order inside the right-aligned ellipsis. */}
+          {`\u200e${folder ?? 'Documents'}\u200e`}
+        </span>
+        <button className="button small" type="button" disabled={moving} onClick={change}>
+          {moving ? 'Moving…' : 'Change…'}
+        </button>
+      </div>
+      <p className="setting-hint">
+        Every board is kept as a .ref file here, updated as you work — everything in it, safe if the
+        PC shuts off. Changing the folder moves the files in it; a new board asks where its file
+        goes.
+      </p>
+      {error && (
+        <p className="setting-hint error" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
   );
 }

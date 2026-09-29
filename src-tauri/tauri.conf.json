@@ -25,6 +25,15 @@
     ],
     "resources": {
       "../frontend/dist": "dist"
-    }
+    },
+    "fileAssociations": [
+      {
+        "ext": ["ref"],
+        "name": "RefThing board",
+        "description": "RefThing reference board",
+        "role": "Editor",
+        "mimeType": "application/x-refthing-board"
+      }
+    ]
   }
 }

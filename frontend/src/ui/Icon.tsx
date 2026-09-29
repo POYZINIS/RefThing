@@ -5,7 +5,9 @@ import {
   ChevronRight,
   Copy,
   Dices,
+  FileDown,
   FilePlus2,
+  FolderOpen,
   History,
   LayoutDashboard,
   type LucideIcon,
@@ -68,6 +70,8 @@ const ICONS = {
   palette: Palette,
   dice: Dices,
   compress: ArrowRightToLine,
+  openFile: FolderOpen,
+  saveFile: FileDown,
 } satisfies Record<string, LucideIcon>;
 
 export type IconName = keyof typeof ICONS;

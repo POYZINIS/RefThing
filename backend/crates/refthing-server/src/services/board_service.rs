@@ -252,6 +252,10 @@ async fn snapshot_blobs(
 #[derive(Debug, Clone, Deserialize)]
 pub struct NewBoard {
     pub name: String,
+    /// Keep the board as a `.ref` file in this folder (the app asks when a
+    /// board is created); absent, the boards folder (see `ref_files`).
+    #[serde(default)]
+    pub file_folder: Option<String>,
 }
 
 /// Board patch. `viewport_state` is a double option so an explicit `null`

@@ -15,6 +15,10 @@ tauri = { version = "2", features = [] }
 refthing-server = { path = "../backend/crates/refthing-server" }
 refthing-core = { path = "../backend/crates/refthing-core" }
 tokio = { version = "1", features = ["sync"] }
+# .ref board files: native save/open dialogs, and one running app (a
+# double-clicked file opens in the window already open, not a second server).
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
 
 [profile.release]
 lto = true

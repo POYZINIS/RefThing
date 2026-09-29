@@ -1,4 +1,5 @@
-//! Board import: a `PureRef` 2 `.pur` becomes a new `RefThing` board.
+//! Board import: a `PureRef` 2 `.pur`, or a `RefThing` `.ref` file, becomes
+//! a new `RefThing` board.
 //!
 //! Parsing and geometry live in `refthing_core::pureref`; this file commits
 //! the result through the SAME paths as an ordinary drop — every image goes
@@ -39,6 +40,9 @@ pub struct ImportResponse {
 /// Handles `POST /api/boards:import` (multipart, one `file` part).
 pub async fn import_board(state: &AppState, multipart: Multipart) -> AppResult<ImportResponse> {
     let (filename, bytes) = read_upload(multipart).await?;
+    if refthing_core::export::crypt::is_ref(&bytes) {
+        return import_ref(state, &bytes).await;
+    }
     let board = pureref::read_board(&bytes, &state.config.data_dir.join("tmp"))
         .await
         .map_err(|error| match error {
@@ -92,6 +96,31 @@ pub async fn import_board(state: &AppState, multipart: Multipart) -> AppResult<I
         images,
         notes,
         skipped: board.skipped,
+    })
+}
+
+/// An uploaded `.ref` file (dropped on the window, which gives no path to
+/// link): a new board from it, not linked to any file.
+async fn import_ref(state: &AppState, bytes: &[u8]) -> AppResult<ImportResponse> {
+    let tmp = state.config.data_dir.join("tmp");
+    tokio::fs::create_dir_all(&tmp).await?;
+    let path = tmp.join(format!("{}.ref", Uuid::now_v7()));
+    tokio::fs::write(&path, bytes).await?;
+    let imported = crate::services::ref_files::import(state, &path).await;
+    let _ = tokio::fs::remove_file(&path).await;
+    let board_id = imported?;
+    let (name, images, notes): (String, i64, i64) = sqlx::query_as(
+        "SELECT b.name,                 (SELECT COUNT(*) FROM items i WHERE i.board_id = b.id),                 (SELECT COUNT(*) FROM notes n WHERE n.board_id = b.id)          FROM boards b WHERE b.id = ?",
+    )
+    .bind(board_id)
+    .fetch_one(&state.pools.read)
+    .await?;
+    Ok(ImportResponse {
+        board_id,
+        name,
+        images: usize::try_from(images).unwrap_or(0),
+        notes: usize::try_from(notes).unwrap_or(0),
+        skipped: Vec::new(),
     })
 }
 

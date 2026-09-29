@@ -12,6 +12,7 @@ pub mod import_service;
 pub mod ingest_service;
 pub mod item_service;
 pub mod model_service;
+pub mod ref_files;
 pub mod search;
 pub mod snapshots;
 pub mod tag_service;
