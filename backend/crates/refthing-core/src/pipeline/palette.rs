@@ -136,7 +136,7 @@ mod tests {
     fn dominant_colors_returns_up_to_five() {
         let img = RgbaImage::from_fn(4, 4, |_, _| image::Rgba([255, 0, 0, 255]));
         let colors = dominant_colors(&img);
-        assert!(!colors.is_empty());
+        assert_ne!(colors.len(), 0);
         assert!(colors.len() <= PALETTE_SIZE);
         assert!(colors[0].starts_with('#'));
     }

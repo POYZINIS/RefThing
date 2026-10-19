@@ -356,7 +356,7 @@ async fn models_are_recognized_and_served_for_the_viewer() {
         .await
         .expect("model");
     assert_eq!(response.status(), 422);
-    assert!(!response.text().await.expect("reason").is_empty());
+    assert_ne!(response.text().await.expect("reason"), "");
 }
 
 #[tokio::test]

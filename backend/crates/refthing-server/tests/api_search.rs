@@ -171,7 +171,7 @@ async fn search_finds_filename() {
     assert_eq!(results.status(), 200);
     let results: Value = results.json().await.expect("search json");
     let results = results.as_array().expect("array");
-    assert!(!results.is_empty(), "expected a result for 'special'");
+    assert_ne!(results.len(), 0, "expected a result for 'special'");
     let first = &results[0];
     assert_eq!(first["item_id"], item.id.to_string());
     assert_eq!(first["kind"], "filename");
@@ -208,7 +208,7 @@ async fn search_finds_note_text() {
     assert_eq!(results.status(), 200);
     let results: Value = results.json().await.expect("search json");
     let results = results.as_array().expect("array");
-    assert!(!results.is_empty(), "expected a result for 'super_duper'");
+    assert_ne!(results.len(), 0, "expected a result for 'super_duper'");
     let first = &results[0];
     assert_eq!(first["item_id"], note.id.to_string());
     assert_eq!(first["kind"], "note");
@@ -243,7 +243,7 @@ async fn search_finds_tags() {
     assert_eq!(results.status(), 200);
     let results: Value = results.json().await.expect("search json");
     let results = results.as_array().expect("array");
-    assert!(!results.is_empty(), "expected a result for 'rare_tag'");
+    assert_ne!(results.len(), 0, "expected a result for 'rare_tag'");
     let first = &results[0];
     assert_eq!(first["item_id"], item.id.to_string());
     // The tag name is concatenated into the filename-kind row.
@@ -457,7 +457,7 @@ async fn search_handles_literal_quotes_and_returns_all_board_matches() {
             .expect("search punctuation");
         assert_eq!(response.status(), 200);
         let results: Vec<Value> = response.json().await.expect("empty search results");
-        assert!(results.is_empty());
+        assert_eq!(results.len(), 0);
     }
 }
 

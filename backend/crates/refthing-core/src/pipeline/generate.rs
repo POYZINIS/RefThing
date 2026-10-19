@@ -301,7 +301,7 @@ mod tests {
         gradient_rgb(64, 48).save(&source).expect("write png");
 
         let records = generate_pyramid(&source, HASH, dir.path()).expect("generate");
-        assert!(records.is_empty());
+        assert_eq!(records.len(), 0);
     }
 
     #[test]

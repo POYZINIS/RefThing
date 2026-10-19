@@ -440,7 +440,7 @@ async fn if_none_match_returns_304() {
         response.headers()[reqwest::header::CACHE_CONTROL],
         "public, max-age=31536000, immutable"
     );
-    assert!(response.bytes().await.expect("body").is_empty());
+    assert_eq!(response.bytes().await.expect("body").len(), 0);
 
     // A stale ETag must NOT match.
     let response = reqwest::Client::new()
