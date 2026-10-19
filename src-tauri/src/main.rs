@@ -11,7 +11,7 @@ use tauri::window::{Color, Effect, EffectsBuilder};
 
 /// Acrylic's own tint, kept faint: the page's workspace colour (with the
 /// Settings → Background opacity) does the tinting on top of the blur.
-const ACRYLIC_TINT: Color = Color(30, 34, 32, 24);
+const ACRYLIC_TINT: Color = Color(26, 31, 41, 24);
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// What the page may do with its own window. The page is served over HTTP
@@ -26,6 +26,8 @@ const WINDOW_PERMISSIONS: &[&str] = &[
     "core:window:allow-start-dragging",
     "core:window:allow-set-position",
     "core:window:allow-set-effects",
+    // Updates: check the GitHub release, download and install (signed).
+    "updater:default",
 ];
 
 /// The machine-local link shim (`.cargo/config.toml` + `backend/target/`)
@@ -103,6 +105,7 @@ fn main() {
     crt_init::run();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let config = server_config(app);
             let addr = format!("{}:{}", config.host, config.port);

@@ -15,6 +15,10 @@ tauri = { version = "2", features = [] }
 refthing-server = { path = "../backend/crates/refthing-server" }
 refthing-core = { path = "../backend/crates/refthing-core" }
 tokio = { version = "1", features = ["sync"] }
+# Updates from the GitHub releases (signed; see docs/releasing.md).
+tauri-plugin-updater = "2"
+# generate_context! reads plugin config (tauri.conf.json "plugins") through it.
+serde_json = "1"
 
 [profile.release]
 lto = true

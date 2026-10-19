@@ -33,9 +33,9 @@ Source of truth for values: `frontend/src/index.css` (tokens) and
 
 | Token | Light | Dark |
 |:--|:--|:--|
-| Workspace `--color-canvas` | `#e9ece9` pale gray-green | `#202322` charcoal-green |
-| Text `--color-text` | `#343d38` | `#d0d8d0` |
-| Accent `--color-accent` | `#527966` muted green | `#99bba3` light green |
+| Workspace `--color-canvas` | `#e3e9f3` pale blue-gray | `#1c2029` deep blue-slate |
+| Text `--color-text` | `#2f3b52` | `#cfd8e6` |
+| Accent `--color-accent` | `#3d6fb6` clear blue | `#8fb4ec` light blue |
 | Muted text | `#56625b` | `#a7b1a9` |
 | Danger | `#b3483e` | `#e0877c` |
 | Snap guide | `#c2457f` | `#e98fbd` |

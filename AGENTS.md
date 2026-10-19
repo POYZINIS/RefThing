@@ -14,6 +14,7 @@ product spec and `docs/architecture.md` for the module map.
 | Run frontend dev server | `npm run dev` |
 | Run desktop app (Tauri window) | `npm run dev:app` |
 | Build desktop app (installer) | `npm run build:app` |
+| **Release** (GitHub Actions builds, signs and publishes; installed apps update from it) | bump `src-tauri/tauri.conf.json` version, `git tag vX.Y.Z && git push origin vX.Y.Z` — see `docs/releasing.md` |
 | Frontend unit tests (transform math, commands, history, filters) | `npm test` |
 | Browser gesture tests (boots its own isolated stack on 7191/5191 with a temp data dir; set `BASE_URL` to target a running one) | `npm run test:e2e` |
 | Chrome screenshots for design review (throwaway stack only; see header) | `node frontend/e2e/shots.mjs` |

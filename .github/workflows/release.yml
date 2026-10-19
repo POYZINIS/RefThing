@@ -1,0 +1,66 @@
+name: Release
+
+# Pushing a version tag (v0.2.0) builds the Windows installer, signs the
+# update package, and publishes a GitHub release with latest.json — which
+# installed copies of RefThing check for updates. See docs/releasing.md.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    env:
+      # sqlx query! macros build against the committed offline cache.
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Tag matches the app version
+        shell: pwsh
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            Write-Error "Tag ${{ github.ref_name }} does not match tauri.conf.json version $version"
+            exit 1
+          }
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build, sign and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tauriScript: npx tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: RefThing ${{ github.ref_name }}
+          releaseBody: |
+            Download **RefThing_*_x64-setup.exe** below and run it to install RefThing (no admin rights needed).
+
+            Already installed? RefThing checks for updates when it starts — or use **Settings → Updates**.
+
+            Windows may warn that the installer is from an unknown publisher (it isn't code-signed yet): choose **More info → Run anyway**.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true

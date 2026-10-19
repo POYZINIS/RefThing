@@ -942,7 +942,7 @@ export class BoardCanvas {
     this.boxSelectGraphic.clear();
     if (w > 0 && h > 0) {
       this.boxSelectGraphic.rect(x, y, w, h);
-      const accent = themeColor('--color-accent', '#527966');
+      const accent = themeColor('--color-accent', '#3d6fb6');
       this.boxSelectGraphic.fill({ color: accent, alpha: 0.15 });
       this.boxSelectGraphic.stroke({ color: accent, alpha: 0.6, width: 1 });
     }

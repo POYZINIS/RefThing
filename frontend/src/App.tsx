@@ -94,6 +94,7 @@ import { SnapshotManager } from '@/components/SnapshotManager';
 import { OpenTarget, type Toast, Toasts } from '@/components/Toasts';
 import { WindowControls } from '@/components/WindowControls';
 import { beginWindowMove, setNativeGlass } from '@/shell/desktop';
+import { canUpdate, useUpdates } from '@/shell/updater';
 import { useBoardStore } from '@/state/boardStore';
 import {
   type Camera,
@@ -195,6 +196,14 @@ function BoardApp() {
   const [bindingsDismissed, setBindingsDismissed] = useState(false);
   // A quiet confirmation (e.g. what an imported board brought across).
   const [notice, setNotice] = useState<{ title: string; message?: string } | null>(null);
+  // Updates (installed desktop app): one quiet check shortly after startup;
+  // a newer release shows as a toast, installed only when asked.
+  const update = useUpdates();
+  useEffect(() => {
+    if (!canUpdate()) return;
+    const timer = window.setTimeout(() => void useUpdates.getState().check(true), 4000);
+    return () => window.clearTimeout(timer);
+  }, []);
   // A short confirmation ("Copied #3B82C4") that clears itself.
   const flashTimer = useRef<number | null>(null);
   const flash = (title: string) => {
@@ -1913,6 +1922,40 @@ function BoardApp() {
       title: 'bindings.toml was ignored',
       message: `The default controls are in use. ${bindingsError}`,
       onDismiss: () => setBindingsDismissed(true),
+    });
+  }
+  if (update.status === 'available' && !update.dismissed) {
+    toasts.push({
+      id: 'update',
+      kind: 'info',
+      title: `RefThing ${update.available} is available`,
+      message: 'Install it now — your boards are saved, and RefThing reopens when it’s done.',
+      action: { label: 'Install and restart', run: () => void update.install() },
+      onDismiss: update.dismiss,
+    });
+  } else if (
+    (update.status === 'downloading' || update.status === 'installing') &&
+    !update.dismissed
+  ) {
+    toasts.push({
+      id: 'update',
+      kind: 'info',
+      title:
+        update.status === 'installing'
+          ? 'Installing the update…'
+          : `Downloading RefThing ${update.available}${
+              update.progress === null ? '…' : ` — ${Math.round(update.progress * 100)}%`
+            }`,
+      onDismiss: update.dismiss,
+    });
+  } else if (update.status === 'error' && update.available && !update.dismissed) {
+    toasts.push({
+      id: 'update',
+      kind: 'error',
+      title: 'The update didn’t install',
+      message: update.error ?? undefined,
+      action: { label: 'Try again', run: () => void update.check() },
+      onDismiss: update.dismiss,
     });
   }
   if (notice) {

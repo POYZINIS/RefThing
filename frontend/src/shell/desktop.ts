@@ -42,7 +42,7 @@ if (isDesktop && typeof document !== 'undefined') {
 export function setNativeGlass(enabled: boolean): void {
   if (!desktopWindow) return;
   const done = enabled
-    ? desktopWindow.setEffects({ effects: ['acrylic'], color: [30, 34, 32, 24] })
+    ? desktopWindow.setEffects({ effects: ['acrylic'], color: [26, 31, 41, 24] })
     : desktopWindow.clearEffects();
   done.catch(() => undefined); // older Windows: no material, the solid workspace stands
 }

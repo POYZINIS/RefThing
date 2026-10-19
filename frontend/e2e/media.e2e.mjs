@@ -66,12 +66,12 @@ test('any file lands as a card that paints and opens', async () => {
   assert.equal(card.kind, 'file');
   assert.deepEqual([card.width, card.height], [200, 240], 'placed at the card size');
 
-  // The card is painted on the canvas (its dark face, CARD_BG #2b2f2d — not
+  // The card is painted on the canvas (its dark face, CARD_BG #262c38 — not
   // the board).
   const corner = await page.evaluate((nodeId) => window.__refthing.painted(nodeId), id);
   assert.ok(corner, 'painted');
   const face = await pixel(page, { x: corner.x + 6, y: corner.y + 6 });
-  assert.ok(Math.abs(face[0] - 0x2b) < 8 && Math.abs(face[2] - 0x2d) < 8, `card face ${face}`);
+  assert.ok(Math.abs(face[0] - 0x26) < 8 && Math.abs(face[2] - 0x38) < 8, `card face ${face}`);
 
   // Double-click opens the original in a new tab.
   await page.evaluate(() => {

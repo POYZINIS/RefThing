@@ -53,13 +53,13 @@ function toolTheme(): ToolTheme {
   const read = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
   theme = {
     key,
-    panel: read('--panel-solid', '#2b2f2d'),
+    panel: read('--panel-solid', '#262c38'),
     alpha: root.dataset.glass === 'off' ? 1 : TOOL_GLASS_ALPHA,
     edge: read('--panel-edge', 'rgb(255 255 255 / 18%)'),
-    text: read('--color-text', '#d0d8d0'),
-    muted: read('--color-text-muted', '#a7b1a9'),
+    text: read('--color-text', '#cfd8e6'),
+    muted: read('--color-text-muted', '#a3aec2'),
     field: read('--field-bg', 'rgb(0 0 0 / 20%)'),
-    accent: read('--color-accent', '#99bba3'),
+    accent: read('--color-accent', '#8fb4ec'),
     shadeHi: read('--tool-hi', 'rgb(255 255 255 / 11%)'),
     shadeLo: read('--shade-lo', 'rgb(0 0 0 / 42%)'),
     wellHi: read('--shade-hi', 'rgb(255 255 255 / 4%)'),

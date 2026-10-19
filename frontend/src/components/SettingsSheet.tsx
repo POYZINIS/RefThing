@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Tag } from '@/api/client';
 import { bindings, type KeyAction } from '@/canvas/bindings';
 import { isDesktop } from '@/shell/desktop';
+import { canUpdate, useUpdates } from '@/shell/updater';
 import { type ThemeMode, useAppearance, type WindowResizeMode } from '@/ui/appearance';
 import { Icon } from '@/ui/Icon';
 import { enter } from '@/ui/motion';
@@ -231,6 +232,8 @@ export function SettingsSheet({ tags, onRenameTag, onDeleteTag, onClose }: Setti
           </p>
         </section>
 
+        {canUpdate() && <UpdatesSection />}
+
         {tags && (
           <section className="sheet-section" aria-labelledby="settings-tags">
             <h3 id="settings-tags">Tags</h3>
@@ -340,5 +343,61 @@ export function SettingsSheet({ tags, onRenameTag, onDeleteTag, onClose }: Setti
         </section>
       </div>
     </dialog>
+  );
+}
+
+/** Settings → Updates: this version, a check against the GitHub releases,
+ *  and installing a newer one. */
+function UpdatesSection() {
+  const update = useUpdates();
+  // Settings shows this app's version even before any check.
+  useEffect(() => {
+    const state = useUpdates.getState();
+    if (state.status === 'idle') void state.check(true);
+  }, []);
+  const busy =
+    update.status === 'checking' ||
+    update.status === 'downloading' ||
+    update.status === 'installing';
+  const line =
+    update.status === 'checking'
+      ? 'Checking…'
+      : update.status === 'current'
+        ? 'You’re up to date.'
+        : update.status === 'available'
+          ? `Version ${update.available} is available.`
+          : update.status === 'downloading'
+            ? `Downloading ${update.available}${
+                update.progress === null ? '…' : ` — ${Math.round(update.progress * 100)}%`
+              }`
+            : update.status === 'installing'
+              ? 'Installing — RefThing will close and reopen.'
+              : update.status === 'error'
+                ? `Couldn’t check: ${update.error ?? 'unknown error'}`
+                : 'Not checked yet.';
+  return (
+    <section className="sheet-section" aria-labelledby="settings-updates">
+      <h3 id="settings-updates">Updates</h3>
+      <div className="setting-row">
+        <span>RefThing {update.current ?? ''}</span>
+        {update.status === 'available' ? (
+          <button className="button small primary" type="button" onClick={update.install}>
+            Install and restart
+          </button>
+        ) : (
+          <button
+            className="button small"
+            type="button"
+            disabled={busy}
+            onClick={() => void update.check()}
+          >
+            Check for updates
+          </button>
+        )}
+      </div>
+      <p className={`setting-hint${update.status === 'error' ? ' error' : ''}`} role="status">
+        {line}
+      </p>
+    </section>
   );
 }

@@ -4,36 +4,36 @@
 @import "@jungherz-de/glasskit/glasskit.css";
 
 /* ------------------------------------------------------------------ tokens
-   One palette in two lights (ui-design.md): a pale gray-green workspace
-   with dark green-gray text and a muted green accent, and its charcoal-green
-   dark twin. Theme switches keep identity and hierarchy; board content
+   One palette in two lights (ui-design.md): a pale blue-gray workspace
+   with dark slate-blue text and a clear blue accent, and its deep
+   blue-slate dark twin. Theme switches keep identity and hierarchy; board content
    (images, notes, cards) keeps its own colours in both.
    Light values live in @theme (Tailwind emits them on :root); the dark set
    overrides them below. Pixi reads the same tokens (canvas/theme.ts). */
 @theme {
   --font-sans: "Segoe UI", Arial, sans-serif;
 
-  --color-canvas: #e9ece9;
-  --color-sunken: #f4f6f4;
-  --color-surface: #eef1ee;
-  --color-raised: #f3f5f3;
-  --color-overlay: rgb(240 243 240 / 72%);
+  --color-canvas: #e3e9f3;
+  --color-sunken: #f3f6fa;
+  --color-surface: #edf1f7;
+  --color-raised: #f2f5f9;
+  --color-overlay: rgb(237 241 247 / 72%);
 
-  --color-line: rgb(52 61 56 / 12%);
-  --color-line-strong: rgb(52 61 56 / 22%);
-  --color-line-bold: rgb(52 61 56 / 34%);
+  --color-line: rgb(44 58 82 / 12%);
+  --color-line-strong: rgb(44 58 82 / 22%);
+  --color-line-bold: rgb(44 58 82 / 34%);
 
-  --color-text-strong: #1f2622;
-  --color-text: #343d38;
-  --color-text-muted: #56625b;
-  --color-text-subtle: #5c6862;
-  --color-text-faint: #8d9891;
+  --color-text-strong: #1a2333;
+  --color-text: #2f3b52;
+  --color-text-muted: #52617a;
+  --color-text-subtle: #5a6880;
+  --color-text-faint: #8a96aa;
 
-  --color-accent: #527966;
-  --color-accent-strong: #3f6453;
-  --color-accent-dim: #7d9b8b;
-  --color-accent-surface: rgb(82 121 102 / 13%);
-  --color-accent-line: rgb(82 121 102 / 38%);
+  --color-accent: #3d6fb6;
+  --color-accent-strong: #2c5a9c;
+  --color-accent-dim: #7b9cc9;
+  --color-accent-surface: rgb(61 111 182 / 13%);
+  --color-accent-line: rgb(61 111 182 / 38%);
 
   --color-danger: #b3483e;
   --color-danger-strong: #9c3a31;
@@ -54,7 +54,7 @@
   /* Glass panels, GlassKit's recipe: a light tint over a readability scrim,
      a luminous rim and a bright top edge, over a real blur of the board. */
   --panel-bg: linear-gradient(var(--gl-surface-1), var(--gl-surface-1)), var(--gl-state-scrim);
-  --panel-solid: #eef1ee;
+  --panel-solid: #edf1f7;
   --panel-edge: var(--gl-border-milk);
   --glass-saturate: 1.6;
   /* The right-click menu reads over busy boards: mostly solid, frosted.
@@ -69,13 +69,13 @@
   /* The colour tools' highlight: brighter than --shade-hi, which vanishes
      against their glass (ColorTextureSources.ts reads it). */
   --tool-hi: rgb(255 255 255);
-  --field-bg: rgb(52 61 56 / 6%);
-  --hover-bg: rgb(52 61 56 / 8%);
-  --press-bg: rgb(52 61 56 / 12%);
+  --field-bg: rgb(44 58 82 / 6%);
+  --hover-bg: rgb(44 58 82 / 8%);
+  --press-bg: rgb(44 58 82 / 12%);
   --shade-hi: rgb(255 255 255 / 80%);
-  --shade-lo: rgb(58 72 64 / 18%);
+  --shade-lo: rgb(52 66 92 / 18%);
   --shadow-raised: -3px -3px 8px var(--shade-hi), 4px 4px 11px var(--shade-lo);
-  --shadow-float: -4px -4px 14px var(--shade-hi), 8px 8px 28px rgb(58 72 64 / 22%),
+  --shadow-float: -4px -4px 14px var(--shade-hi), 8px 8px 28px rgb(52 66 92 / 22%),
     var(--gl-inset-strong);
   --shadow-inset: inset 2px 2px 5px var(--shade-lo), inset -2px -2px 5px var(--shade-hi);
   --sheen: rgb(255 255 255 / 35%);
@@ -118,27 +118,27 @@
 }
 
 :root[data-theme="dark"] {
-  --color-canvas: #202322;
-  --color-sunken: #1a1c1b;
-  --color-surface: #2b2f2d;
-  --color-raised: #313533;
-  --color-overlay: rgb(44 48 46 / 72%);
+  --color-canvas: #1c2029;
+  --color-sunken: #161a22;
+  --color-surface: #262c38;
+  --color-raised: #2c3340;
+  --color-overlay: rgb(38 44 56 / 72%);
 
-  --color-line: rgb(208 216 208 / 10%);
-  --color-line-strong: rgb(208 216 208 / 18%);
-  --color-line-bold: rgb(208 216 208 / 28%);
+  --color-line: rgb(200 212 232 / 10%);
+  --color-line-strong: rgb(200 212 232 / 18%);
+  --color-line-bold: rgb(200 212 232 / 28%);
 
-  --color-text-strong: #eef2ee;
-  --color-text: #d0d8d0;
-  --color-text-muted: #a7b1a9;
-  --color-text-subtle: #9aa49c;
-  --color-text-faint: #69736c;
+  --color-text-strong: #eef2f8;
+  --color-text: #cfd8e6;
+  --color-text-muted: #a3aec2;
+  --color-text-subtle: #96a2b6;
+  --color-text-faint: #657086;
 
-  --color-accent: #99bba3;
-  --color-accent-strong: #b3d1bb;
-  --color-accent-dim: #6f8f78;
-  --color-accent-surface: rgb(153 187 163 / 14%);
-  --color-accent-line: rgb(153 187 163 / 36%);
+  --color-accent: #8fb4ec;
+  --color-accent-strong: #aecbf4;
+  --color-accent-dim: #6a8bc0;
+  --color-accent-surface: rgb(143 180 236 / 14%);
+  --color-accent-line: rgb(143 180 236 / 36%);
 
   --color-danger: #e0877c;
   --color-danger-strong: #ea9a90;
@@ -149,11 +149,11 @@
   --color-guide: #e98fbd;
 
   --panel-bg: linear-gradient(var(--gl-surface-3), var(--gl-surface-3)), var(--gl-state-scrim);
-  --panel-solid: #2b2f2d;
+  --panel-solid: #262c38;
   --panel-edge: var(--gl-border-subtle);
   --field-bg: rgb(0 0 0 / 20%);
-  --hover-bg: rgb(208 216 208 / 8%);
-  --press-bg: rgb(208 216 208 / 12%);
+  --hover-bg: rgb(200 212 232 / 8%);
+  --press-bg: rgb(200 212 232 / 12%);
   --shade-hi: rgb(255 255 255 / 4%);
   --shade-lo: rgb(0 0 0 / 42%);
   --shadow-float: -3px -3px 12px var(--shade-hi), 9px 9px 30px rgb(0 0 0 / 48%),
@@ -1131,6 +1131,10 @@ button:disabled {
   opacity: 0.45;
 }
 
+.setting-hint.error {
+  color: var(--color-danger-text);
+}
+
 .setting-hint {
   margin-top: -6px;
   color: var(--color-text-subtle);
@@ -1445,7 +1449,7 @@ kbd {
 }
 
 .board-context-menu .menu-choices .menu-swatch.auto {
-  background: linear-gradient(135deg, #f4f6f4 50%, #1f2622 50%);
+  background: linear-gradient(135deg, #f3f6fa 50%, #1a2333 50%);
 }
 
 .board-context-menu .menu-choices .menu-swatch[aria-checked="true"] {
@@ -2260,7 +2264,7 @@ body.orbiting-view * {
   pointer-events: none;
   transform-origin: center;
   --media-glass: rgb(16 20 18 / 58%);
-  --media-ink: #f4f6f4;
+  --media-ink: #f3f6fa;
 }
 
 .media-control {
@@ -2371,7 +2375,7 @@ body.orbiting-view * {
   bottom: 0;
   left: 50%;
   width: 2px;
-  background: #f4f6f4;
+  background: #f3f6fa;
   box-shadow:
     0 0 0 1px rgb(16 20 18 / 55%),
     0 0 8px rgb(0 0 0 / 35%);
@@ -2392,7 +2396,7 @@ body.orbiting-view * {
   left: 50%;
   width: 0;
   height: 0;
-  border-top: 8px solid #f4f6f4;
+  border-top: 8px solid #f3f6fa;
   border-right: 6px solid transparent;
   border-left: 6px solid transparent;
   filter: drop-shadow(0 1px 2px rgb(0 0 0 / 45%));
@@ -2406,7 +2410,7 @@ body.orbiting-view * {
   left: calc(50% + 7px);
   padding: 2px 6px;
   border-radius: 5px;
-  color: #f4f6f4;
+  color: #f3f6fa;
   background: rgb(16 20 18 / 78%);
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
