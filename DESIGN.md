@@ -1,8 +1,7 @@
 # RefThing — design system
 
-Adapted from `ui-design.md` (a reading app) to a reference
-board. The reading app gives the document nearly the whole window and a few soft
-floating controls handle the rest; RefThing does the same with the board.
+The board gets nearly the whole window, and a few soft floating controls
+handle the rest.
 Source of truth for values: `frontend/src/index.css` (tokens) and
 `frontend/src/ui/Icon.tsx` (icons).
 

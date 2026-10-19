@@ -1,5 +1,5 @@
 //! Router composition with the middleware discipline from the Phase 2 design:
-//! CORS outermost, then tracing; `TimeoutLayer` + `CompressionLayer` ONLY on
+//! tracing outermost, then the local-only guard (`local_only.rs`, no CORS); `TimeoutLayer` + `CompressionLayer` ONLY on
 //! the JSON API router — never on WS (kills connections), ingest (kills slow
 //! uploads), or blob routes (wasted CPU on pre-compressed bytes).
 
@@ -9,7 +9,6 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::{Router, routing::get};
 use tower_http::compression::CompressionLayer;
-use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
@@ -60,24 +59,28 @@ pub fn build_router(state: AppState) -> Router {
     // at this server directly.
     let static_dir = state.config.static_dir.clone();
 
-    let app = Router::new()
+    // Every request — API, WebSocket, blobs, the app's own page files —
+    // passes the local-only guard (local_only.rs: no other site, no DNS
+    // rebinding). No CORS headers: the app's pages are same-origin.
+    let guard_state = state.clone();
+    let mut app = Router::new()
         .merge(json_api)
         .merge(ingest)
         .merge(board_files)
         .merge(realtime)
         .merge(blobs)
-        .with_state(state)
-        // Layers added last run first: CORS is outermost, then tracing.
-        // To add auth later, insert one `.layer(auth_layer)` here.
-        .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive());
-
+        .with_state(state);
     if let Some(static_dir) = static_dir {
         let index = static_dir.join("index.html");
-        app.fallback_service(ServeDir::new(static_dir).fallback(ServeFile::new(index)))
-    } else {
-        app
+        app = app.fallback_service(ServeDir::new(static_dir).fallback(ServeFile::new(index)));
     }
+    // Layers added last run first: tracing is outermost (it sees refusals
+    // too), then the guard.
+    app.layer(axum::middleware::from_fn_with_state(
+        guard_state,
+        crate::local_only::guard,
+    ))
+    .layer(TraceLayer::new_for_http())
 }
 
 async fn health(

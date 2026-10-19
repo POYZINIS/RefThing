@@ -6,4 +6,3 @@ data/
 
 # Machine-local cargo config (no-MSVC link shim on this box)
 .cargo/
-

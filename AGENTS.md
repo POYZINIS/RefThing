@@ -66,6 +66,9 @@ data/               local state (SQLite DB, uploads) — NEVER commit
 - **React owns UI chrome only and NEVER renders the canvas.** PixiJS
   mounts once into `#canvas-host` and is updated imperatively.
 - Ports: backend API **7171**, Vite dev server **5173**, sidecar **7272**.
+- **The server answers only local pages** (`refthing-server/src/local_only.rs`:
+  foreign `Origin` or `Host` → 403, no CORS). Never add a CORS layer; files a
+  browser could run as a page are served sandboxed. See `SECURITY.md`.
 - `data/` holds local state (SQLite database, uploaded files). It is
   gitignored and must **never be committed**.
 - The root **`.cargo/config.toml` is machine-local (gitignored) and

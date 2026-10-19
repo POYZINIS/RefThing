@@ -37,7 +37,10 @@ const WINDOW_PERMISSIONS: &[&str] = &[
 /// replaces the MSVC CRT startup, so static initializers in the
 /// `.CRT$XC*`/`.CRT$XI*` sections never run. tao records the main thread ID in
 /// one (`.CRT$XCU`) and panics without it — run them manually at startup.
-#[cfg(windows)]
+// Only for a build linked through that shim (its machine-local cargo config
+// passes `--cfg refthing_link_shim`): a normal MSVC build — every release —
+// has already run the initializers, and must not run them twice.
+#[cfg(all(windows, refthing_link_shim))]
 mod crt_init {
     #[unsafe(link_section = ".CRT$XCA")]
     #[used]
@@ -132,7 +135,7 @@ fn wait_for_server(addr: &str, timeout: Duration) -> Result<(), String> {
 }
 
 fn main() {
-    #[cfg(windows)]
+    #[cfg(all(windows, refthing_link_shim))]
     crt_init::run();
 
     tauri::Builder::default()
@@ -194,7 +197,7 @@ fn main() {
             app.add_capability(capability)?;
 
             // Frameless and transparent: the page draws its own window
-            // controls and drag strip (ui-design.md), and the workspace shows
+            // controls and drag strip (DESIGN.md), and the workspace shows
             // Acrylic through it when glass is on — a real blur of whatever
             // is behind the window (Mica only tints from the wallpaper). The
             // page turns the effect off with the glass setting.

@@ -76,7 +76,11 @@ Linking works through a shim that lives entirely inside
    `ucrtshim.o`, a no-op `atexit`, built from `ucrtshim.rs`), which satisfy
    the loader's `/DEFAULTLIB` directives.
 
-6. `stdioshim.o` — a no-op `fprintf` (build from `stdioshim.rs` like
+6. The config also passes `--cfg=refthing_link_shim`: it compiles
+   `src-tauri`'s `crt_init` (running the CRT initializers this shim skips).
+   Normal MSVC builds — every release — leave it out, since their CRT has
+   already run them.
+7. `stdioshim.o` — a no-op `fprintf` (build from `stdioshim.rs` like
    `stubs.rs`, wired as a link arg in `.cargo/config.toml`). Tauri's
    static-vcruntime link drops `msvcrt.lib`, which supplied `fprintf`;
    libwebp's animation encoder (unused) still references it.

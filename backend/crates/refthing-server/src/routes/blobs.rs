@@ -328,6 +328,24 @@ async fn reenqueue_pyramid(state: &AppState, hash: &str, blob: &Blob) {
     }
 }
 
+/// Media a browser only ever displays (never runs): images other than SVG,
+/// video, audio, PDF, 3D models, fonts, plain text. Everything else is
+/// served sandboxed.
+fn passive_media(mime: &str) -> bool {
+    let mime = mime
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    (mime.starts_with("image/") && !mime.contains("svg"))
+        || mime.starts_with("video/")
+        || mime.starts_with("audio/")
+        || mime.starts_with("model/")
+        || mime.starts_with("font/")
+        || matches!(mime.as_str(), "application/pdf" | "text/plain")
+}
+
 /// Streams the blob in [`READ_CHUNK`] pieces; the file handle travels with the
 /// stream so the whole file is never resident in memory.
 fn stream_response<R>(file: R, etag: &str, mime_type: &str, byte_size: i64) -> Response
@@ -362,6 +380,15 @@ where
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    // Anything a browser could run as a page (HTML, SVG, XML, scripts —
+    // a dropped file opened from its card) runs sandboxed: no scripts, and
+    // an opaque origin, so it can't act as RefThing (or reach its API).
+    if !passive_media(mime_type) {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'"),
+        );
+    }
     headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     // `hash` comes from a registered blob row, so it is always 64-char hex.
     if let Ok(value) = HeaderValue::from_str(etag) {
@@ -417,6 +444,33 @@ fn if_none_match_matches(headers: &HeaderMap, etag: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pages_are_sandboxed_media_is_not() {
+        for passive in [
+            "image/png",
+            "image/webp",
+            "video/mp4",
+            "audio/mpeg",
+            "application/pdf",
+            "model/gltf-binary",
+            "text/plain",
+        ] {
+            assert!(passive_media(passive), "{passive}");
+        }
+        for active in [
+            "text/html",
+            "image/svg+xml",
+            "application/xml",
+            "text/xml",
+            "application/xhtml+xml",
+            "text/javascript",
+            "application/octet-stream",
+            "TEXT/HTML; charset=utf-8",
+        ] {
+            assert!(!passive_media(active), "{active}");
+        }
+    }
 
     fn range(value: &str, size: u64) -> RangeRequest {
         let mut headers = HeaderMap::new();

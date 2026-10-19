@@ -286,7 +286,7 @@ async fn only_refthing_pages_may_name_paths() {
         .send()
         .await
         .expect("request");
-    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
     assert!(!path.exists());
 
     let response = app
@@ -297,7 +297,7 @@ async fn only_refthing_pages_may_name_paths() {
         .send()
         .await
         .expect("request");
-    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -472,4 +472,56 @@ async fn changing_the_boards_folder_moves_its_files() {
     let status = file_status(&app, &board_id).await;
     assert_eq!(status["saved"], true);
     assert!(status["path"].as_str().unwrap().contains("Second"));
+}
+
+#[tokio::test]
+async fn other_sites_and_dns_rebinding_are_refused_everywhere() {
+    let app = spawn_app().await;
+    let board_id = board_with_an_image(&app).await;
+    let get = |path: &str| app.client.get(format!("{}{path}", app.base_url));
+
+    // The app's own requests pass.
+    let ok = get("/api/boards").send().await.expect("boards");
+    assert!(ok.status().is_success());
+    let ok = get("/api/boards")
+        .header("Origin", "http://127.0.0.1:7171")
+        .send()
+        .await
+        .expect("own page");
+    assert!(ok.status().is_success());
+
+    // Another site's page: refused, reads and writes alike, and no CORS
+    // header that would let a browser hand it the response.
+    let read = get("/api/boards")
+        .header("Origin", "https://evil.example")
+        .send()
+        .await
+        .expect("foreign read");
+    assert_eq!(read.status(), reqwest::StatusCode::FORBIDDEN);
+    assert!(read.headers().get("access-control-allow-origin").is_none());
+    let delete = app
+        .client
+        .delete(format!("{}/api/boards/{board_id}", app.base_url))
+        .header("Origin", "https://evil.example")
+        .send()
+        .await
+        .expect("foreign delete");
+    assert_eq!(delete.status(), reqwest::StatusCode::FORBIDDEN);
+    assert!(
+        get(&format!("/api/boards/{board_id}"))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success(),
+        "still there"
+    );
+
+    // DNS rebinding: a foreign Host reaching loopback.
+    let rebound = get("/api/boards")
+        .header("Host", "evil.example:7171")
+        .send()
+        .await
+        .expect("rebound");
+    assert_eq!(rebound.status(), reqwest::StatusCode::FORBIDDEN);
 }

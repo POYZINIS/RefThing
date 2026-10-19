@@ -4,7 +4,7 @@
 @import "@jungherz-de/glasskit/glasskit.css";
 
 /* ------------------------------------------------------------------ tokens
-   One palette in two lights (ui-design.md): a pale blue-gray workspace
+   One palette in two lights: a pale blue-gray workspace
    with dark slate-blue text and a clear blue accent, and its deep
    blue-slate dark twin. Theme switches keep identity and hierarchy; board content
    (images, notes, cards) keeps its own colours in both.
@@ -82,7 +82,7 @@
   --grain-opacity: 0.07;
   --window-close: #c42b1c;
 
-  /* Geometry: one radius per scale (ui-design.md). */
+  /* Geometry: one radius per scale (DESIGN.md). */
   --radius-button: 7px;
   --radius-group: 12px;
   --radius-sheet: 14px;
