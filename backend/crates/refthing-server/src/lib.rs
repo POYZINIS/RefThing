@@ -92,6 +92,14 @@ pub async fn run_with_shutdown(
     jobs.spawn_workers(&job_ctx, workers);
     tracing::info!(workers, "job workers started");
 
+    // Linked `.ref` files are kept written in the background, and flushed
+    // once more at shutdown (below).
+    let ref_sync = services::ref_files::RefSync::spawn(
+        pools.clone(),
+        config.data_dir.clone(),
+        config.boards_dir.clone(),
+    );
+
     let state = AppState {
         config: Arc::new(config),
         auth_token: Arc::from(Uuid::now_v7().to_string()),
@@ -112,6 +120,7 @@ pub async fn run_with_shutdown(
         .with_graceful_shutdown(shutdown)
         .await?;
 
+    ref_sync.flush().await;
     Ok(())
 }
 

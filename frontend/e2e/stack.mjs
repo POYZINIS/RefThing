@@ -55,7 +55,14 @@ export async function globalSetup() {
     }
   }
   dataDir = mkdtempSync(join(tmpdir(), 'refthing-e2e-'));
-  const env = { ...process.env, REFTHING_PORT: String(API_PORT), REFTHING_DATA_DIR: dataDir };
+  // No automatic board files: tests never write .ref files into a real
+  // folder (the desktop app is what keeps boards in Documents).
+  const env = {
+    ...process.env,
+    REFTHING_PORT: String(API_PORT),
+    REFTHING_DATA_DIR: dataDir,
+    REFTHING_BOARDS_DIR: '',
+  };
   start(
     'cargo',
     [

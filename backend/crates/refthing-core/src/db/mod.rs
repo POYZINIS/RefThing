@@ -68,7 +68,10 @@ pub async fn connect(path: &Path) -> Result<Pools, CoreError> {
         .filename(path)
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Normal)
+        // FULL: every commit is on disk before it returns. WAL's NORMAL can
+        // lose the last commits to a power cut; with no save button, an
+        // edit the app showed as done must survive one.
+        .synchronous(SqliteSynchronous::Full)
         .busy_timeout(Duration::from_secs(5))
         .foreign_keys(true);
 

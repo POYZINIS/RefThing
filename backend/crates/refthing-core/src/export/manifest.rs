@@ -25,6 +25,21 @@ pub struct Manifest {
     pub exported_at: DateTime<Utc>,
     pub board: ManifestBoard,
     pub blobs: Vec<ManifestBlob>,
+    /// Ready preview levels of those blobs (`blob_derivatives` rows); their
+    /// files ride along as `deriv/<hash>/<file>` entries. Absent in plain
+    /// backups, which regenerate previews instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derivatives: Vec<ManifestDerivative>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ManifestDerivative {
+    pub blob_hash: String,
+    pub level: String,
+    pub width: i64,
+    pub height: i64,
+    pub byte_size: i64,
+    pub format: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

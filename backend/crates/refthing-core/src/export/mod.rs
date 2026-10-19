@@ -1,4 +1,4 @@
-//! Board export/import archives (`*.refthing.zip`).
+//! Board export/import archives (`*.refthing.zip`) and `.ref` board files.
 //!
 //! An archive is a zip containing a deflated `manifest.json` (see
 //! [`manifest`]) plus one `blobs/<full-hash>` entry per referenced blob,
@@ -7,12 +7,19 @@
 //! rebuilds it under freshly generated ids, so the same archive can be
 //! imported any number of times without id collisions and with blob bytes
 //! deduplicated by content hash.
+//!
+//! A `.ref` file ([`write_ref_file`], [`import_ref_file`]) is the same
+//! archive, plus every blob's ready previews (`deriv/<hash>/<file>`, so an
+//! opened board shows at once instead of re-processing), behind the fast
+//! encryption layer in [`crypt`]. It is written crash-safely: to a temp file
+//! beside the target, synced to disk, then renamed over it.
 
+pub mod crypt;
 mod manifest;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -26,9 +33,19 @@ use crate::db::Pools;
 use crate::models::{Blob, Board, Group, Item, Note, Tag};
 
 pub use manifest::{
-    MANIFEST_FORMAT, MANIFEST_FORMAT_VERSION, Manifest, ManifestBlob, ManifestBoard, ManifestGroup,
-    ManifestItem, ManifestItemTag, ManifestNote, ManifestTag,
+    MANIFEST_FORMAT, MANIFEST_FORMAT_VERSION, Manifest, ManifestBlob, ManifestBoard,
+    ManifestDerivative, ManifestGroup, ManifestItem, ManifestItemTag, ManifestNote, ManifestTag,
 };
+
+use crypt::CryptFile;
+
+/// Where blob files and their previews live (`<data_dir>/blobs`,
+/// `<data_dir>/deriv`).
+#[derive(Debug, Clone, Copy)]
+pub struct Stores<'a> {
+    pub blobs: &'a Path,
+    pub derivatives: &'a Path,
+}
 
 const MANIFEST_ENTRY_NAME: &str = "manifest.json";
 
@@ -77,6 +94,23 @@ fn blob_entry_name(hash: &str) -> String {
     format!("blobs/{hash}")
 }
 
+/// A blob's preview folder: `<root>/ab/cd/<hash>/` (pyramid levels, a
+/// converted model, a media poster's levels).
+fn derivative_dir(root: &Path, hash: &str) -> PathBuf {
+    root.join(&hash[..2]).join(&hash[2..4]).join(hash)
+}
+
+/// A preview file name is one plain name: no separators, no `..`, nothing
+/// hidden — archives come from other machines.
+fn safe_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && name.len() <= 128
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+}
+
 /// Lowercases and validates a manifest/blob-store hash (64 hex chars).
 fn canonical_hash(hash: &str) -> Result<String, ExportError> {
     let hash = hash.to_ascii_lowercase();
@@ -99,6 +133,7 @@ struct BoardSnapshot {
     tags: Vec<Tag>,
     item_tag_rows: Vec<(Uuid, Uuid)>,
     blobs: Vec<Blob>,
+    derivatives: Vec<ManifestDerivative>,
 }
 
 /// Exports one board to `<blob_store_root>/../exports/<name>-<id8>.refthing.zip`
@@ -129,21 +164,24 @@ pub async fn export_board(
 }
 
 async fn fetch_snapshot(pools: &Pools, board_id: Uuid) -> Result<BoardSnapshot, ExportError> {
+    // One read transaction: a consistent snapshot even while edits land
+    // (the `.ref` sync writes boards that are being worked on).
+    let mut tx = pools.read.begin().await?;
     let board = sqlx::query_as::<_, Board>("SELECT * FROM boards WHERE id = ?")
         .bind(board_id)
-        .fetch_optional(&pools.read)
+        .fetch_optional(&mut *tx)
         .await?
         .ok_or(ExportError::BoardNotFound(board_id))?;
 
     let groups = sqlx::query_as::<_, Group>("SELECT * FROM groups WHERE board_id = ? ORDER BY id")
         .bind(board_id)
-        .fetch_all(&pools.read)
+        .fetch_all(&mut *tx)
         .await?;
 
     let items =
         sqlx::query_as::<_, Item>("SELECT * FROM items WHERE board_id = ? ORDER BY z_index, id")
             .bind(board_id)
-            .fetch_all(&pools.read)
+            .fetch_all(&mut *tx)
             .await?;
 
     let metadata_rows = sqlx::query_as::<_, (Uuid, serde_json::Value)>(
@@ -151,12 +189,12 @@ async fn fetch_snapshot(pools: &Pools, board_id: Uuid) -> Result<BoardSnapshot, 
          WHERE item_id IN (SELECT id FROM items WHERE board_id = ?)",
     )
     .bind(board_id)
-    .fetch_all(&pools.read)
+    .fetch_all(&mut *tx)
     .await?;
 
     let notes = sqlx::query_as::<_, Note>("SELECT * FROM notes WHERE board_id = ? ORDER BY id")
         .bind(board_id)
-        .fetch_all(&pools.read)
+        .fetch_all(&mut *tx)
         .await?;
 
     let tags = sqlx::query_as::<_, Tag>(
@@ -166,7 +204,7 @@ async fn fetch_snapshot(pools: &Pools, board_id: Uuid) -> Result<BoardSnapshot, 
          WHERE i.board_id = ? GROUP BY t.id ORDER BY t.id",
     )
     .bind(board_id)
-    .fetch_all(&pools.read)
+    .fetch_all(&mut *tx)
     .await?;
 
     let item_tag_rows = sqlx::query_as::<_, (Uuid, Uuid)>(
@@ -175,7 +213,7 @@ async fn fetch_snapshot(pools: &Pools, board_id: Uuid) -> Result<BoardSnapshot, 
          WHERE i.board_id = ? ORDER BY it.item_id, it.tag_id",
     )
     .bind(board_id)
-    .fetch_all(&pools.read)
+    .fetch_all(&mut *tx)
     .await?;
 
     // The items' own blobs, and the textures 3D models refer to from their
@@ -192,8 +230,37 @@ async fn fetch_snapshot(pools: &Pools, board_id: Uuid) -> Result<BoardSnapshot, 
          ) ORDER BY b.hash",
     )
     .bind(board_id)
-    .fetch_all(&pools.read)
+    .fetch_all(&mut *tx)
     .await?;
+
+    let derivatives = sqlx::query_as::<_, (String, String, i64, i64, i64, String)>(
+        "SELECT d.blob_hash, d.level, d.width, d.height, d.byte_size, d.format \
+         FROM blob_derivatives d WHERE d.status = 'ready' AND d.blob_hash IN ( \
+             SELECT i.blob_id FROM items i \
+             WHERE i.board_id = ?1 AND i.blob_id IS NOT NULL \
+             UNION \
+             SELECT t.value FROM items i \
+             JOIN item_metadata m ON m.item_id = i.id, \
+                  json_each(m.json, '$.model.textures') t \
+             WHERE i.board_id = ?1 AND t.type = 'text' \
+         ) ORDER BY d.blob_hash, d.level",
+    )
+    .bind(board_id)
+    .fetch_all(&mut *tx)
+    .await?
+    .into_iter()
+    .map(
+        |(blob_hash, level, width, height, byte_size, format)| ManifestDerivative {
+            blob_hash,
+            level,
+            width,
+            height,
+            byte_size,
+            format,
+        },
+    )
+    .collect();
+    tx.commit().await?;
 
     Ok(BoardSnapshot {
         board,
@@ -204,6 +271,7 @@ async fn fetch_snapshot(pools: &Pools, board_id: Uuid) -> Result<BoardSnapshot, 
         tags,
         item_tag_rows,
         blobs,
+        derivatives,
     })
 }
 
@@ -293,6 +361,7 @@ fn build_manifest(snapshot: &BoardSnapshot) -> Manifest {
                 height: blob.height,
             })
             .collect(),
+        derivatives: snapshot.derivatives.clone(),
     }
 }
 
@@ -330,7 +399,20 @@ fn write_archive(
     if let Some(parent) = archive_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut zip = ZipWriter::new(fs::File::create(archive_path)?);
+    let file = BufWriter::new(fs::File::create(archive_path)?);
+    write_archive_into(file, blob_store_root, None, manifest)?;
+    Ok(())
+}
+
+/// Writes the archive into `writer`; with `derivatives`, each blob's
+/// preview folder rides along. Returns the writer, flushed.
+fn write_archive_into<W: Write + Seek>(
+    writer: W,
+    blob_store_root: &Path,
+    derivatives: Option<&Path>,
+    manifest: &Manifest,
+) -> Result<W, ExportError> {
+    let mut zip = ZipWriter::new(writer);
 
     let manifest_json = serde_json::to_vec_pretty(manifest)?;
     zip.start_file(
@@ -347,7 +429,206 @@ fn write_archive(
         std::io::copy(&mut file, &mut zip)?;
     }
 
-    zip.finish()?;
+    if let Some(root) = derivatives {
+        let hashes: HashSet<&str> = manifest
+            .derivatives
+            .iter()
+            .map(|row| row.blob_hash.as_str())
+            .collect();
+        for hash in hashes {
+            let hash = canonical_hash(hash)?;
+            let dir = derivative_dir(root, &hash);
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            let mut names: Vec<String> = entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .filter(|name| safe_file_name(name))
+                .collect();
+            names.sort();
+            for name in names {
+                zip.start_file(format!("deriv/{hash}/{name}"), blob_options)?;
+                let mut file = fs::File::open(dir.join(&name))?;
+                std::io::copy(&mut file, &mut zip)?;
+            }
+        }
+    }
+
+    let mut writer = zip.finish()?;
+    writer.flush()?;
+    Ok(writer)
+}
+
+/// Writes board `board_id` to the `.ref` file at `target` — its media, its
+/// previews, everything — crash-safely: into a temp file beside it, synced
+/// to disk, then renamed over `target`, so a power cut mid-write leaves the
+/// previous file whole.
+///
+/// # Errors
+/// As [`export_board`], plus the I/O errors of writing `target`.
+pub async fn write_ref_file(
+    pools: &Pools,
+    stores: Stores<'_>,
+    board_id: Uuid,
+    target: &Path,
+) -> Result<(), ExportError> {
+    let snapshot = fetch_snapshot(pools, board_id).await?;
+    for blob in &snapshot.blobs {
+        if !blob_path(stores.blobs, &blob.hash).is_file() {
+            return Err(ExportError::BlobFileMissing(blob.hash.clone()));
+        }
+    }
+    let manifest = build_manifest(&snapshot);
+    let blobs = stores.blobs.to_path_buf();
+    let derivatives = stores.derivatives.to_path_buf();
+    let target = target.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        write_ref_blocking(&manifest, &blobs, &derivatives, &target)
+    })
+    .await??;
+    Ok(())
+}
+
+fn write_ref_blocking(
+    manifest: &Manifest,
+    blobs: &Path,
+    derivatives: &Path,
+    target: &Path,
+) -> Result<(), ExportError> {
+    let dir = target
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(dir)?;
+    let name = target.file_name().map_or_else(
+        || "board".into(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let temp = dir.join(format!(".{name}.{}.saving", Uuid::now_v7()));
+    let written = (|| -> Result<(), ExportError> {
+        let file = fs::File::create(&temp)?;
+        let crypt = CryptFile::create(BufWriter::new(file), *Uuid::now_v7().as_bytes())?;
+        let crypt = write_archive_into(crypt, blobs, Some(derivatives), manifest)?;
+        let file = crypt
+            .into_inner()
+            .into_inner()
+            .map_err(|error| ExportError::Io(error.into_error()))?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temp);
+        return Err(error);
+    }
+    replace_file(&temp, target).inspect_err(|_| {
+        let _ = fs::remove_file(&temp);
+    })?;
+    Ok(())
+}
+
+/// Renames `from` over `to` (replacing it), retrying briefly while another
+/// program (a sync client, antivirus) holds `to` open.
+fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt < 20 && error.kind() == std::io::ErrorKind::PermissionDenied => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50 * attempt));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Opens the `.ref` file at `path` as a brand-new board (as
+/// [`import_board`]: fresh ids, blobs deduplicated), bringing its previews
+/// into the preview store so the board shows at once.
+///
+/// # Errors
+/// [`ExportError::InvalidArchive`] when `path` isn't a `.ref` file (or is
+/// from a newer version), and as [`import_board`] otherwise.
+pub async fn import_ref_file(
+    pools: &Pools,
+    stores: Stores<'_>,
+    path: &Path,
+) -> Result<Uuid, ExportError> {
+    let blobs = stores.blobs.to_path_buf();
+    let derivatives = stores.derivatives.to_path_buf();
+    let path = path.to_path_buf();
+    let manifest = tokio::task::spawn_blocking(move || {
+        let file = BufReader::new(fs::File::open(&path)?);
+        let crypt = CryptFile::open(file).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::InvalidData {
+                ExportError::InvalidArchive(error.to_string())
+            } else {
+                ExportError::Io(error)
+            }
+        })?;
+        let mut archive = ZipArchive::new(BufReader::new(crypt))?;
+        let manifest = stage_from(&mut archive, &blobs)?;
+        stage_derivatives(&mut archive, &manifest, &derivatives)?;
+        Ok::<_, ExportError>(manifest)
+    })
+    .await??;
+    validate_references(&manifest)?;
+    insert_board(pools, &manifest).await
+}
+
+/// Copies the archive's preview files into the preview store (missing ones
+/// only), each through a synced temp file.
+fn stage_derivatives<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    manifest: &Manifest,
+    root: &Path,
+) -> Result<(), ExportError> {
+    let known: HashSet<String> = manifest
+        .blobs
+        .iter()
+        .map(|blob| blob.hash.to_ascii_lowercase())
+        .collect();
+    let names: Vec<String> = archive
+        .file_names()
+        .filter(|name| name.starts_with("deriv/"))
+        .map(str::to_string)
+        .collect();
+    for name in names {
+        let mut parts = name["deriv/".len()..].splitn(2, '/');
+        let (Some(hash), Some(file_name)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let hash = canonical_hash(hash)?;
+        if !known.contains(&hash) || !safe_file_name(file_name) {
+            return Err(ExportError::InvalidArchive(format!(
+                "unexpected preview entry {name:?}"
+            )));
+        }
+        let dir = derivative_dir(root, &hash);
+        let target = dir.join(file_name);
+        if target.is_file() {
+            continue;
+        }
+        fs::create_dir_all(&dir)?;
+        let temp = dir.join(format!(".{file_name}.{}.part", Uuid::now_v7()));
+        let copied = (|| -> Result<(), ExportError> {
+            let mut entry = archive.by_name(&name)?;
+            let mut out = fs::File::create(&temp)?;
+            std::io::copy(&mut entry, &mut out)?;
+            out.sync_all()?;
+            Ok(())
+        })();
+        if let Err(error) = copied {
+            let _ = fs::remove_file(&temp);
+            return Err(error);
+        }
+        if fs::rename(&temp, &target).is_err() {
+            // Placed meanwhile (same content-addressed name): keep that one.
+            let _ = fs::remove_file(&temp);
+        }
+    }
     Ok(())
 }
 
@@ -380,12 +661,19 @@ pub async fn import_board(
 /// Reads the manifest, verifies every blob entry against its stated SHA-256,
 /// and stages blobs missing from the store — all before any database write.
 fn stage_archive(archive_path: &Path, blob_store_root: &Path) -> Result<Manifest, ExportError> {
-    let mut archive = ZipArchive::new(fs::File::open(archive_path)?)?;
-    let manifest = read_manifest(&mut archive)?;
+    let mut archive = ZipArchive::new(BufReader::new(fs::File::open(archive_path)?))?;
+    stage_from(&mut archive, blob_store_root)
+}
+
+fn stage_from<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    blob_store_root: &Path,
+) -> Result<Manifest, ExportError> {
+    let manifest = read_manifest(archive)?;
     validate_manifest_header(&manifest)?;
 
     for blob in &manifest.blobs {
-        verify_blob_entry(&mut archive, blob)?;
+        verify_blob_entry(archive, blob)?;
     }
     for blob in &manifest.blobs {
         let hash = canonical_hash(&blob.hash)?;
@@ -398,7 +686,7 @@ fn stage_archive(archive_path: &Path, blob_store_root: &Path) -> Result<Manifest
     Ok(manifest)
 }
 
-fn read_manifest(archive: &mut ZipArchive<fs::File>) -> Result<Manifest, ExportError> {
+fn read_manifest<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Manifest, ExportError> {
     let entry = archive
         .by_name(MANIFEST_ENTRY_NAME)
         .map_err(|_| ExportError::InvalidArchive("archive has no manifest.json".to_string()))?;
@@ -418,8 +706,8 @@ fn validate_manifest_header(manifest: &Manifest) -> Result<(), ExportError> {
     Ok(())
 }
 
-fn verify_blob_entry(
-    archive: &mut ZipArchive<fs::File>,
+fn verify_blob_entry<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
     blob: &ManifestBlob,
 ) -> Result<(), ExportError> {
     let hash = canonical_hash(&blob.hash)?;
@@ -460,7 +748,10 @@ fn stage_blob(root: &Path, hash: &str, mut reader: impl Read) -> Result<(), Expo
     let tmp_dir = root.join("tmp");
     fs::create_dir_all(&tmp_dir)?;
     let tmp_path = tmp_dir.join(format!("{}.part", Uuid::now_v7()));
-    let copy = fs::File::create(&tmp_path).and_then(|mut out| std::io::copy(&mut reader, &mut out));
+    let copy = fs::File::create(&tmp_path).and_then(|mut out| {
+        std::io::copy(&mut reader, &mut out)?;
+        out.sync_all()
+    });
     if let Err(error) = copy {
         let _ = fs::remove_file(&tmp_path);
         return Err(error.into());
@@ -556,6 +847,7 @@ async fn insert_board(pools: &Pools, manifest: &Manifest) -> Result<Uuid, Export
 
     let group_ids = insert_groups(&mut tx, board_id, &manifest.board.groups).await?;
     insert_blobs(&mut tx, &manifest.blobs).await?;
+    insert_derivatives(&mut tx, manifest).await?;
     let item_ids = insert_items(&mut tx, board_id, &group_ids, &manifest.board.items).await?;
     insert_notes(&mut tx, board_id, &manifest.board.notes).await?;
     let tag_ids = insert_tags(&mut tx, &manifest.board.tags).await?;
@@ -620,6 +912,40 @@ async fn insert_blobs(
         .bind(blob.byte_size)
         .bind(blob.width)
         .bind(blob.height)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Ready preview rows for the blobs, where the store has no row yet (a blob
+/// already known here keeps its own). A generated level whose file didn't
+/// come across is left out — the preview job makes it instead.
+async fn insert_derivatives(
+    tx: &mut Transaction<'_, Sqlite>,
+    manifest: &Manifest,
+) -> Result<(), ExportError> {
+    let known: HashSet<String> = manifest
+        .blobs
+        .iter()
+        .map(|blob| blob.hash.to_ascii_lowercase())
+        .collect();
+    for row in &manifest.derivatives {
+        let hash = canonical_hash(&row.blob_hash)?;
+        if !known.contains(&hash) {
+            continue;
+        }
+        sqlx::query(
+            "INSERT OR IGNORE INTO blob_derivatives \
+             (blob_hash, level, width, height, byte_size, format, status) \
+             VALUES (?, ?, ?, ?, ?, ?, 'ready')",
+        )
+        .bind(&hash)
+        .bind(&row.level)
+        .bind(row.width)
+        .bind(row.height)
+        .bind(row.byte_size)
+        .bind(&row.format)
         .execute(&mut **tx)
         .await?;
     }
@@ -1154,6 +1480,87 @@ mod tests {
             let bytes = fs::read(blob_path(&root_b, &hash)).expect("imported blob file");
             assert_eq!(bytes, content);
         }
+    }
+
+    #[tokio::test]
+    async fn ref_file_round_trip_carries_media_previews_and_is_encrypted() {
+        let (dir_a, pools_a, root_a) = test_env().await;
+        let board_id = seed_board(&pools_a, &root_a).await;
+        // A ready preview for blob A, with its file.
+        let hash_a = sha256_hex(BLOB_A);
+        let deriv_a = dir_a.path().join("deriv");
+        fs::create_dir_all(derivative_dir(&deriv_a, &hash_a)).expect("deriv dir");
+        fs::write(
+            derivative_dir(&deriv_a, &hash_a).join("thumb.webp"),
+            b"thumb bytes",
+        )
+        .expect("thumb");
+        sqlx::query(
+            "INSERT INTO blob_derivatives (blob_hash, level, width, height, byte_size, format, status)              VALUES (?, 'thumb', 64, 48, 11, 'image/webp', 'ready')",
+        )
+        .bind(&hash_a)
+        .execute(&pools_a.write)
+        .await
+        .expect("derivative row");
+
+        let target = dir_a.path().join("out").join("My board.ref");
+        let stores_a = Stores {
+            blobs: &root_a,
+            derivatives: &deriv_a,
+        };
+        write_ref_file(&pools_a, stores_a, board_id, &target)
+            .await
+            .expect("write");
+        let bytes = fs::read(&target).expect("read file");
+        assert!(crypt::is_ref(&bytes));
+        for needle in [
+            &b"manifest.json"[..],
+            BLOB_A,
+            b"thumb bytes",
+            b"refthing-board",
+        ] {
+            assert!(
+                !bytes.windows(needle.len()).any(|window| window == needle),
+                "nothing readable in the file"
+            );
+        }
+        // Rewriting leaves no temp files behind and replaces the old file.
+        write_ref_file(&pools_a, stores_a, board_id, &target)
+            .await
+            .expect("rewrite");
+        let left: Vec<_> = fs::read_dir(target.parent().unwrap()).unwrap().collect();
+        assert_eq!(left.len(), 1, "only the .ref itself");
+
+        let (dir_b, pools_b, root_b) = test_env().await;
+        let deriv_b = dir_b.path().join("deriv");
+        let stores_b = Stores {
+            blobs: &root_b,
+            derivatives: &deriv_b,
+        };
+        let new_board = import_ref_file(&pools_b, stores_b, &target)
+            .await
+            .expect("open");
+        assert_boards_equal(&pools_a, board_id, &pools_b, new_board).await;
+        assert_eq!(
+            fs::read(derivative_dir(&deriv_b, &hash_a).join("thumb.webp")).expect("preview"),
+            b"thumb bytes"
+        );
+        let (status,): (String,) = sqlx::query_as(
+            "SELECT status FROM blob_derivatives WHERE blob_hash = ? AND level = 'thumb'",
+        )
+        .bind(&hash_a)
+        .fetch_one(&pools_b.read)
+        .await
+        .expect("preview row");
+        assert_eq!(status, "ready");
+
+        // Not a .ref file: a clear error, nothing written.
+        let plain = dir_a.path().join("plain.ref");
+        fs::write(&plain, b"PK not ours").expect("write plain");
+        assert!(matches!(
+            import_ref_file(&pools_b, stores_b, &plain).await,
+            Err(ExportError::InvalidArchive(_))
+        ));
     }
 
     #[tokio::test]

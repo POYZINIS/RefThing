@@ -188,6 +188,9 @@ async fn stream_to_tmp(
         }
     }
     file.flush().await?;
+    // On disk before it's renamed into place: a power cut must never leave
+    // a complete-looking name over missing bytes.
+    file.sync_all().await?;
     drop(file);
 
     let hash = format!("{:x}", hasher.finalize());

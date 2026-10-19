@@ -18,6 +18,7 @@ async fn spawn_app(static_dir: Option<std::path::PathBuf>) -> (String, tempfile:
         port: 0,
         data_dir: dir.path().to_path_buf(),
         static_dir,
+        boards_dir: None,
     };
     let pools = db::connect(&dir.path().join("refthing.db"))
         .await

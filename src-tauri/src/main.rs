@@ -12,7 +12,7 @@ use tauri::window::{Color, Effect, EffectsBuilder};
 /// Acrylic's own tint, kept faint: the page's workspace colour (with the
 /// Settings → Background opacity) does the tinting on top of the blur.
 const ACRYLIC_TINT: Color = Color(26, 31, 41, 24);
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// What the page may do with its own window. The page is served over HTTP
 /// (the embedded server, or Vite in dev), so Tauri treats it as a REMOTE
@@ -28,6 +28,9 @@ const WINDOW_PERMISSIONS: &[&str] = &[
     "core:window:allow-set-effects",
     // Updates: check the GitHub release, download and install (signed).
     "updater:default",
+    // `.ref` board files: where to save one, which one to open.
+    "dialog:allow-save",
+    "dialog:allow-open",
 ];
 
 /// The machine-local link shim (`.cargo/config.toml` + `backend/target/`)
@@ -57,10 +60,36 @@ mod crt_init {
     }
 }
 
-/// Sender that stops the embedded axum server when the app exits.
-struct ServerShutdown(Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
+/// Stops the embedded server when the app exits, and hears when it's done
+/// (its last job is writing any linked `.ref` file that's behind).
+struct ServerLife {
+    shutdown: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    done: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+
+/// How long closing waits for the server to finish writing board files.
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A `.ref` file among the launch arguments (a double-click in Explorer).
+fn board_file_arg(args: &[String]) -> Option<String> {
+    args.iter()
+        .skip(1)
+        .find(|arg| {
+            std::path::Path::new(arg)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("ref"))
+        })
+        .cloned()
+}
 
 fn server_config(app: &tauri::App) -> AppConfig {
+    // Every board is kept as a .ref file, by default in Documents\RefThing
+    // (created on first write; Settings → Board files changes it).
+    let boards_dir = app
+        .path()
+        .document_dir()
+        .ok()
+        .map(|documents| documents.join("RefThing"));
     // `cfg!(dev)` is on for `tauri dev` builds (the CLI drops default
     // features) and off for release builds. (NOT `tauri::is_dev()` — that
     // only reflects the custom-protocol feature.)
@@ -68,6 +97,7 @@ fn server_config(app: &tauri::App) -> AppConfig {
         // Dev shares the repo's working database; Vite serves the frontend.
         AppConfig {
             data_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../data"),
+            boards_dir,
             ..AppConfig::default()
         }
     } else {
@@ -79,6 +109,7 @@ fn server_config(app: &tauri::App) -> AppConfig {
         AppConfig {
             static_dir,
             data_dir,
+            boards_dir,
             ..AppConfig::default()
         }
     }
@@ -105,19 +136,37 @@ fn main() {
     crt_init::run();
 
     tauri::Builder::default()
+        // First: a second launch (another .ref double-clicked) hands its
+        // file to this window and exits, instead of starting a second server.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                if let Some(path) = board_file_arg(&args) {
+                    window.emit("open-board-file", path).ok();
+                }
+                window.unminimize().ok();
+                window.set_focus().ok();
+            }
+        }))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let config = server_config(app);
             let addr = format!("{}:{}", config.host, config.port);
             let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-            app.manage(ServerShutdown(Mutex::new(Some(tx))));
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            app.manage(ServerLife {
+                shutdown: Mutex::new(Some(tx)),
+                done: Mutex::new(Some(done_rx)),
+            });
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let shutdown = async move {
                     rx.await.ok();
                 };
-                if let Err(error) = refthing_server::run_with_shutdown(config, shutdown).await {
+                let result = refthing_server::run_with_shutdown(config, shutdown).await;
+                done_tx.send(()).ok();
+                if let Err(error) = result {
                     eprintln!("embedded server failed: {error:#}");
                     handle.exit(1);
                 }
@@ -149,7 +198,13 @@ fn main() {
             // Acrylic through it when glass is on — a real blur of whatever
             // is behind the window (Mica only tints from the wallpaper). The
             // page turns the effect off with the glass setting.
-            let url = WebviewUrl::External(origin.parse().expect("app url"));
+            // Launched by opening a .ref file: the page opens it (?open=).
+            let mut url: tauri::Url = origin.parse().expect("app url");
+            let args: Vec<String> = std::env::args().collect();
+            if let Some(path) = board_file_arg(&args) {
+                url.query_pairs_mut().append_pair("open", &path);
+            }
+            let url = WebviewUrl::External(url);
             WebviewWindowBuilder::new(app, "main", url)
                 .title("RefThing")
                 .inner_size(1440.0, 900.0)
@@ -173,13 +228,36 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("failed to build the RefThing app")
-        .run(|app, event| {
-            if let tauri::RunEvent::Exit = event
-                && let Some(shutdown) = app.try_state::<ServerShutdown>()
-                && let Some(tx) = shutdown.0.lock().ok().and_then(|mut slot| slot.take())
-            {
-                // Best-effort graceful stop; the process exits right after.
+        .run(|app, event| match event {
+            // Closing: stop the server and wait for it to finish — it writes
+            // any linked .ref file that's behind — then exit. (Everything is
+            // already saved in the database; this keeps the files current.)
+            tauri::RunEvent::ExitRequested { code: None, api, .. } => {
+                let Some(life) = app.try_state::<ServerLife>() else {
+                    return;
+                };
+                let Some(tx) = life.shutdown.lock().ok().and_then(|mut slot| slot.take()) else {
+                    return;
+                };
+                api.prevent_exit();
                 tx.send(()).ok();
+                let done = life.done.lock().ok().and_then(|mut slot| slot.take());
+                let handle = app.clone();
+                std::thread::spawn(move || {
+                    if let Some(done) = done {
+                        done.recv_timeout(FLUSH_TIMEOUT).ok();
+                    }
+                    handle.exit(0);
+                });
             }
+            tauri::RunEvent::Exit => {
+                // Any other way out: best-effort stop.
+                if let Some(life) = app.try_state::<ServerLife>()
+                    && let Some(tx) = life.shutdown.lock().ok().and_then(|mut slot| slot.take())
+                {
+                    tx.send(()).ok();
+                }
+            }
+            _ => {}
         });
 }

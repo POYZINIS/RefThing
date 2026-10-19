@@ -51,6 +51,7 @@ async fn spawn_app() -> TestApp {
             port: 0,
             data_dir,
             static_dir: None,
+            boards_dir: None,
         }),
         auth_token: Arc::from("test-token"),
         pools,

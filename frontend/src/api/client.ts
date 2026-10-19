@@ -264,11 +264,12 @@ export function findDuplicates(boardId: string): Promise<SearchResult[]> {
   return request<SearchResult[]>(`/api/boards/${boardId}/duplicates`);
 }
 
-export function createBoard(name: string): Promise<Board> {
+/** A new board; with `fileFolder` (desktop), kept as a `.ref` file there. */
+export function createBoard(name: string, fileFolder?: string): Promise<Board> {
   return request<Board>('/api/boards', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(fileFolder ? { name, file_folder: fileFolder } : { name }),
   });
 }
 
@@ -347,7 +348,7 @@ export interface ImportResult {
   skipped: string[];
 }
 
-/** A board file from another app (PureRef 2 `.pur`) → a new board. */
+/** A board file (RefThing's `.ref`, or PureRef 2's `.pur`) → a new board. */
 export function importBoard(file: File): Promise<ImportResult> {
   const form = new FormData();
   form.append('file', file, file.name);
@@ -370,7 +371,66 @@ export function uploadTexture(file: File): Promise<StoredBlob> {
 }
 
 /** Board files RefThing imports whole, as new boards. */
-export const isBoardFile = (file: File) => /\.pur$/i.test(file.name);
+export const isBoardFile = (file: File) => /\.(ref|pur)$/i.test(file.name);
+
+/** A board's `.ref` file on disk, which RefThing keeps written in the
+ *  background (everything is saved to the database as it happens; this is
+ *  the board as a file of its own). */
+export interface BoardFileStatus {
+  path: string;
+  /** The file holds the board as it is now. */
+  saved: boolean;
+  /** Why the last write failed, until one succeeds. */
+  error: string | null;
+}
+
+export function fetchBoardFile(boardId: string): Promise<BoardFileStatus | null> {
+  return request<BoardFileStatus | null>(`/api/boards/${boardId}/file`);
+}
+
+/** Keep board `boardId` in the `.ref` file at `path` (written now). */
+export function linkBoardFile(boardId: string, path: string): Promise<BoardFileStatus> {
+  return request<BoardFileStatus>(`/api/boards/${boardId}/file`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+}
+
+/** Where boards are kept as `.ref` files (Settings → Board files); null
+ *  when boards get files only when asked (the browser build). */
+export function fetchBoardsFolder(): Promise<{ folder: string | null }> {
+  return request<{ folder: string | null }>('/api/settings/boards-folder');
+}
+
+/** A new boards folder: new boards go there, and the files in the previous
+ *  one move with it. */
+export function setBoardsFolder(folder: string): Promise<{ folder: string | null }> {
+  return request<{ folder: string | null }>('/api/settings/boards-folder', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ folder }),
+  });
+}
+
+export interface OpenedBoardFile {
+  board_id: string;
+  name: string;
+  /** It was already this board's file (opened again). */
+  reused: boolean;
+}
+
+/** Open the `.ref` file at `path` (desktop): its board, kept in it. */
+export function openBoardFile(path: string): Promise<OpenedBoardFile> {
+  return request<OpenedBoardFile>('/api/boards:open-file', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+}
+
+/** The board as a `.ref` download (the browser, which can't keep a file). */
+export const boardDownloadUrl = (boardId: string) => `/api/boards/${boardId}/download.ref`;
 
 export function blobUrl(hash: string, level = 'full'): string {
   return `/blob/${hash}/${level}`;

@@ -37,6 +37,9 @@ sqlx = { version = "0.8.6", features = [
 uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
+# .ref board files: AES-128-CTR (hardware AES; random access for zip).
+aes = "0.8"
+ctr = "0.9"
 infer = "0.16"
 zip = "=2.4.2" # EXACT pin — the zip crate churned majors 2.x -> 8.x in 2025
 tempfile = "3"

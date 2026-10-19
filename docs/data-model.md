@@ -32,6 +32,8 @@ are set, `null` deletes a key, all other keys are kept — so a client never
 wipes pipeline data.
 | `tags` / `item_tags` | Case-insensitive unique tag names (`UNIQUE COLLATE NOCASE`) plus the many-to-many join table. |
 | `blobs` | One row per unique file content, keyed by its SHA-256 hex hash: original filename, sniffed MIME, byte size, pixel dimensions. Content-addressing gives dedup for free. |
+| `app_settings` | Key → value settings the server needs (migration 0011); `boards_folder` is Settings → Board files. |
+| `board_files` | A board linked to a `.ref` file on disk (migration 0010): the path (unique, case-insensitive), the change token the file last got, its size / mtime as written, and the last write error. See "`.ref` board files" below. |
 
 Key indexes: `items(board_id, z_index)` is the hot paint-order scan;
 partial indexes on `items(group_id)` and `items(blob_id)` serve group
@@ -109,13 +111,60 @@ This is an additive migration: no backfill, no rewrite of existing rows,
 and it can be indexed on demand. Display-only fields stay in the JSON
 payload forever.
 
+## Saving: every edit, durably, as it happens
+
+There is no save button. Every edit is committed to SQLite the moment it's
+made, with `synchronous = FULL` (migrations run first, then every commit is
+on disk before it returns — a power cut can't lose an edit the app showed
+as done; WAL's `NORMAL` could lose the last few). New blob and preview
+files are synced to disk before they're renamed into place.
+
+## `.ref` board files
+
+A `.ref` file is one board, whole: the zip archive below (`manifest.json` +
+every blob), plus each blob's ready previews (`deriv/<hash>/<file>` with
+their `blob_derivatives` rows in the manifest's `derivatives` list — an
+opened board shows at once instead of regenerating), behind a small header
+and AES-128-CTR (`refthing-core/src/export/crypt.rs`):
+
+```text
+0..8    b"REFBOARD"    8..10  version u16 LE (1)    10..12  reserved
+12..28  IV (fresh per write)    28..  AES-128-CTR(zip)
+```
+
+CTR has random access, so the zip reader and writer see plaintext through
+a `Read`/`Write` + `Seek` wrapper — no temp copy — and AES runs on the CPU's
+AES instructions, far faster than the disk. The key ships in the app: the
+contents are opaque to anything but RefThing, not secret from someone
+determined (there is no password to lose).
+
+Every board is kept in a file. The boards folder is the Settings choice
+(`app_settings.boards_folder`), else the app's default — the desktop app
+passes `<Documents>\RefThing`, created on first write (`AppConfig::boards_dir`); plain servers and
+tests have none, so boards there get files only when asked. The sync gives
+a board without a file `<folder>/<name>.ref` (`<name> (2).ref` when taken —
+never another file's name); a board created in the app asks for its folder
+first (`POST /api/boards` `file_folder`). Changing the folder in Settings
+moves the files in the old one (each written anew, then the old removed).
+
+A board's file is kept written in the
+background (`refthing-server/src/services/ref_files.rs`): about 1.5 s after
+the board goes quiet, at least every 10 s while edits keep coming, and once
+more at shutdown (the desktop app waits for it before exiting). Each write
+goes to a temp file beside the target, is synced, then renamed over it — a
+crash mid-write leaves the previous file whole, and the database still has
+everything for the next write. Opening a `.ref` that is still exactly what
+RefThing last wrote finds its board again; any other `.ref` (a copy, a file
+changed elsewhere) opens as a new board, linked from then on. A dropped
+`.ref` (no path) imports as an unlinked board.
+
 ## Backup warning: zip export is the ONLY supported backup path
 
 The database runs in WAL mode, so live data sits in `refthing.db-wal`
 (and `-shm`) alongside `refthing.db`. **Copying `refthing.db` alone
 produces a stale or corrupt backup.** The supported way to back up or
 move a board is the Phase 1 zip export (`manifest.json` + deduplicated
-blobs, hashes verified on import). Never treat a file copy of the
+blobs, hashes verified on import) — or its `.ref` form above. Never treat a file copy of the
 database as a backup.
 
 ## Blob hash algorithm: SHA-256, locked

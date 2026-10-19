@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import type { BoardSummary } from '@/api/client';
+import { type BoardFileStatus, type BoardSummary, boardDownloadUrl } from '@/api/client';
 import { Icon } from '@/ui/Icon';
 import { Popover } from '@/ui/Popover';
 
@@ -13,7 +13,16 @@ type BoardSwitcherProps = {
   onRename: (boardId: string, name: string) => Promise<void>;
   onDelete: (boardId: string) => Promise<void>;
   onSnapshots: () => void;
+  /** The open board's `.ref` file, when it's kept in one (desktop). */
+  file: BoardFileStatus | null;
+  /** The desktop keeps boards in files; the browser downloads them. */
+  canKeepFiles: boolean;
+  onOpenFile: () => void;
+  onSaveToFile: () => void;
 };
+
+/** "C:\\Boards\\Moodboard.ref" → "Moodboard.ref". */
+const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
 const itemsLabel = (count: number) => `${count} ${count === 1 ? 'item' : 'items'}`;
 
@@ -31,6 +40,10 @@ export function BoardSwitcher({
   onRename,
   onDelete,
   onSnapshots,
+  file,
+  canKeepFiles,
+  onOpenFile,
+  onSaveToFile,
 }: BoardSwitcherProps) {
   const anchor = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
@@ -205,8 +218,54 @@ export function BoardSwitcher({
               Create
             </button>
           </form>
-          {activeBoardId && (
-            <div className="popover-footer">
+          {activeBoardId && file && (
+            <div
+              className={`board-file-status${file.error ? ' failed' : ''}`}
+              title={file.error ?? file.path}
+              role="status"
+            >
+              <Icon name={file.error ? 'alert' : 'check'} size={14} />
+              <span>
+                {file.error
+                  ? `Couldn’t write ${fileName(file.path)} — retrying`
+                  : file.saved
+                    ? `Saved in ${fileName(file.path)}`
+                    : `Saving to ${fileName(file.path)}…`}
+              </span>
+            </div>
+          )}
+          <div className="popover-footer board-file-actions">
+            <button
+              className="text-action"
+              type="button"
+              onClick={() => {
+                close();
+                onOpenFile();
+              }}
+            >
+              <Icon name="openFile" size={16} />
+              Open board file…
+            </button>
+            {activeBoardId &&
+              (canKeepFiles ? (
+                <button
+                  className="text-action"
+                  type="button"
+                  onClick={() => {
+                    close();
+                    onSaveToFile();
+                  }}
+                >
+                  <Icon name="saveFile" size={16} />
+                  {file ? 'Move file…' : 'Save as .ref file…'}
+                </button>
+              ) : (
+                <a className="text-action" href={boardDownloadUrl(activeBoardId)} download>
+                  <Icon name="saveFile" size={16} />
+                  Download .ref
+                </a>
+              ))}
+            {activeBoardId && (
               <button
                 className="text-action"
                 type="button"
@@ -218,8 +277,8 @@ export function BoardSwitcher({
                 <Icon name="history" size={16} />
                 Snapshots…
               </button>
-            </div>
-          )}
+            )}
+          </div>
         </Popover>
       )}
     </>
