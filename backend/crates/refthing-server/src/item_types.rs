@@ -124,12 +124,25 @@ impl ItemTypeHandler for AudioHandler {
         mime.starts_with("audio/")
     }
     async fn probe(&self, path: &Path) -> Option<Probe> {
-        let info = ffprobe(path).await?;
-        // A waveform strip: the poster job renders it at this shape.
+        // The length from ffprobe, else from the container itself (no ffmpeg
+        // needed for the common formats).
+        let metadata = if let Some(info) = ffprobe(path).await {
+            duration_of(&info)
+        } else {
+            let path = path.to_path_buf();
+            let seconds = tokio::task::spawn_blocking(move || {
+                refthing_core::pipeline::waveform::audio_duration(&path, None)
+            })
+            .await
+            .ok()
+            .flatten();
+            seconds.map_or_else(|| json!({}), |duration| json!({ "duration": duration }))
+        };
+        // The waveform tile: the poster job renders it at this shape.
         Some(Probe {
-            width: 1600,
-            height: 400,
-            metadata: duration_of(&info),
+            width: refthing_core::pipeline::waveform::TILE_WIDTH,
+            height: refthing_core::pipeline::waveform::TILE_HEIGHT,
+            metadata,
         })
     }
     fn placement(&self, _probe: Option<&Probe>) -> (f64, f64) {
@@ -206,10 +219,11 @@ pub const GLTF_MIME: &str = "model/gltf+json";
 pub const FBX_MIME: &str = "model/x-fbx";
 pub const BLEND_MIME: &str = "application/x-blender";
 
-/// The general sniffer (`infer`) knows no 3D formats: recognize them by
-/// magic bytes, then — for files it could only call generic (ASCII FBX,
-/// glTF JSON, compressed .blend) — by extension. Anything else keeps the
-/// sniffed type.
+/// The general sniffer (`infer`) knows no 3D formats, and some audio ones
+/// (CAF, `WavPack`, TTA, Musepack, Sun AU): recognize them by magic bytes,
+/// then — for files it could only call generic (ASCII FBX, glTF JSON,
+/// compressed .blend, AC-3, DTS) — by extension. Anything else keeps the
+/// sniffed type. (Audio in a video container: [`audio_container_mime`].)
 #[must_use]
 pub fn refine_mime(sniffed: &str, filename: Option<&str>, head: &[u8]) -> String {
     if head.starts_with(b"glTF") {
@@ -220,6 +234,13 @@ pub fn refine_mime(sniffed: &str, filename: Option<&str>, head: &[u8]) -> String
     }
     if head.starts_with(b"BLENDER") {
         return BLEND_MIME.to_string();
+    }
+    if !sniffed.starts_with("audio/") {
+        for (magic, mime) in AUDIO_MAGIC {
+            if head.starts_with(magic) {
+                return (*mime).to_string();
+            }
+        }
     }
     let generic = matches!(
         sniffed,
@@ -239,8 +260,44 @@ pub fn refine_mime(sniffed: &str, filename: Option<&str>, head: &[u8]) -> String
         (true, Some("fbx")) => FBX_MIME.to_string(),
         (true, Some("gltf")) => GLTF_MIME.to_string(),
         (true, Some("glb")) => GLB_MIME.to_string(),
+        (true, Some(extension)) => AUDIO_EXTENSIONS
+            .iter()
+            .find(|(known, _)| *known == extension)
+            .map_or_else(|| sniffed.to_string(), |(_, mime)| (*mime).to_string()),
         _ => sniffed.to_string(),
     }
+}
+
+/// Audio containers `infer` doesn't know, by their opening bytes.
+const AUDIO_MAGIC: &[(&[u8], &str)] = &[
+    (b"caff", "audio/x-caf"),
+    (b"wvpk", "audio/x-wavpack"),
+    (b"TTA1", "audio/x-tta"),
+    (b"MPCK", "audio/x-musepack"),
+    (b".snd", "audio/basic"),
+];
+
+/// Audio with no reliable magic (raw AC-3 / DTS streams), and audio-only
+/// Matroska / `WebM` / ASF named as such, when the sniffer found nothing.
+const AUDIO_EXTENSIONS: &[(&str, &str)] = &[
+    ("ac3", "audio/ac3"),
+    ("eac3", "audio/eac3"),
+    ("dts", "audio/vnd.dts"),
+    ("mka", "audio/x-matroska"),
+    ("weba", "audio/webm"),
+    ("wma", "audio/x-ms-wma"),
+    ("ra", "audio/x-pn-realaudio"),
+];
+
+/// A file the sniffer called a video by its container (Matroska/WebM, MP4,
+/// ASF) whose track list holds audio and no video: its audio type.
+/// Reads the file's header (blocking — run off the async workers).
+#[must_use]
+pub fn audio_container_mime(sniffed: &str, path: &Path) -> Option<&'static str> {
+    let family = refthing_core::media::Family::of_video_mime(sniffed)?;
+    let mut file = std::fs::File::open(path).ok()?;
+    let tracks = refthing_core::media::tracks(family, &mut file).ok()?;
+    (tracks.audio && !tracks.video).then(|| family.audio_mime(sniffed == "video/webm"))
 }
 
 // ------------------------------------------------------------------ ffmpeg
@@ -329,6 +386,57 @@ mod tests {
             "image/png"
         );
         assert_eq!(refine_mime(octet, Some("notes.txt"), b"hello"), octet);
+    }
+
+    #[test]
+    fn recognizes_audio_the_sniffer_misses() {
+        let octet = "application/octet-stream";
+        assert_eq!(
+            refine_mime(octet, Some("a.caf"), b"caff\0\x01"),
+            "audio/x-caf"
+        );
+        assert_eq!(
+            refine_mime(octet, None, b"wvpk\x20\0\0\0"),
+            "audio/x-wavpack"
+        );
+        assert_eq!(
+            refine_mime(octet, Some("Mix.AC3"), &[0x0B, 0x77]),
+            "audio/ac3"
+        );
+        assert_eq!(
+            refine_mime(octet, Some("x.weba"), b"\x1a\x45"),
+            "audio/webm"
+        );
+        assert_eq!(handler_for("audio/ac3").item_type(), "audio");
+        // A sniffed type stands; an unknown extension changes nothing.
+        assert_eq!(
+            refine_mime("audio/mpeg", Some("a.ac3"), b"ID3"),
+            "audio/mpeg"
+        );
+        assert_eq!(refine_mime(octet, Some("a.xyz"), b"\0\0"), octet);
+    }
+
+    #[test]
+    fn audio_only_containers_are_audio_and_videos_stay_videos() {
+        let fixture = |name: &str| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../refthing-core/tests/fixtures/media")
+                .join(name)
+        };
+        let check = |sniffed, name| audio_container_mime(sniffed, &fixture(name));
+        assert_eq!(check("video/webm", "tone.weba"), Some("audio/webm"));
+        assert_eq!(check("video/webm", "tone.mka"), Some("audio/webm"));
+        assert_eq!(
+            check("video/x-matroska", "tone.mka"),
+            Some("audio/x-matroska")
+        );
+        assert_eq!(check("video/x-ms-wmv", "tone.wma"), Some("audio/x-ms-wma"));
+        assert_eq!(check("video/mp4", "tone-audio-only.mp4"), Some("audio/mp4"));
+        assert_eq!(check("video/webm", "clip.webm"), None);
+        assert_eq!(check("video/mp4", "clip.mp4"), None);
+        assert_eq!(check("video/x-ms-wmv", "clip.wmv"), None);
+        // Not a container we read: untouched.
+        assert_eq!(check("audio/mpeg", "tone.mp3"), None);
     }
 
     #[test]

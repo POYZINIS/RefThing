@@ -74,7 +74,9 @@ export interface BlobInfo {
   width: number | null;
   height: number | null;
   created_at: number;
-  levels: Record<string, { width: number; height: number }>;
+  /** `rev`: the renderer revision that made a level (absent: 0) — part of
+   *  a poster's URL, so a redrawn one never shows from cache. */
+  levels: Record<string, { width: number; height: number; rev?: number }>;
 }
 
 export interface Tag {

@@ -108,10 +108,13 @@ automatically when you `cd` into the repo. Node **24+** is required (Node
 
 ## Optional but recommended
 
-- **ffmpeg** (with ffprobe): video frame posters, audio waveforms and
-  media durations (Phase 11). Without it, video and audio still import;
-  they just draw as cards. If it isn't on `PATH`, point
-  `REFTHING_FFMPEG` / `REFTHING_FFPROBE` at the binaries.
+- **ffmpeg** (with ffprobe): video frame posters and durations (Phase 11),
+  and waveforms for the few audio codecs RefThing doesn't decode itself
+  (WMA, AC-3, AMR …). Audio waveforms otherwise need nothing: WAV, AIFF,
+  CAF, FLAC, MP3, Ogg (Vorbis, Opus), M4A/AAC, ALAC and Matroska/WebM are
+  decoded in-process. Without ffmpeg, everything still imports; video just
+  draws as a card. If it isn't on `PATH`, point `REFTHING_FFMPEG` /
+  `REFTHING_FFPROBE` at the binaries.
 
   ```powershell
   winget install Gyan.FFmpeg

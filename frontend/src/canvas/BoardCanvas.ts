@@ -550,8 +550,8 @@ export class BoardCanvas {
         const error = view ? null : this.modelTextures.error(node.id);
         texture = view ?? card(error ? { ...node, detail: `Can't open · ${error}` } : node);
       } else if (node.kind === 'video' || node.kind === 'audio') {
-        // The poster once it's resident; the card until then (or forever
-        // without ffmpeg).
+        // The poster once it's resident; the card until then (or for good
+        // when nothing could read the file — a video without ffmpeg).
         const poster = node.poster ? this.pyramidTextures.poster(node, this.levelFor(node)) : null;
         texture = poster ?? card(node);
       } else {

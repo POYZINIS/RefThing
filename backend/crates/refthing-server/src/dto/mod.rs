@@ -128,6 +128,16 @@ pub struct SearchResult {
 pub struct BlobLevel {
     pub width: i64,
     pub height: i64,
+    /// The renderer revision that made it (`blob_derivatives.rev`; 0 left
+    /// out): clients put it in the level's URL, so a redrawn poster is never
+    /// shown from cache.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rev: i64,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if takes a reference
+fn is_zero(value: &i64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,6 +298,7 @@ mod tests {
                 BlobLevel {
                     width: 64,
                     height: 64,
+                    rev: 0,
                 },
             )]),
         });

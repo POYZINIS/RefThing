@@ -68,7 +68,7 @@ type Entry = { key: string; texture: Texture };
 
 /**
  * Paints generic cards (plan Phase 11): files always, and video/audio until
- * their poster exists (or when ffmpeg isn't installed). A card is a sprite
+ * their poster exists (or when none can be made). A card is a sprite
  * like any other node — same scene graph, z-order and culling — whose
  * texture is drawn from the filename and a detail line.
  */

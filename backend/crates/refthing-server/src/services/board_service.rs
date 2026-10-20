@@ -147,8 +147,8 @@ pub(crate) async fn blob_info(
     else {
         return Ok(None);
     };
-    let rows: Vec<(String, Option<i64>, Option<i64>)> = sqlx::query_as(
-        "SELECT level, width, height FROM blob_derivatives \
+    let rows: Vec<(String, Option<i64>, Option<i64>, i64)> = sqlx::query_as(
+        "SELECT level, width, height, rev FROM blob_derivatives \
          WHERE blob_hash = ? AND status = 'ready'",
     )
     .bind(hash)
@@ -157,12 +157,13 @@ pub(crate) async fn blob_info(
     .map_err(|error| core_err(&error))?;
     let mut levels: HashMap<String, BlobLevel> = rows
         .into_iter()
-        .filter_map(|(level, width, height)| {
+        .filter_map(|(level, width, height, rev)| {
             Some((
                 level,
                 BlobLevel {
                     width: width?,
                     height: height?,
+                    rev,
                 },
             ))
         })
@@ -170,7 +171,14 @@ pub(crate) async fn blob_info(
     if !levels.contains_key("full")
         && let (Some(width), Some(height)) = (blob.width, blob.height)
     {
-        levels.insert("full".to_string(), BlobLevel { width, height });
+        levels.insert(
+            "full".to_string(),
+            BlobLevel {
+                width,
+                height,
+                rev: 0,
+            },
+        );
     }
     Ok(Some(dto::BlobInfo {
         hash: blob.hash,
@@ -183,6 +191,9 @@ pub(crate) async fn blob_info(
         levels,
     }))
 }
+
+/// A ready derivative row: blob hash, level, width, height, rev.
+type LevelRow = (String, String, Option<i64>, Option<i64>, i64);
 
 /// Blobs referenced by the board's items. `levels` holds every `ready`
 /// `blob_derivatives` level (`thumb`/`small`/`medium`/`full`), falling back
@@ -203,8 +214,8 @@ async fn snapshot_blobs(
     .map_err(|error| core_err(&error))?;
 
     // blob_hash → level → dims, one query for the whole board.
-    let derivative_rows: Vec<(String, String, Option<i64>, Option<i64>)> = sqlx::query_as(
-        "SELECT DISTINCT d.blob_hash, d.level, d.width, d.height \
+    let derivative_rows: Vec<LevelRow> = sqlx::query_as(
+        "SELECT DISTINCT d.blob_hash, d.level, d.width, d.height, d.rev \
          FROM blob_derivatives d JOIN items i ON i.blob_id = d.blob_hash \
          WHERE i.board_id = ? AND d.status = 'ready'",
     )
@@ -213,12 +224,12 @@ async fn snapshot_blobs(
     .await
     .map_err(|error| core_err(&error))?;
     let mut derivative_levels: HashMap<String, HashMap<String, BlobLevel>> = HashMap::new();
-    for (hash, level, width, height) in derivative_rows {
+    for (hash, level, width, height, rev) in derivative_rows {
         if let (Some(width), Some(height)) = (width, height) {
             derivative_levels
                 .entry(hash)
                 .or_default()
-                .insert(level, BlobLevel { width, height });
+                .insert(level, BlobLevel { width, height, rev });
         }
     }
 
@@ -229,7 +240,14 @@ async fn snapshot_blobs(
             if !levels.contains_key("full")
                 && let (Some(width), Some(height)) = (blob.width, blob.height)
             {
-                levels.insert("full".to_string(), BlobLevel { width, height });
+                levels.insert(
+                    "full".to_string(),
+                    BlobLevel {
+                        width,
+                        height,
+                        rev: 0,
+                    },
+                );
             }
             dto::BlobInfo {
                 hash: blob.hash,

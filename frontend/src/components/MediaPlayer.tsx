@@ -505,49 +505,51 @@ function Playhead({
   onScrub: (scrubbing: boolean) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
-  // Positions are fractions of the WAVEFORM (the item's box), wherever the
-  // pointer is while dragging.
+  // Positions are fractions of the WAVEFORM (the tile's bars, inset from the
+  // item's box), wherever the pointer is while dragging.
   const seekFrom = (event: React.PointerEvent) => {
     if (box.current) onSeek(fractionAlong(box.current, event, rotation));
   };
   return (
-    <div ref={box} className="media-frame" style={frame}>
-      <div
-        className={`media-playhead ${scrubbing ? 'dragging' : ''}`}
-        style={{ left: `${fraction * 100}%` }}
-        role="slider"
-        tabIndex={0}
-        aria-label="Playhead"
-        aria-valuemin={0}
-        aria-valuemax={Math.round(duration * 1000) / 1000}
-        aria-valuenow={Math.round(fraction * duration * 1000) / 1000}
-        aria-valuetext={formatPrecise(fraction * duration)}
-        onPointerDown={(event) => {
-          // The playhead's, never a move of the item.
-          event.stopPropagation();
-          event.currentTarget.setPointerCapture(event.pointerId);
-          onScrub(true);
-        }}
-        onPointerMove={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) seekFrom(event);
-        }}
-        onPointerUp={(event) => {
-          event.currentTarget.releasePointerCapture(event.pointerId);
-          onScrub(false);
-        }}
-        onPointerCancel={() => onScrub(false)}
-        onDoubleClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => {
-          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-          event.preventDefault();
-          event.stopPropagation();
-          const step = event.shiftKey ? 5 : 1;
-          onSeekBy(event.key === 'ArrowLeft' ? -step : step);
-        }}
-      >
-        <span className="media-playhead-line" />
-        <span className="media-playhead-cap" />
-        <span className="media-playhead-time">{formatPrecise(fraction * duration)}</span>
+    <div className="media-frame" style={frame}>
+      <div ref={box} className="media-waveform">
+        <div
+          className={`media-playhead ${scrubbing ? 'dragging' : ''}`}
+          style={{ left: `${fraction * 100}%` }}
+          role="slider"
+          tabIndex={0}
+          aria-label="Playhead"
+          aria-valuemin={0}
+          aria-valuemax={Math.round(duration * 1000) / 1000}
+          aria-valuenow={Math.round(fraction * duration * 1000) / 1000}
+          aria-valuetext={formatPrecise(fraction * duration)}
+          onPointerDown={(event) => {
+            // The playhead's, never a move of the item.
+            event.stopPropagation();
+            event.currentTarget.setPointerCapture(event.pointerId);
+            onScrub(true);
+          }}
+          onPointerMove={(event) => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) seekFrom(event);
+          }}
+          onPointerUp={(event) => {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+            onScrub(false);
+          }}
+          onPointerCancel={() => onScrub(false)}
+          onDoubleClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+            event.preventDefault();
+            event.stopPropagation();
+            const step = event.shiftKey ? 5 : 1;
+            onSeekBy(event.key === 'ArrowLeft' ? -step : step);
+          }}
+        >
+          <span className="media-playhead-line" />
+          <span className="media-playhead-cap" />
+          <span className="media-playhead-time">{formatPrecise(fraction * duration)}</span>
+        </div>
       </div>
     </div>
   );

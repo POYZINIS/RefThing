@@ -28,3 +28,5 @@ image.workspace = true
 fast_image_resize.workspace = true
 webp.workspace = true
 rayon.workspace = true
+symphonia.workspace = true
+rusty-opus.workspace = true

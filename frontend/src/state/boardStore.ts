@@ -70,7 +70,9 @@ type BoardState = {
   applyChanges: (seq: number, events: BoardEvent[]) => void;
   /** A poster job finished: record its levels on the item's blob (by name,
    *  e.g. ['thumb', 'small', 'medium', 'full']; legacy edge sizes accepted). */
-  markPosterReady: (itemId: string, ready: (string | number)[]) => void;
+  /** Poster levels finished for an item's blob; `rev`, the renderer
+   *  revision that drew them (a redraw bumps it on levels already there). */
+  markPosterReady: (itemId: string, ready: (string | number)[], rev?: number) => void;
 };
 
 /** Longest edge per pyramid level (px); `full` is native. */
@@ -104,7 +106,7 @@ function rememberBoard(boardId: string | null): void {
 const plural = (count: number, one: string) => `${count} ${one}${count === 1 ? '' : 's'}`;
 
 /** poster_ready notices for items not in the snapshot yet (by item id). */
-const earlyPosters = new Map<string, (string | number)[]>();
+const earlyPosters = new Map<string, { ready: (string | number)[]; rev?: number }>();
 
 /** Unacknowledged optimistic ops (registered by the active BatchQueue). */
 let pendingOpsSource: (() => BatchOp[]) | null = null;
@@ -309,10 +311,10 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       // Posters that finished before these items were known.
       queueMicrotask(() => {
         for (const { item } of response.items) {
-          const ready = earlyPosters.get(item.id);
-          if (!ready) continue;
+          const early = earlyPosters.get(item.id);
+          if (!early) continue;
           earlyPosters.delete(item.id);
-          get().markPosterReady(item.id, ready);
+          get().markPosterReady(item.id, early.ready, early.rev);
         }
       });
       return {
@@ -376,7 +378,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     );
   },
 
-  markPosterReady(itemId, ready) {
+  markPosterReady(itemId, ready, rev) {
     set((state) => {
       const snapshot = state.snapshot;
       if (!snapshot || ready.length === 0) return state;
@@ -385,7 +387,7 @@ export const useBoardStore = create<BoardState>((set, get) => ({
       if (!hash) {
         // A poster can finish before its drop's upload response lands (the
         // first file of several): keep it for when the item arrives.
-        earlyPosters.set(itemId, ready);
+        earlyPosters.set(itemId, { ready, rev });
         return state;
       }
       let touched = false;
@@ -407,11 +409,18 @@ export const useBoardStore = create<BoardState>((set, get) => ({
                   ? 'small'
                   : 'medium';
           const edge = LEVEL_EDGES[name];
-          if (edge === undefined || name in levels) continue;
+          if (edge === undefined) continue;
+          const existing = levels[name];
+          if (existing) {
+            // Redrawn (a new waveform style): the same level, a new revision.
+            if (rev && existing.rev !== rev) levels[name] = { ...existing, rev };
+            continue;
+          }
           const scale = native ? Math.min(1, edge / Math.max(native.width, native.height, 1)) : 1;
-          levels[name] = native
+          const size = native
             ? { width: Math.round(native.width * scale), height: Math.round(native.height * scale) }
             : { width: edge, height: edge };
+          levels[name] = rev ? { ...size, rev } : size;
         }
         return { ...blob, levels };
       });

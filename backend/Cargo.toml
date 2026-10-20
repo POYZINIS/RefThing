@@ -58,3 +58,11 @@ image = { version = "0.25", default-features = false, features = [
 fast_image_resize = "6.1" # default features; rayon feature stays OFF (own pool instead)
 webp = "0.3" # libwebp FFI — lossy WebP encode; image's encoder is lossless-only
 rayon = "1.12"
+# Audio waveforms: pure-Rust decoding of every common format (WAV, AIFF,
+# CAF, FLAC, MP3, Ogg Vorbis, AAC/M4A, ALAC, Matroska/WebM) — no ffmpeg.
+symphonia = { version = "0.6.1", features = ["all"] }
+# …and Opus (Ogg/WebM voice notes and music), which Symphonia demuxes but
+# can't decode: pure Rust, conformant, no dependencies, no build script;
+# `unsafe` only in its SIMD kernels. (`opus-decoder`, all-safe, was ~130×
+# slower: 13 s for a minute of audio.)
+rusty-opus = "1.0.2"

@@ -233,8 +233,8 @@ async fn fetch_snapshot(pools: &Pools, board_id: Uuid) -> Result<BoardSnapshot, 
     .fetch_all(&mut *tx)
     .await?;
 
-    let derivatives = sqlx::query_as::<_, (String, String, i64, i64, i64, String)>(
-        "SELECT d.blob_hash, d.level, d.width, d.height, d.byte_size, d.format \
+    let derivatives = sqlx::query_as::<_, (String, String, i64, i64, i64, String, i64)>(
+        "SELECT d.blob_hash, d.level, d.width, d.height, d.byte_size, d.format, d.rev \
          FROM blob_derivatives d WHERE d.status = 'ready' AND d.blob_hash IN ( \
              SELECT i.blob_id FROM items i \
              WHERE i.board_id = ?1 AND i.blob_id IS NOT NULL \
@@ -250,13 +250,14 @@ async fn fetch_snapshot(pools: &Pools, board_id: Uuid) -> Result<BoardSnapshot, 
     .await?
     .into_iter()
     .map(
-        |(blob_hash, level, width, height, byte_size, format)| ManifestDerivative {
+        |(blob_hash, level, width, height, byte_size, format, rev)| ManifestDerivative {
             blob_hash,
             level,
             width,
             height,
             byte_size,
             format,
+            rev,
         },
     )
     .collect();
@@ -937,8 +938,8 @@ async fn insert_derivatives(
         }
         sqlx::query(
             "INSERT OR IGNORE INTO blob_derivatives \
-             (blob_hash, level, width, height, byte_size, format, status) \
-             VALUES (?, ?, ?, ?, ?, ?, 'ready')",
+             (blob_hash, level, width, height, byte_size, format, status, rev) \
+             VALUES (?, ?, ?, ?, ?, ?, 'ready', ?)",
         )
         .bind(&hash)
         .bind(&row.level)
@@ -946,6 +947,7 @@ async fn insert_derivatives(
         .bind(row.height)
         .bind(row.byte_size)
         .bind(&row.format)
+        .bind(row.rev)
         .execute(&mut **tx)
         .await?;
     }

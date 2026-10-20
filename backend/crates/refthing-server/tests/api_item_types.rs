@@ -482,3 +482,110 @@ async fn model_textures_are_stored_kept_and_exported() {
         "the texture is in the export: {names:?}"
     );
 }
+
+/// A committed fixture (0.3 s of a 440 Hz tone, refthing-core's).
+fn media_fixture(name: &str) -> Vec<u8> {
+    std::fs::read(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../refthing-core/tests/fixtures/media")
+            .join(name),
+    )
+    .expect("fixture")
+}
+
+async fn blob_levels(app: &TestApp, board: Uuid, hash: &str) -> Value {
+    let snapshot: Value = reqwest::get(format!("{}/api/boards/{board}", app.base))
+        .await
+        .expect("snapshot")
+        .json()
+        .await
+        .expect("json");
+    snapshot["blobs"]
+        .as_array()
+        .expect("blobs")
+        .iter()
+        .find(|blob| blob["hash"] == hash)
+        .expect("blob")["levels"]
+        .clone()
+}
+
+/// Audio gets `RefThing`'s own waveform tile — decoded natively, so no ffmpeg
+/// is needed — whatever the container: a `WebM` holding only Opus is audio,
+/// not a video. Audio filed before that (as a video, with ffmpeg's old
+/// waveform) is retyped and redrawn at startup.
+#[tokio::test]
+async fn audio_gets_a_waveform_without_ffmpeg_and_old_ones_are_redrawn() {
+    use refthing_core::pipeline::waveform::WAVEFORM_REV;
+    use refthing_server::jobs::media_poster::{queue_waveforms, retype_audio};
+
+    let app = spawn_app().await;
+    let board = boards::create(&app.state.pools.write, "b")
+        .await
+        .expect("board")
+        .id;
+    let flac = ingest(&app, board, "tone.flac", media_fixture("tone.flac")).await;
+    let webm = ingest(&app, board, "voice.weba", media_fixture("tone.weba")).await;
+    jobs_settled(&app).await;
+
+    for (ingested, mime) in [(&flac, "audio/x-flac"), (&webm, "audio/webm")] {
+        assert_eq!(ingested["mime_type"], mime);
+        let stored = item(&app, board, ingested["item_id"].as_str().expect("id")).await;
+        assert_eq!(stored["type"], "audio", "{mime}");
+        let hash = ingested["blob_hash"].as_str().expect("hash");
+        let levels = blob_levels(&app, board, hash).await;
+        assert_eq!(levels["thumb"]["rev"], WAVEFORM_REV, "{mime}: {levels}");
+        let response = reqwest::get(format!("{}/blob/{hash}/medium", app.base))
+            .await
+            .expect("poster");
+        assert_eq!(response.status(), 200);
+        let poster = image::load_from_memory(&response.bytes().await.expect("bytes"))
+            .expect("the poster is an image");
+        assert_eq!(poster.width() / poster.height(), 4, "the tile's shape");
+    }
+
+    // An older install filed the WebM as a video with ffmpeg's waveform.
+    let hash = webm["blob_hash"].as_str().expect("hash");
+    let pools = &app.state.pools;
+    sqlx::query("UPDATE blobs SET mime_type = 'video/webm' WHERE hash = ?")
+        .bind(hash)
+        .execute(&pools.write)
+        .await
+        .expect("legacy blob");
+    sqlx::query("UPDATE items SET type = 'video', height = 270 WHERE blob_id = ?")
+        .bind(hash)
+        .execute(&pools.write)
+        .await
+        .expect("legacy item");
+    sqlx::query("UPDATE blob_derivatives SET rev = 0 WHERE blob_hash = ?")
+        .bind(hash)
+        .execute(&pools.write)
+        .await
+        .expect("legacy poster");
+
+    // Startup: it's audio again, at the waveform's proportions, and only its
+    // waveform is redrawn.
+    assert_eq!(
+        retype_audio(pools, &app.state.blob_store)
+            .await
+            .expect("retype"),
+        1
+    );
+    assert_eq!(
+        queue_waveforms(pools, &app.state.jobs)
+            .await
+            .expect("queue"),
+        1
+    );
+    jobs_settled(&app).await;
+    let stored = item(&app, board, webm["item_id"].as_str().expect("id")).await;
+    assert_eq!(stored["type"], "audio");
+    assert_eq!(stored["height"].as_f64(), Some(120.0));
+    let levels = blob_levels(&app, board, hash).await;
+    assert_eq!(levels["thumb"]["rev"], WAVEFORM_REV);
+    assert_eq!(
+        queue_waveforms(pools, &app.state.jobs)
+            .await
+            .expect("queue"),
+        0
+    );
+}

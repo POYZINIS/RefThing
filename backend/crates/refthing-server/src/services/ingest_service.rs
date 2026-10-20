@@ -388,9 +388,14 @@ impl AsyncRead for FieldReader<'_> {
     }
 }
 
-/// The stored file's type, refined past the general sniffer (3D models:
-/// magic bytes, then the extension — see `item_types::refine_mime`).
-async fn refined_mime(stored: &std::path::Path, sniffed: &str, filename: Option<&str>) -> String {
+/// The stored file's type, refined past the general sniffer (3D models and
+/// some audio: magic bytes, then the extension — see
+/// `item_types::refine_mime`; audio in a video container: its track list).
+pub(crate) async fn refined_mime(
+    stored: &std::path::Path,
+    sniffed: &str,
+    filename: Option<&str>,
+) -> String {
     use tokio::io::AsyncReadExt;
     let mut head = vec![0u8; 32];
     let read = match tokio::fs::File::open(stored).await {
@@ -398,18 +403,28 @@ async fn refined_mime(stored: &std::path::Path, sniffed: &str, filename: Option<
         Err(_) => 0,
     };
     head.truncate(read);
-    item_types::refine_mime(sniffed, filename, &head)
+    let refined = item_types::refine_mime(sniffed, filename, &head);
+    let path = stored.to_path_buf();
+    let container = refined.clone();
+    let audio =
+        tokio::task::spawn_blocking(move || item_types::audio_container_mime(&container, &path))
+            .await
+            .ok()
+            .flatten();
+    audio.map_or(refined, str::to_string)
 }
 
 /// A blob stored before its type was recognized (a model dropped before 3D
-/// support) takes the refined type when it's ingested again.
+/// support, audio filed as a video by its container) takes the refined type
+/// when it's ingested again.
 async fn adopt_refined_mime(
     tx: &mut sqlx::SqliteTransaction<'_>,
     hash: &str,
     mime: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE blobs SET mime_type = ? WHERE hash = ? AND mime_type = 'application/octet-stream'",
+        "UPDATE blobs SET mime_type = ?1 WHERE hash = ?2 AND (mime_type = 'application/octet-stream' \
+         OR (?1 LIKE 'audio/%' AND mime_type LIKE 'video/%'))",
     )
     .bind(mime)
     .bind(hash)

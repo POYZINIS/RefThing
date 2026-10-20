@@ -40,6 +40,15 @@ pub struct ManifestDerivative {
     pub height: i64,
     pub byte_size: i64,
     pub format: String,
+    /// The renderer revision that made it (0, the image pyramid, left out);
+    /// an audio poster from an older waveform renderer is redrawn.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rev: i64,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if takes a reference
+fn is_zero(value: &i64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

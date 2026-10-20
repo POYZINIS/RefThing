@@ -36,6 +36,9 @@ public issue.
 
 - The `.ref` file encryption key ships inside the app: it keeps board files
   opaque to other programs, not secret from someone determined.
-- Media is decoded by your installed FFmpeg and Blender (when present);
-  keep them up to date.
+- Audio is decoded by RefThing itself, in memory-safe Rust (Symphonia;
+  `rusty-opus` for Opus, whose `unsafe` is confined to its SIMD kernels).
+  Video and a few audio codecs (WMA, AC-3, AMR) are decoded by your
+  installed FFmpeg, and `.blend` files by Blender (when present); keep them
+  up to date.
 - The Windows installer isn't Authenticode code-signed yet.

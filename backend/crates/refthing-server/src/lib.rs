@@ -79,6 +79,18 @@ pub async fn run_with_shutdown(
         Ok(changed) => tracing::info!(changed, "file items recognized as 3D models"),
         Err(error) => tracing::warn!(%error, "model retyping skipped"),
     }
+    // Audio filed as a video or a file card before it was recognized: upgrade
+    // it; then every audio item without a current waveform gets one drawn.
+    match jobs::media_poster::retype_audio(&pools, &blob_store).await {
+        Ok(0) => {}
+        Ok(changed) => tracing::info!(changed, "items recognized as audio"),
+        Err(error) => tracing::warn!(%error, "audio retyping skipped"),
+    }
+    match jobs::media_poster::queue_waveforms(&pools, &jobs).await {
+        Ok(0) => {}
+        Ok(queued) => tracing::info!(queued, "audio waveforms queued"),
+        Err(error) => tracing::warn!(%error, "waveform queueing skipped"),
+    }
 
     let hub = events::BroadcastHub::new();
     let resize_pool = Arc::new(ResizePool::new());

@@ -3,7 +3,12 @@ import { useBoardStore } from '@/state/boardStore';
 
 /** `levels` are level names (what the server sends); `sizes` is the older
  *  documented shape, still accepted. */
-type PosterReadyPayload = { item_id?: string; levels?: string[]; sizes?: number[] };
+type PosterReadyPayload = {
+  item_id?: string;
+  levels?: string[];
+  sizes?: number[];
+  rev?: number;
+};
 
 export type BoardSyncOptions = {
   boardId: string;
@@ -81,6 +86,7 @@ export class BoardSync {
                 : Array.isArray(payload.sizes)
                   ? payload.sizes
                   : [],
+              typeof payload.rev === 'number' ? payload.rev : undefined,
             );
           }
           this.onPosterReady?.();

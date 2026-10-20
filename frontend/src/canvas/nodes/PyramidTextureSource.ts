@@ -61,19 +61,24 @@ export class PyramidTextureSource implements TextureSource {
    * a card instead of a blank placeholder.
    */
   poster(node: SpriteNode, level: string): Texture | null {
-    return this.resolve(node.blobHash, level === 'full' ? 'medium' : level, false);
+    return this.resolve(node.blobHash, level === 'full' ? 'medium' : level, false, node.posterRev);
   }
 
-  private resolve(hash: string, level: string, allowFull: boolean): Texture | null {
-    const wanted = allowFull && this.failed.has(`${hash}-${level}`) ? 'full' : level;
-    const key = `${hash}-${wanted}`;
+  /** `rev` (a redrawn poster's revision) is part of the URL and the key: a
+   *  redrawn poster is fetched fresh, never shown from a cache. */
+  private resolve(hash: string, level: string, allowFull: boolean, rev = 0): Texture | null {
+    const id = rev ? `${hash}@${rev}` : hash;
+    const wanted = allowFull && this.failed.has(`${id}-${level}`) ? 'full' : level;
+    const key = `${id}-${wanted}`;
     const existing = this.textures.get(key);
     if (existing) {
       existing.lastUsed = this.frame;
       return existing.texture;
     }
-    if (!this.failed.has(key) && !this.loading.has(key)) this.load(key, blobUrl(hash, wanted));
-    return this.nearestResident(hash, wanted, allowFull);
+    if (!this.failed.has(key) && !this.loading.has(key)) {
+      this.load(key, rev ? `${blobUrl(hash, wanted)}?v=${rev}` : blobUrl(hash, wanted));
+    }
+    return this.nearestResident(id, wanted, allowFull);
   }
 
   /** The closest level of this blob already on the GPU (smaller first), or

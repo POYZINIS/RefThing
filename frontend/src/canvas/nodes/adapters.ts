@@ -30,6 +30,7 @@ export function itemToNode(item: Item, blob: BlobInfo | undefined, locked = fals
     label: blob?.original_filename ?? hash.slice(0, 12),
     detail: blob ? cardDetail(blob, item.metadata.duration) : '',
     poster: !!blob && POSTER_LEVELS.some((level) => level in blob.levels),
+    posterRev: blob?.levels.thumb?.rev ?? 0,
     capabilities: nodeKindRegistry[kind].capabilities,
     ...(kind === 'model' ? { model: modelSettings(item.metadata.model) } : {}),
     ...(kind === 'palette' ? { colors: paletteColors(item.metadata) } : {}),

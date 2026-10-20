@@ -8,6 +8,7 @@
 mod generate;
 mod palette;
 mod pool;
+pub mod waveform;
 
 use std::path::PathBuf;
 

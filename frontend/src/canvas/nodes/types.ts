@@ -68,6 +68,8 @@ export interface SpriteNode extends BoardNode {
   /** Video/audio: the server made a poster pyramid (thumb…medium) to draw.
    *  Their `full` level is the media itself, never an image. */
   readonly poster: boolean;
+  /** The poster's renderer revision (0: never redrawn); in its URL. */
+  readonly posterRev?: number;
   /** 3D models: how the model is viewed (item metadata `model`). */
   readonly model?: ModelSettings;
   /** Palettes: their colours (item metadata `palette.colors`). */

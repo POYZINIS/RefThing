@@ -1,6 +1,6 @@
 [package]
 name = "refthing-app"
-version = "0.3.1"
+version = "0.3.2"
 description = "RefThing desktop app"
 edition = "2024"
 license = "MIT"

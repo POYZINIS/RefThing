@@ -77,13 +77,13 @@ impl JobHandler for PyramidJob {
 
         match result {
             Ok((full_dims, records, metadata)) => {
-                let levels = commit_ready(ctx, &payload, full_dims, &records).await?;
+                let levels = commit_ready(ctx, &payload, full_dims, &records, 0).await?;
                 // Persist dominant_colors + phash into item_metadata so the
                 // frontend can filter by colour and detect near-duplicates.
                 if let Some(meta) = metadata {
                     commit_metadata(ctx, &payload.item_id, &meta).await;
                 }
-                broadcast_ready(ctx, &payload, &levels).await;
+                broadcast_ready(ctx, &payload, &levels, 0).await;
                 Ok(())
             }
             Err(error) => {
@@ -162,12 +162,16 @@ async fn commit_metadata(ctx: &JobContext, item_id: &uuid::Uuid, meta: &ImageMet
 /// dimensions/byte size and carry the original MIME as their format. Also
 /// backfills `blobs.width`/`height` when the ingest sniffer left them NULL.
 ///
+/// `rev` is the renderer's revision (`blob_derivatives.rev`): 0 for the
+/// image pyramid and video frames, the waveform renderer's for audio.
+///
 /// Returns the ready level names for the `poster_ready` broadcast.
 pub(crate) async fn commit_ready(
     ctx: &JobContext,
     payload: &PyramidPayload,
     full_dims: (u32, u32),
     records: &[DerivativeRecord],
+    rev: i64,
 ) -> anyhow::Result<Vec<String>> {
     let blob = blobs::get(&ctx.pools.read, &payload.blob_hash)
         .await?
@@ -184,6 +188,7 @@ pub(crate) async fn commit_ready(
             i64::from(record.height),
             i64::try_from(record.byte_size)?,
             &record.format,
+            rev,
         )
         .await?;
     }
@@ -197,6 +202,7 @@ pub(crate) async fn commit_ready(
         full_height,
         blob.byte_size,
         &payload.mime,
+        rev,
     )
     .await?;
     for level in SCALED_LEVELS {
@@ -210,6 +216,7 @@ pub(crate) async fn commit_ready(
                 full_height,
                 blob.byte_size,
                 &payload.mime,
+                rev,
             )
             .await?;
         }
@@ -242,11 +249,12 @@ async fn insert_ready(
     height: i64,
     byte_size: i64,
     format: &str,
+    rev: i64,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT OR REPLACE INTO blob_derivatives \
-             (blob_hash, level, width, height, byte_size, format, status) \
-         VALUES (?, ?, ?, ?, ?, ?, 'ready')",
+             (blob_hash, level, width, height, byte_size, format, status, rev) \
+         VALUES (?, ?, ?, ?, ?, ?, 'ready', ?)",
     )
     .bind(hash)
     .bind(level)
@@ -254,6 +262,7 @@ async fn insert_ready(
     .bind(height)
     .bind(byte_size)
     .bind(format)
+    .bind(rev)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -274,7 +283,14 @@ pub(crate) async fn mark_failed(ctx: &JobContext, hash: &str) {
 /// Hot-swap notification for open boards. The item may have been deleted
 /// between ingest and job completion — then there is no room to notify and
 /// the broadcast is skipped.
-pub(crate) async fn broadcast_ready(ctx: &JobContext, payload: &PyramidPayload, levels: &[String]) {
+/// `rev`: the poster's renderer revision (clients add it to the URL, so a
+/// redrawn poster isn't shown from cache).
+pub(crate) async fn broadcast_ready(
+    ctx: &JobContext,
+    payload: &PyramidPayload,
+    levels: &[String],
+    rev: i64,
+) {
     let row: Option<(Uuid,)> = sqlx::query_as("SELECT board_id FROM items WHERE id = ?")
         .bind(payload.item_id)
         .fetch_optional(&ctx.pools.read)
@@ -290,6 +306,7 @@ pub(crate) async fn broadcast_ready(ctx: &JobContext, payload: &PyramidPayload, 
                     "blob_hash": payload.blob_hash,
                     "item_id": payload.item_id,
                     "levels": levels,
+                    "rev": rev,
                 }),
             },
         );

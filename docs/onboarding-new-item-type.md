@@ -16,11 +16,15 @@ core engine, schema, or sync protocol:
      `duration`), which is merged into `item_metadata`.
    - `placement(probe)`: the size the new item gets on the board.
    - `poster_job()`: the job kind that makes its poster, or `None`.
-     `pyramid` is for images. `media_poster` renders a still with ffmpeg and
-     runs it through `generate_poster_pyramid`, so every scaled level is a
+     `pyramid` is for images. `media_poster` renders a still — a video
+     frame with ffmpeg, or for audio RefThing's own waveform tile
+     (`refthing_core::pipeline::waveform`) — and runs it through
+     `generate_poster_pyramid`, so every scaled level is a
      real WebP and never an alias of the non-image original. A new job
      registers in `lib.rs` (`jobs.register(...)`) and ends with
-     `commit_ready` + `broadcast_ready`, as `jobs/media_poster.rs` does.
+     `commit_ready` + `broadcast_ready`, as `jobs/media_poster.rs` does,
+     passing its renderer's revision (`blob_derivatives.rev`): bump it when
+     the drawing changes, and the poster's URL changes with it.
 2. **Frontend: register a node kind.** There are four places to touch:
    - Add the kind to `NodeKind` (`canvas/nodes/types.ts`).
    - Map the item `type` to it in `itemKind` (`canvas/nodes/itemKind.ts`).
@@ -81,7 +85,7 @@ poster.
 |:--------|:-----------------------------------------|:-----------------------|:----------------|
 | `image` | image pyramid (GIFs animate)             | —                      | Download        |
 | `video` | ffmpeg frame → pyramid; card until ready | `<video>` over the item | Download        |
-| `audio` | ffmpeg waveform → pyramid; card until ready | `<audio>` mini-player | Download        |
+| `audio` | waveform tile (decoded in-process; ffmpeg for WMA/AC-3/AMR) → pyramid; card until ready | `<audio>` mini-player | Download        |
 | `file`  | card (extension badge, name, size)       | —                      | double-click Open, Download |
 
 The originals stream from `/blob/{hash}/full`, which honors `Range`, so

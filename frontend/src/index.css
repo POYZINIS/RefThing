@@ -2419,6 +2419,13 @@ body.orbiting-view * {
   transform-origin: center;
 }
 
+/* Where the waveform's bars run: the tile insets them 18 of its 480 px a
+   side (refthing-core pipeline/waveform.rs, PAD_X), so time lines up. */
+.media-waveform {
+  position: absolute;
+  inset: 0 3.75%;
+}
+
 /* The playhead is its own seek control: a thin grab zone around the line. */
 .media-playhead {
   position: absolute;

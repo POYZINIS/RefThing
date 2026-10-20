@@ -84,6 +84,11 @@ data/
   MIME), then `rename` into `blobs/`. A partial blob can never appear at
   a canonical path. Windows caveat: rename-over-existing fails, so an
   existing destination means a dedup hit — delete the tmp file instead.
+- **Previews carry their renderer's revision** (`blob_derivatives.rev`,
+  migration 0012): 0 for the image pyramid and video frames; audio
+  waveforms drawn by an older renderer (ffmpeg's, before 0.3.2) are redrawn
+  at startup, and a poster's URL carries its revision (`?v=`), since
+  `/blob/...` responses are cached as immutable.
 - **Two-level prefix sharding** keeps directory fan-out bounded and plays
   nice with NTFS + antivirus scanning.
 - **Dedup is free:** identical content hashes to the same path and the
