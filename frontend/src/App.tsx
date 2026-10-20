@@ -25,6 +25,7 @@ import {
   isBoardFile,
   linkBoardFile,
   type Note,
+  openCopy,
   uploadTexture,
 } from '@/api/client';
 import { CLIENT_ID } from '@/api/clientId';
@@ -104,6 +105,8 @@ import {
   chooseFolder,
   isDesktop,
   onBoardFileOpened,
+  openInDefaultApp,
+  opensFilesLocally,
   setNativeGlass,
   takeLaunchBoardFile,
 } from '@/shell/desktop';
@@ -1263,10 +1266,30 @@ function BoardApp() {
         'Reset crop',
       );
     },
-    /** Open a file item's original in a new tab (the browser shows what it
-     *  can — PDFs, text, media — and downloads the rest). */
+    /** Open a file item's original: on the desktop in the system's default
+     *  app (a PDF in the PDF reader — the window opens no tabs), in the
+     *  browser in a new tab (it shows what it can and downloads the rest). */
     openFile: (node: SpriteNode) => {
-      window.open(blobUrl(node.blobHash, 'full'), '_blank', 'noopener');
+      // A board file sitting on a board as a card opens as its board.
+      const original = new File([], node.label);
+      if (isBoardFile(original)) {
+        void fetch(blobUrl(node.blobHash, 'full'))
+          .then((response) => response.blob())
+          .then((bytes) => actionsRef.current.importBoards([new File([bytes], node.label)]));
+        return;
+      }
+      if (!opensFilesLocally) {
+        window.open(blobUrl(node.blobHash, 'full'), '_blank', 'noopener');
+        return;
+      }
+      openCopy(node.blobHash)
+        .then(({ path }) => openInDefaultApp(path))
+        .catch((error: unknown) =>
+          setNotice({
+            title: `Couldn't open ${node.label}`,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        );
     },
     download: (node: SpriteNode) => {
       const link = document.createElement('a');
@@ -1619,7 +1642,8 @@ function BoardApp() {
     importBoards: async (files: File[]) => {
       for (const file of files) {
         const result = await importBoard(file);
-        if (!result) continue;
+        // A board's own file dropped back in just opens that board.
+        if (!result || result.reopened) continue;
         const counts = [
           `${result.images} ${result.images === 1 ? 'image' : 'images'}`,
           `${result.notes} ${result.notes === 1 ? 'note' : 'notes'}`,

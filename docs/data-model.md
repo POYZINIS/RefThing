@@ -75,6 +75,7 @@ data/
 ├── blobs/
 │   └── ab/cd/abcdef0123…     # sha256[0..2]/sha256[2..4]/full-64-hex, no extension
 ├── deriv/                    # Phase 3 pyramid levels (regenerable; excluded from export)
+├── opened/<hash16>/<name>    # named copies the desktop opens in the default app (scratch)
 └── tmp/<uuidv7>.part         # ingest scratch
 ```
 

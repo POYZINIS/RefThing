@@ -21,6 +21,11 @@ public issue.
   before anything is written: every blob against its SHA-256, preview file
   names against a strict allow-list (no paths), and references between
   records.
+- **Opening a file from a board** (desktop) hands the system a copy under
+  its own name, in the app's data folder; the window may open nothing else.
+  Programs and scripts (`.exe`, `.bat`, `.ps1`, `.js`, `.lnk`, …) are never
+  opened this way — a board from someone else could carry `cute.pdf.exe` —
+  and stay downloadable.
 - **`.blend` files** are converted by Blender with `--factory-startup
   --disable-autoexec`, so scripts embedded in a file never run.
 - **Updates** are downloaded over HTTPS from this repository's releases

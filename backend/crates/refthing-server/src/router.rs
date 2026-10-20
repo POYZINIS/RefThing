@@ -5,8 +5,10 @@
 
 use std::time::Duration;
 
-use axum::extract::DefaultBodyLimit;
-use axum::http::StatusCode;
+use axum::extract::{DefaultBodyLimit, Request};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::middleware::Next;
+use axum::response::Response;
 use axum::{Router, routing::get};
 use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
@@ -51,8 +53,9 @@ pub fn build_router(state: AppState) -> Router {
     // WebSocket: no timeout, no compression.
     let realtime = routes::ws::router();
 
-    // Blob bytes: no compression (already-compressed media).
-    let blobs = routes::blobs::router();
+    // Blob bytes: no compression (already-compressed media). Originals'
+    // named copies (for the desktop's "open in the default app"): no timeout.
+    let blobs = routes::blobs::router().merge(routes::originals::router());
 
     // Optional SPA fallback: serve the built frontend for any path the API
     // routes don't claim. Used by the desktop app, which points the webview
@@ -72,7 +75,10 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state);
     if let Some(static_dir) = static_dir {
         let index = static_dir.join("index.html");
-        app = app.fallback_service(ServeDir::new(static_dir).fallback(ServeFile::new(index)));
+        let pages = Router::new()
+            .fallback_service(ServeDir::new(static_dir).fallback(ServeFile::new(index)))
+            .layer(axum::middleware::from_fn(page_caching));
+        app = app.fallback_service(pages);
     }
     // Layers added last run first: tracing is outermost (it sees refusals
     // too), then the guard.
@@ -81,6 +87,30 @@ pub fn build_router(state: AppState) -> Router {
         crate::local_only::guard,
     ))
     .layer(TraceLayer::new_for_http())
+}
+
+/// How long the webview may keep the app's own files. The build's
+/// `/assets/*` are named by their content's hash, so they never change and
+/// are kept for good; everything else — `index.html` above all — is checked
+/// on every load. (Without a `Cache-Control` the webview guessed, and kept
+/// running a cached page from before an update.)
+async fn page_caching(request: Request, next: Next) -> Response {
+    let hashed = request.uri().path().starts_with("/assets/");
+    let mut response = next.run(request).await;
+    // A missing asset falls back to index.html: that is never kept for good.
+    let html = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|value| value.as_bytes().starts_with(b"text/html"));
+    let policy = if hashed && !html && response.status().is_success() {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static(policy));
+    response
 }
 
 async fn health(

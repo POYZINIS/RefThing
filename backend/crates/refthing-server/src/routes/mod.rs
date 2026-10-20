@@ -15,6 +15,7 @@
 //! | `board_files` | `/api/boards/{id}/file`, `/api/boards:open-file`, `/api/boards/{id}/download.ref` | NO timeout (big boards) |
 //! | `ws`      | `/api/boards/{id}/ws`         | none (timeout would kill the socket)     |
 //! | `blobs`   | `/blob/{hash}/{level}`        | none (no compression on media bytes)     |
+//! | `originals` | `/api/blobs/{hash}/open-copy` | none (copying a big file takes a while) |
 //!
 //! axum 0.8 path syntax is `/{id}` (NOT `/:id`).
 
@@ -26,6 +27,7 @@ pub mod groups;
 pub mod ingest;
 pub mod items;
 pub mod notes;
+pub mod originals;
 pub mod search;
 pub mod settings;
 pub mod snapshots;

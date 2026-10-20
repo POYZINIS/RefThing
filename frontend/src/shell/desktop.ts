@@ -39,6 +39,7 @@ type TauriGlobal = {
   event?: {
     listen(name: string, handler: (event: { payload: unknown }) => void): Promise<() => void>;
   };
+  opener?: { openPath(path: string): Promise<void> };
 };
 
 const tauri = (globalThis as { __TAURI__?: TauriGlobal }).__TAURI__;
@@ -128,6 +129,20 @@ export function beginWindowMove(event: PointerEvent, threshold: number): boolean
   globalThis.addEventListener('pointerup', end);
   globalThis.addEventListener('pointercancel', end);
   return true;
+}
+
+// ------------------------------------------------------------ originals
+
+/** Whether files open in the system's default app (the desktop) rather than
+ *  a browser tab. */
+export const opensFilesLocally = !!tauri?.opener;
+
+/** Open a file (the server's named copy of an original — the only paths
+ *  src-tauri lets the page open) in the system's default app. */
+export async function openInDefaultApp(path: string): Promise<void> {
+  const opener = tauri?.opener;
+  if (!opener) throw new Error('not on the desktop');
+  await opener.openPath(path);
 }
 
 // ------------------------------------------------------------ board files

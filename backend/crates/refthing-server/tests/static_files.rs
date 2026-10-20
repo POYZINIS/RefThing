@@ -85,6 +85,37 @@ async fn static_dir_serves_index_and_spa_fallback() {
     assert!(deep.text().await.expect("body").contains("refthing"));
 }
 
+/// The page is checked on every load, so an update's new page is never
+/// shadowed by a cached old one; the hash-named build files are kept for good
+/// — but never a page that fell back in for a missing one.
+#[tokio::test]
+async fn the_page_is_always_revalidated_and_hashed_assets_kept() {
+    let static_dir = tempfile::tempdir().expect("static dir");
+    std::fs::write(static_dir.path().join("index.html"), "<!doctype html>").expect("index");
+    std::fs::create_dir_all(static_dir.path().join("assets")).expect("assets dir");
+    std::fs::write(static_dir.path().join("assets/index-AbC123.js"), "1").expect("asset");
+    let (base, _dir) = spawn_app(Some(static_dir.path().to_path_buf())).await;
+    let cache_control = |response: &reqwest::Response| {
+        response.headers()["cache-control"]
+            .to_str()
+            .expect("header")
+            .to_string()
+    };
+
+    for page in ["/", "/index.html", "/?v=0.3.1"] {
+        let response = reqwest::get(format!("{base}{page}")).await.expect("page");
+        assert_eq!(cache_control(&response), "no-cache", "{page}");
+    }
+    let asset = reqwest::get(format!("{base}/assets/index-AbC123.js"))
+        .await
+        .expect("asset");
+    assert!(cache_control(&asset).contains("immutable"));
+    let missing = reqwest::get(format!("{base}/assets/index-Gone99.js"))
+        .await
+        .expect("missing asset");
+    assert_eq!(cache_control(&missing), "no-cache");
+}
+
 #[tokio::test]
 async fn api_routes_take_precedence_over_static_dir() {
     let static_dir = tempfile::tempdir().expect("static dir");

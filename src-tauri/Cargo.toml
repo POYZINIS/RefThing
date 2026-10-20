@@ -1,6 +1,6 @@
 [package]
 name = "refthing-app"
-version = "0.3.0"
+version = "0.3.1"
 description = "RefThing desktop app"
 edition = "2024"
 license = "MIT"
@@ -23,6 +23,9 @@ serde_json = "1"
 # double-clicked file opens in the window already open, not a second server).
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
+# A file card's original opens in the system's default app (a PDF in the
+# PDF reader) — only the server's named copies (`<data>/opened`).
+tauri-plugin-opener = "2"
 
 [profile.release]
 lto = true

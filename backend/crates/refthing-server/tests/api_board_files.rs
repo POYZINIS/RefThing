@@ -147,6 +147,23 @@ async fn rename(app: &TestApp, board_id: &str, name: &str) {
     assert!(response.status().is_success());
 }
 
+/// A `.ref` file dropped on the window: an upload, with no path.
+async fn drop_board_file(app: &TestApp, bytes: Vec<u8>) -> Value {
+    let form = reqwest::multipart::Form::new().part(
+        "file",
+        reqwest::multipart::Part::bytes(bytes).file_name("Moodboard.ref"),
+    );
+    app.client
+        .post(format!("{}/api/boards:import", app.base_url))
+        .multipart(form)
+        .send()
+        .await
+        .expect("import")
+        .json()
+        .await
+        .expect("imported")
+}
+
 async fn board_names(app: &TestApp) -> Vec<String> {
     let boards: Value = app
         .client
@@ -229,6 +246,12 @@ async fn a_linked_board_file_is_written_kept_in_sync_and_reopened() {
     assert_eq!(reopened["board_id"], board_id.as_str());
     assert_eq!(reopened["name"], "Moodboard 2");
 
+    // Its own file dropped back on the window (an upload, no path): that
+    // board again, not a copy of it.
+    let dropped = drop_board_file(&app, std::fs::read(&path).expect("file")).await;
+    assert_eq!(dropped["reopened"], true, "{dropped}");
+    assert_eq!(dropped["board_id"], board_id.as_str());
+
     // A copy of the file elsewhere opens as a new board, linked to the copy.
     let copy = app.dir.path().join("files").join("Copy.ref");
     std::fs::copy(&path, &copy).expect("copy");
@@ -247,21 +270,10 @@ async fn a_linked_board_file_is_written_kept_in_sync_and_reopened() {
     let copy_id = opened["board_id"].as_str().unwrap().to_string();
     assert_eq!(file_status(&app, &copy_id).await["saved"], true);
 
-    // Dropped on the window (an upload, no path): imported, not linked.
-    let form = reqwest::multipart::Form::new().part(
-        "file",
-        reqwest::multipart::Part::bytes(bytes).file_name("Moodboard.ref"),
-    );
-    let imported: Value = app
-        .client
-        .post(format!("{}/api/boards:import", app.base_url))
-        .multipart(form)
-        .send()
-        .await
-        .expect("import")
-        .json()
-        .await
-        .expect("imported");
+    // An older version of it dropped on the window (no board's file holds
+    // it): imported as a new board, not linked.
+    let imported = drop_board_file(&app, bytes).await;
+    assert_eq!(imported["reopened"], false, "{imported}");
     assert_eq!(imported["images"], 1, "{imported}");
     assert_eq!(
         board_names(&app)
@@ -472,6 +484,92 @@ async fn changing_the_boards_folder_moves_its_files() {
     let status = file_status(&app, &board_id).await;
     assert_eq!(status["saved"], true);
     assert!(status["path"].as_str().unwrap().contains("Second"));
+}
+
+/// The desktop opens a file's original in the system's default app: a copy
+/// under its own name (the system goes by the extension), for the app's own
+/// pages only.
+#[tokio::test]
+async fn a_files_original_gets_a_named_copy_to_open() {
+    let app = spawn_app().await;
+    let board_id = board_with_an_image(&app).await;
+    let pdf = b"%PDF-1.4\n1 0 obj << >> endobj\ntrailer << >>\n%%EOF\n".to_vec();
+    let form = reqwest::multipart::Form::new()
+        .part(
+            "meta",
+            reqwest::multipart::Part::text(json!({"Brief.pdf": {"x": 0.0, "y": 0.0}}).to_string()),
+        )
+        .part(
+            "files",
+            reqwest::multipart::Part::bytes(pdf.clone()).file_name("Brief.pdf"),
+        );
+    let ingested: Value = app
+        .client
+        .post(format!(
+            "{}/api/boards/{board_id}/items:ingest",
+            app.base_url
+        ))
+        .multipart(form)
+        .send()
+        .await
+        .expect("ingest")
+        .json()
+        .await
+        .expect("ingested");
+    let hash = ingested["items"][0]["blob_hash"]
+        .as_str()
+        .expect("hash")
+        .to_string();
+    assert_eq!(ingested["items"][0]["mime_type"], "application/pdf");
+
+    let url = format!("{}/api/blobs/{hash}/open-copy", app.base_url);
+    let copy: Value = app
+        .client
+        .post(&url)
+        .header("Origin", "http://127.0.0.1:7171")
+        .send()
+        .await
+        .expect("copy")
+        .json()
+        .await
+        .expect("copy body");
+    let path = std::path::PathBuf::from(copy["path"].as_str().expect("path"));
+    assert_eq!(path.file_name().unwrap(), "Brief.pdf");
+    assert!(path.starts_with(app.state.config.data_dir.join("opened")));
+    assert_eq!(std::fs::read(&path).expect("copy written"), pdf);
+
+    // Asked again: the same copy.
+    let again: Value = app
+        .client
+        .post(&url)
+        .send()
+        .await
+        .expect("again")
+        .json()
+        .await
+        .expect("again body");
+    assert_eq!(again["path"], copy["path"]);
+
+    // Another site's page can't learn paths, and unknown hashes are 404.
+    let foreign = app
+        .client
+        .post(&url)
+        .header("Origin", "https://evil.example")
+        .send()
+        .await
+        .expect("foreign");
+    assert_eq!(foreign.status(), reqwest::StatusCode::FORBIDDEN);
+    let unknown = app
+        .client
+        .post(format!(
+            "{}/api/blobs/{}/open-copy",
+            app.base_url,
+            "0".repeat(64)
+        ))
+        .send()
+        .await
+        .expect("unknown");
+    assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

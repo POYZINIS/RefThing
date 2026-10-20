@@ -87,3 +87,10 @@ poster.
 The originals stream from `/blob/{hash}/full`, which honors `Range`, so
 seeking works. An unrecognized file is served as `application/octet-stream`,
 which means Open downloads it; HTML and SVG never render on the app origin.
+
+On the desktop, Open hands the file to the system's default app instead (the
+window opens no browser tabs): `POST /api/blobs/{hash}/open-copy` writes a
+copy under its own name to `<data>/opened/` (`routes/originals.rs`), and the
+opener plugin opens it — only paths in that folder, only with the default
+app. Programs and scripts get no copy. A `.ref` / `.pur` card opens as its
+board.

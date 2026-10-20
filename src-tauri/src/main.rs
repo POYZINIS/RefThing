@@ -152,8 +152,17 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Only the page's own requests open files; links aren't hijacked.
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .setup(|app| {
             let config = server_config(app);
+            // Where the server puts the named copies of files to open
+            // (`routes/originals.rs`) — the only paths the page may open.
+            let opened = config.data_dir.join("opened");
             let addr = format!("{}:{}", config.host, config.port);
             let (tx, rx) = tokio::sync::oneshot::channel::<()>();
             let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
@@ -188,12 +197,21 @@ fn main() {
             } else {
                 format!("http://{addr}")
             };
-            let capability = WINDOW_PERMISSIONS.iter().fold(
-                CapabilityBuilder::new("main-window")
-                    .remote(format!("{origin}/*"))
-                    .window("main"),
-                |capability, permission| capability.permission(*permission),
-            );
+            let capability = WINDOW_PERMISSIONS
+                .iter()
+                .fold(
+                    CapabilityBuilder::new("main-window")
+                        .remote(format!("{origin}/*"))
+                        .window("main"),
+                    |capability, permission| capability.permission(*permission),
+                )
+                // "Open" on a file card: the server's copy of it, in the
+                // system's default app (never a program the page names).
+                .permission_scoped(
+                    "opener:allow-open-path",
+                    vec![serde_json::json!({ "path": format!("{}/**", opened.display()) })],
+                    Vec::new(),
+                );
             app.add_capability(capability)?;
 
             // Frameless and transparent: the page draws its own window
@@ -201,8 +219,13 @@ fn main() {
             // Acrylic through it when glass is on — a real blur of whatever
             // is behind the window (Mica only tints from the wallpaper). The
             // page turns the effect off with the glass setting.
-            // Launched by opening a .ref file: the page opens it (?open=).
+            // The page's address names this version (?v=), so a page the
+            // webview cached under an older version is never shown after an
+            // update. Launched by opening a .ref file: the page opens it
+            // (?open=).
             let mut url: tauri::Url = origin.parse().expect("app url");
+            url.query_pairs_mut()
+                .append_pair("v", env!("CARGO_PKG_VERSION"));
             let args: Vec<String> = std::env::args().collect();
             if let Some(path) = board_file_arg(&args) {
                 url.query_pairs_mut().append_pair("open", &path);
@@ -235,7 +258,9 @@ fn main() {
             // Closing: stop the server and wait for it to finish — it writes
             // any linked .ref file that's behind — then exit. (Everything is
             // already saved in the database; this keeps the files current.)
-            tauri::RunEvent::ExitRequested { code: None, api, .. } => {
+            tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } => {
                 let Some(life) = app.try_state::<ServerLife>() else {
                     return;
                 };

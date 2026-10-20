@@ -483,6 +483,32 @@ pub async fn import(state: &AppState, path: &Path) -> AppResult<Uuid> {
     Ok(board_id)
 }
 
+/// The board whose linked file holds exactly `bytes`. A board's own file
+/// dropped on the window (which gives the page no path) opens that board
+/// rather than a copy of it.
+///
+/// # Errors
+/// A database error.
+pub async fn board_holding(state: &AppState, bytes: &[u8]) -> AppResult<Option<Uuid>> {
+    let links: Vec<(Uuid, String)> = sqlx::query_as("SELECT board_id, path FROM board_files")
+        .fetch_all(&state.pools.read)
+        .await?;
+    let size = u64::try_from(bytes.len()).ok();
+    for (board_id, path) in links {
+        let same_size = tokio::fs::metadata(&path)
+            .await
+            .is_ok_and(|metadata| Some(metadata.len()) == size);
+        if same_size
+            && tokio::fs::read(&path)
+                .await
+                .is_ok_and(|on_disk| on_disk == bytes)
+        {
+            return Ok(Some(board_id));
+        }
+    }
+    Ok(None)
+}
+
 async fn board_name(pool: &SqlitePool, board_id: Uuid) -> AppResult<String> {
     let (name,): (String,) = sqlx::query_as("SELECT name FROM boards WHERE id = ?")
         .bind(board_id)

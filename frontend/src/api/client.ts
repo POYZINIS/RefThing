@@ -346,6 +346,8 @@ export interface ImportResult {
   notes: number;
   /** What the file held that RefThing could not bring in, in words. */
   skipped: string[];
+  /** The file was already a board's own: that board, not a new one. */
+  reopened: boolean;
 }
 
 /** A board file (RefThing's `.ref`, or PureRef 2's `.pur`) → a new board. */
@@ -368,6 +370,13 @@ export function uploadTexture(file: File): Promise<StoredBlob> {
   const form = new FormData();
   form.append('file', file, file.name);
   return request<StoredBlob>('/api/blobs', { method: 'POST', body: form });
+}
+
+/** A copy of a stored file's original under its own name, on this machine
+ *  (what the desktop opens in the default app). Programs and scripts are
+ *  refused. */
+export function openCopy(hash: string): Promise<{ path: string }> {
+  return request<{ path: string }>(`/api/blobs/${hash}/open-copy`, { method: 'POST' });
 }
 
 /** Board files RefThing imports whole, as new boards. */

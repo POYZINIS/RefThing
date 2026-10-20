@@ -24,6 +24,7 @@ use crate::error::{AppError, AppResult};
 use crate::events::hub::ServerMsg;
 use crate::services::board_service::{self, NewNote};
 use crate::services::ingest_service::{Landing, commit_file};
+use crate::services::ref_files;
 use crate::state::AppState;
 
 /// 201 body: the new board and what came across.
@@ -35,6 +36,8 @@ pub struct ImportResponse {
     pub notes: usize,
     /// Things the file held that `RefThing` could not bring in, in words.
     pub skipped: Vec<String>,
+    /// The file was already a board's own: that board, not a new one.
+    pub reopened: bool,
 }
 
 /// Handles `POST /api/boards:import` (multipart, one `file` part).
@@ -96,19 +99,28 @@ pub async fn import_board(state: &AppState, multipart: Multipart) -> AppResult<I
         images,
         notes,
         skipped: board.skipped,
+        reopened: false,
     })
 }
 
 /// An uploaded `.ref` file (dropped on the window, which gives no path to
-/// link): a new board from it, not linked to any file.
+/// link): the board it already is (its own linked file, dropped back in),
+/// else a new board from it, not linked to any file.
 async fn import_ref(state: &AppState, bytes: &[u8]) -> AppResult<ImportResponse> {
+    if let Some(board_id) = ref_files::board_holding(state, bytes).await? {
+        return summary(state, board_id, true).await;
+    }
     let tmp = state.config.data_dir.join("tmp");
     tokio::fs::create_dir_all(&tmp).await?;
     let path = tmp.join(format!("{}.ref", Uuid::now_v7()));
     tokio::fs::write(&path, bytes).await?;
-    let imported = crate::services::ref_files::import(state, &path).await;
+    let imported = ref_files::import(state, &path).await;
     let _ = tokio::fs::remove_file(&path).await;
-    let board_id = imported?;
+    summary(state, imported?, false).await
+}
+
+/// A board's name and counts, as the import answers them.
+async fn summary(state: &AppState, board_id: Uuid, reopened: bool) -> AppResult<ImportResponse> {
     let (name, images, notes): (String, i64, i64) = sqlx::query_as(
         "SELECT b.name,                 (SELECT COUNT(*) FROM items i WHERE i.board_id = b.id),                 (SELECT COUNT(*) FROM notes n WHERE n.board_id = b.id)          FROM boards b WHERE b.id = ?",
     )
@@ -121,6 +133,7 @@ async fn import_ref(state: &AppState, bytes: &[u8]) -> AppResult<ImportResponse>
         images: usize::try_from(images).unwrap_or(0),
         notes: usize::try_from(notes).unwrap_or(0),
         skipped: Vec::new(),
+        reopened,
     })
 }
 

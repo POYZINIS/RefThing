@@ -1,6 +1,14 @@
 ; Installer hooks (tauri.conf.json bundle.windows.nsis.installerHooks), run
 ; by every install — including an update, which the updater runs silently.
 
+!macro NSIS_HOOK_PREINSTALL
+  ; The page files are replaced whole: an update would otherwise leave every
+  ; older build's files beside the new ones.
+  ${If} $INSTDIR != ""
+    RMDir /r "$INSTDIR\dist"
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_POSTINSTALL
   ; .ref files show their own icon (the page), not the app's.
   ; ("RefThing board" is the file class tauri.conf.json's association names.)
